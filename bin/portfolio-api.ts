@@ -1,20 +1,26 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib/core';
 import { PortfolioApiStack } from '../lib/portfolio-api-stack';
+import { GithubOidcStack } from '../lib/github-oidc-stack';
 
 const app = new cdk.App();
-new PortfolioApiStack(app, 'PortfolioApiStack', {
-  /* If you don't specify 'env', this stack will be environment-agnostic.
-   * Account/Region-dependent features and context lookups will not work,
-   * but a single synthesized template can be deployed anywhere. */
 
-  /* Uncomment the next line to specialize this stack for the AWS Account
-   * and Region that are implied by the current CLI configuration. */
-  // env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION };
 
-  /* Uncomment the next line if you know exactly what Account and Region you
-   * want to deploy the stack to. */
-  // env: { account: '123456789012', region: 'us-east-1' },
+// Application stack: one instance per stage, selected with `-c stage=dev|prod`.
+// CI passes this explicitly; defaults to "dev" for local iteration.
+const stage = (app.node.tryGetContext('stage') as string | undefined) ?? 'dev';
 
-  /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
+new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
+  env,
+  stage,
+});
+
+// One-time, account-wide setup for GitHub Actions OIDC deploys.
+// Deploy manually once with `npx cdk deploy GithubOidcStack`; see lib/github-oidc-stack.ts.
+new GithubOidcStack(app, 'GithubOidcStack', {
+  env,
+  githubOrg: 'nator333',
+  githubRepo: 'portfolio-api',
+  prodBranch: 'master',
 });
