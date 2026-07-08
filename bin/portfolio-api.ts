@@ -5,7 +5,11 @@ import { GithubOidcStack } from '../lib/github-oidc-stack';
 
 const app = new cdk.App();
 
-const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION };
+// Pinned rather than left to CDK_DEFAULT_REGION, which follows whatever AWS
+// profile/region happens to be active locally and can silently drift from
+// wherever this app was bootstrapped. Override with `-c region=...` if needed.
+const region = (app.node.tryGetContext('region') as string | undefined) ?? 'us-west-1';
+const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region };
 
 // Application stack: one instance per stage, selected with `-c stage=dev|prod`.
 // CI passes this explicitly; defaults to "dev" for local iteration.
