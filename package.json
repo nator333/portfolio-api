@@ -5,7 +5,10 @@
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
-    "cdk": "cdk"
+    "cdk": "cdk",
+    "deploy:dev": "cdk deploy PortfolioApiStack-dev --context stage=dev --require-approval never",
+    "deploy:prod": "cdk deploy PortfolioApiStack-prod --context stage=prod --require-approval never",
+    "deploy:oidc": "cdk deploy GithubOidcStack"
   },
   "devDependencies": {
     "@types/jest": "^30",
