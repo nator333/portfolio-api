@@ -26,5 +26,6 @@ new GithubOidcStack(app, 'GithubOidcStack', {
   env,
   githubOrg: 'nator333',
   githubRepo: 'portfolio-api',
-  prodBranch: 'master',
+  prodEnvironment: 'production',
+  devEnvironment: 'development',
 });

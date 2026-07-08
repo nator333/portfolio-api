@@ -7,8 +7,10 @@ export interface GithubOidcStackProps extends cdk.StackProps {
   readonly githubOrg: string;
   /** Repo name, e.g. "portfolio-api". */
   readonly githubRepo: string;
-  /** Branch that triggers a production deploy on push. Defaults to "master". */
-  readonly prodBranch?: string;
+  /** GitHub Environment name used by the prod deploy job. Must match the `environment:` key in deploy-prod.yml. */
+  readonly prodEnvironment?: string;
+  /** GitHub Environment name used by the dev deploy job. Must match the `environment:` key in deploy-dev.yml. */
+  readonly devEnvironment?: string;
   /** CDK bootstrap qualifier, only needed if you bootstrapped with a custom --qualifier. */
   readonly cdkQualifier?: string;
 }
@@ -35,7 +37,8 @@ export class GithubOidcStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: GithubOidcStackProps) {
     super(scope, id, props);
 
-    const prodBranch = props.prodBranch ?? 'master';
+    const prodEnvironment = props.prodEnvironment ?? 'production';
+    const devEnvironment = props.devEnvironment ?? 'development';
     const qualifier = props.cdkQualifier ?? 'hnb659fds';
     const repoSlug = `${props.githubOrg}/${props.githubRepo}`;
 
@@ -62,16 +65,17 @@ export class GithubOidcStack extends cdk.Stack {
       ],
     });
 
+    // GitHub sets the OIDC token's `sub` claim to `repo:<slug>:environment:<name>` whenever
+    // the calling job references an `environment:` (which both deploy workflows do, for
+    // protection rules) — this takes precedence over the ref/pull_request-based sub claim.
     const prodDeployRole = new iam.Role(this, 'GithubActionsProdDeployRole', {
       roleName: 'github-actions-portfolio-api-prod',
-      description: `Assumed by GitHub Actions to deploy production on push to ${prodBranch}`,
+      description: `Assumed by GitHub Actions to deploy production via the "${prodEnvironment}" environment`,
       maxSessionDuration: cdk.Duration.hours(1),
       assumedBy: new iam.OpenIdConnectPrincipal(provider, {
         StringEquals: {
           'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        },
-        StringLike: {
-          'token.actions.githubusercontent.com:sub': `repo:${repoSlug}:ref:refs/heads/${prodBranch}`,
+          'token.actions.githubusercontent.com:sub': `repo:${repoSlug}:environment:${prodEnvironment}`,
         },
       }),
       inlinePolicies: { AssumeCdkBootstrapRoles: assumeCdkBootstrapRolesPolicy },
@@ -79,14 +83,12 @@ export class GithubOidcStack extends cdk.Stack {
 
     const devDeployRole = new iam.Role(this, 'GithubActionsDevDeployRole', {
       roleName: 'github-actions-portfolio-api-dev',
-      description: 'Assumed by GitHub Actions to deploy the dev stack for non-dependabot pull requests',
+      description: `Assumed by GitHub Actions to deploy the dev stack via the "${devEnvironment}" environment`,
       maxSessionDuration: cdk.Duration.hours(1),
       assumedBy: new iam.OpenIdConnectPrincipal(provider, {
         StringEquals: {
           'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        },
-        StringLike: {
-          'token.actions.githubusercontent.com:sub': `repo:${repoSlug}:pull_request`,
+          'token.actions.githubusercontent.com:sub': `repo:${repoSlug}:environment:${devEnvironment}`,
         },
       }),
       inlinePolicies: { AssumeCdkBootstrapRoles: assumeCdkBootstrapRolesPolicy },
