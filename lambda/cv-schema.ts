@@ -17,8 +17,12 @@ const personalInfoSchema = z.object({
   title: z.string(),
   email: z.string().email(),
   phone: z.string(),
-  location: z.string(),
   links: linksSchema,
+});
+
+const skillCategorySchema = z.object({
+  category: z.string().min(1),
+  skills: z.array(z.string()),
 });
 
 const experienceEntrySchema = z.object({
@@ -26,8 +30,13 @@ const experienceEntrySchema = z.object({
   role: z.string().min(1),
   startDate: z.string(),
   endDate: z.string(),
-  location: z.string(),
   bullets: z.array(z.string()),
+  techstack: z.string(),
+});
+
+const qualificationEntrySchema = z.object({
+  label: z.string().min(1),
+  text: z.string(),
 });
 
 const educationEntrySchema = z.object({
@@ -40,9 +49,10 @@ const educationEntrySchema = z.object({
 export const cvDataSchema = z.object({
   personalInfo: personalInfoSchema,
   summary: z.string(),
+  technicalSkills: z.array(skillCategorySchema),
   experience: z.array(experienceEntrySchema),
+  qualifications: z.array(qualificationEntrySchema),
   education: z.array(educationEntrySchema),
-  skills: z.array(z.string()),
 });
 
 export type CvData = z.infer<typeof cvDataSchema>;
