@@ -1,29 +1,33 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
-import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { CV_TABLE_ITEM_ID, cvDataSchema } from './cv-schema';
+import { corsHeaders } from './cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export const handler = async (
-  event: APIGatewayProxyEventV2,
-): Promise<APIGatewayProxyResultV2> => {
+  event: APIGatewayProxyEvent,
+): Promise<APIGatewayProxyResult> => {
+  const headers = { 'Content-Type': 'application/json', ...corsHeaders(event) };
+
   const tableName = process.env.CV_TABLE_NAME;
   if (!tableName) {
-    return { statusCode: 500, body: JSON.stringify({ message: 'CV_TABLE_NAME is not configured' }) };
+    return { statusCode: 500, headers, body: JSON.stringify({ message: 'CV_TABLE_NAME is not configured' }) };
   }
 
   let parsedBody: unknown;
   try {
     parsedBody = JSON.parse(event.body ?? '');
   } catch {
-    return { statusCode: 400, body: JSON.stringify({ message: 'Request body must be valid JSON' }) };
+    return { statusCode: 400, headers, body: JSON.stringify({ message: 'Request body must be valid JSON' }) };
   }
 
   const validation = cvDataSchema.safeParse(parsedBody);
   if (!validation.success) {
     return {
       statusCode: 400,
+      headers,
       body: JSON.stringify({ message: 'Invalid CV data', errors: validation.error.issues }),
     };
   }
@@ -35,9 +39,5 @@ export const handler = async (
     }),
   );
 
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(validation.data),
-  };
+  return { statusCode: 200, headers, body: JSON.stringify(validation.data) };
 };

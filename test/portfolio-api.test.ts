@@ -32,17 +32,31 @@ test('get-cv and update-cv Lambda functions created', () => {
   template.resourceCountIs('AWS::Lambda::Function', 2);
 });
 
-test('HTTP API exposes public GET /cv and authorized PUT /cv routes', () => {
+test('REST API exposes GET /cv (key only) and PUT /cv (key + Cognito auth)', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
-  template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-    RouteKey: 'GET /cv',
+  template.resourceCountIs('AWS::ApiGateway::RestApi', 1);
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'GET',
+    ApiKeyRequired: true,
     AuthorizationType: 'NONE',
   });
-  template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
-    RouteKey: 'PUT /cv',
-    AuthorizationType: 'JWT',
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'PUT',
+    ApiKeyRequired: true,
+    AuthorizationType: 'COGNITO_USER_POOLS',
   });
-  template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
+  template.hasResourceProperties('AWS::ApiGateway::Authorizer', {
+    Type: 'COGNITO_USER_POOLS',
+  });
+});
+
+test('usage plan caps total requests at 100 per month', () => {
+  const template = synthStack();
+
+  template.resourceCountIs('AWS::ApiGateway::ApiKey', 1);
+  template.hasResourceProperties('AWS::ApiGateway::UsagePlan', {
+    Quota: { Limit: 100, Period: 'MONTH' },
+    Throttle: { RateLimit: 2, BurstLimit: 5 },
+  });
 });

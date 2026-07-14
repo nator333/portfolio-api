@@ -4,10 +4,11 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-import * as apigwIntegrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
-import * as apigwAuthorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
+
+/** Hard monthly cap on total API calls, enforced at the gateway by the usage plan. */
+const MONTHLY_REQUEST_QUOTA = 100;
 
 export interface PortfolioApiStackProps extends cdk.StackProps {
   /** Deployment stage, e.g. "dev" or "prod". Applied as a tag on all stack resources. */
@@ -39,10 +40,15 @@ export class PortfolioApiStack extends cdk.Stack {
       generateSecret: false,
     });
 
+    const allowedOrigins = props.allowedOrigins ?? ['http://localhost:4200'];
+
     const lambdaDefaults: Partial<lambdaNode.NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_20_X,
       bundling: { externalModules: ['@aws-sdk/*'] },
-      environment: { CV_TABLE_NAME: cvTable.tableName },
+      environment: {
+        CV_TABLE_NAME: cvTable.tableName,
+        CORS_ALLOWED_ORIGINS: allowedOrigins.join(','),
+      },
     };
 
     const getCvFn = new lambdaNode.NodejsFunction(this, 'GetCvFunction', {
@@ -57,36 +63,44 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantWriteData(updateCvFn);
 
-    const authorizer = new apigwAuthorizers.HttpUserPoolAuthorizer(
-      'CvAuthorizer',
-      userPool,
-      { userPoolClients: [userPoolClient] },
-    );
-
-    const allowedOrigins = props.allowedOrigins ?? ['http://localhost:4200'];
-
-    const httpApi = new apigwv2.HttpApi(this, 'PortfolioHttpApi', {
-      corsPreflight: {
+    // REST API (v1) rather than HTTP API (v2): only REST APIs support usage
+    // plans, which enforce the monthly request quota at the gateway.
+    const api = new apigateway.RestApi(this, 'PortfolioRestApi', {
+      deployOptions: { stageName: props.stage },
+      defaultCorsPreflightOptions: {
         allowOrigins: allowedOrigins,
-        allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.PUT],
-        allowHeaders: ['Content-Type', 'Authorization'],
+        allowMethods: ['GET', 'PUT', 'OPTIONS'],
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Api-Key'],
       },
     });
 
-    httpApi.addRoutes({
-      path: '/cv',
-      methods: [apigwv2.HttpMethod.GET],
-      integration: new apigwIntegrations.HttpLambdaIntegration('GetCvIntegration', getCvFn),
+    const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'CvAuthorizer', {
+      cognitoUserPools: [userPool],
     });
 
-    httpApi.addRoutes({
-      path: '/cv',
-      methods: [apigwv2.HttpMethod.PUT],
-      integration: new apigwIntegrations.HttpLambdaIntegration('UpdateCvIntegration', updateCvFn),
+    const cvResource = api.root.addResource('cv');
+    cvResource.addMethod('GET', new apigateway.LambdaIntegration(getCvFn), {
+      apiKeyRequired: true,
+    });
+    cvResource.addMethod('PUT', new apigateway.LambdaIntegration(updateCvFn), {
+      apiKeyRequired: true,
       authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
-    new cdk.CfnOutput(this, 'ApiUrl', { value: httpApi.apiEndpoint });
+    const apiKey = api.addApiKey('CvApiKey');
+    const usagePlan = api.addUsagePlan('CvUsagePlan', {
+      quota: { limit: MONTHLY_REQUEST_QUOTA, period: apigateway.Period.MONTH },
+      throttle: { rateLimit: 2, burstLimit: 5 },
+    });
+    usagePlan.addApiKey(apiKey);
+    usagePlan.addApiStage({ stage: api.deploymentStage });
+
+    new cdk.CfnOutput(this, 'ApiUrl', { value: api.url });
+    new cdk.CfnOutput(this, 'ApiKeyId', {
+      value: apiKey.keyId,
+      description: 'Fetch the key value with: aws apigateway get-api-key --include-value --api-key <id>',
+    });
     new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
   }
