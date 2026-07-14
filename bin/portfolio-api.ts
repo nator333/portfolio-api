@@ -15,9 +15,16 @@ const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region };
 // CI passes this explicitly; defaults to "dev" for local iteration.
 const stage = (app.node.tryGetContext('stage') as string | undefined) ?? 'dev';
 
+// Prod allows the deployed portfolio-front origins; dev/local iteration only needs the Angular dev server.
+const allowedOrigins =
+  stage === 'prod'
+    ? ['https://nakamata.tech', 'https://nator333.github.io']
+    : ['http://localhost:4200'];
+
 new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   env,
   stage,
+  allowedOrigins,
 });
 
 // One-time, account-wide setup for GitHub Actions OIDC deploys.
