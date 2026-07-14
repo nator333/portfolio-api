@@ -21,10 +21,19 @@ const allowedOrigins =
     ? ['https://nakamata.tech', 'https://nator333.github.io']
     : ['http://localhost:4200'];
 
+// Exact URLs Cognito may redirect back to after Google sign-in. GitHub Pages
+// serves the app under a repo path, so these are full URLs, not origins.
+const authCallbackUrls =
+  stage === 'prod'
+    ? ['https://nakamata.tech/cv-editor', 'https://nator333.github.io/portfolio-front/cv-editor']
+    : ['http://localhost:4200/cv-editor'];
+
 new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   env,
   stage,
   allowedOrigins,
+  authCallbackUrls,
+  adminEmails: ['m.nakamata35@gmail.com'],
 });
 
 // One-time, account-wide setup for GitHub Actions OIDC deploys.
