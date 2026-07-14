@@ -4,7 +4,11 @@ import { PortfolioApiStack } from '../lib/portfolio-api-stack';
 
 function synthStack() {
   const app = new cdk.App();
-  const stack = new PortfolioApiStack(app, 'MyTestStack', { stage: 'test' });
+  const stack = new PortfolioApiStack(app, 'MyTestStack', {
+    stage: 'test',
+    authCallbackUrls: ['http://localhost:4200/cv-editor'],
+    adminEmails: ['admin@example.com'],
+  });
   return Template.fromStack(stack);
 }
 
@@ -26,10 +30,27 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('get-cv and update-cv Lambda functions created', () => {
+test('get-cv, update-cv, and pre-signup Lambda functions created', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::Lambda::Function', 2);
+  template.resourceCountIs('AWS::Lambda::Function', 3);
+});
+
+test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::Cognito::UserPoolIdentityProvider', {
+    ProviderName: 'Google',
+    ProviderType: 'Google',
+  });
+  template.hasResourceProperties('AWS::Cognito::UserPoolDomain', {
+    Domain: 'nakamata-cv-test',
+  });
+  template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+    SupportedIdentityProviders: ['Google'],
+    AllowedOAuthFlows: ['code'],
+    CallbackURLs: ['http://localhost:4200/cv-editor'],
+  });
 });
 
 test('REST API exposes GET /cv (key only) and PUT /cv (key + Cognito auth)', () => {
