@@ -2,10 +2,14 @@ import { z } from 'zod';
 
 export const CV_TABLE_ITEM_ID = 'current';
 
+// Untouched form inputs arrive as "" rather than being omitted, so each link
+// accepts a valid URL, an empty string, or absence.
+const optionalUrl = z.string().url().or(z.literal('')).optional();
+
 const linksSchema = z.object({
-  website: z.string().url().optional(),
-  github: z.string().url().optional(),
-  linkedin: z.string().url().optional(),
+  website: optionalUrl,
+  github: optionalUrl,
+  linkedin: optionalUrl,
 });
 
 const personalInfoSchema = z.object({
