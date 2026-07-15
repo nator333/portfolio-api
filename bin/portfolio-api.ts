@@ -21,12 +21,17 @@ const allowedOrigins =
     ? ['https://nakamata.tech', 'https://nator333.github.io']
     : ['http://localhost:4200'];
 
-// Exact URLs Cognito may redirect back to after Google sign-in. GitHub Pages
-// serves the app under a repo path, so these are full URLs, not origins.
-const authCallbackUrls =
+// Exact URLs Cognito may redirect back to after Google sign-in (one per admin
+// editor page). GitHub Pages serves the app under a repo path, so these are
+// full URLs, not origins.
+const authCallbackPaths = ['/cv-editor', '/projects-edit'];
+const authCallbackBases =
   stage === 'prod'
-    ? ['https://nakamata.tech/cv-editor', 'https://nator333.github.io/portfolio-front/cv-editor']
-    : ['http://localhost:4200/cv-editor'];
+    ? ['https://nakamata.tech', 'https://nator333.github.io/portfolio-front']
+    : ['http://localhost:4200'];
+const authCallbackUrls = authCallbackBases.flatMap((base) =>
+  authCallbackPaths.map((p) => `${base}${p}`),
+);
 
 new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   env,
