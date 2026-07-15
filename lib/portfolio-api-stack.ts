@@ -106,6 +106,18 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantWriteData(updateCvFn);
 
+    const getProjectsFn = new lambdaNode.NodejsFunction(this, 'GetProjectsFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-projects.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantReadData(getProjectsFn);
+
+    const updateProjectsFn = new lambdaNode.NodejsFunction(this, 'UpdateProjectsFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'update-projects.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantWriteData(updateProjectsFn);
+
     // REST API (v1) rather than HTTP API (v2): only REST APIs support usage
     // plans, which enforce the monthly request quota at the gateway.
     const api = new apigateway.RestApi(this, 'PortfolioRestApi', {
@@ -126,6 +138,16 @@ export class PortfolioApiStack extends cdk.Stack {
       apiKeyRequired: true,
     });
     cvResource.addMethod('PUT', new apigateway.LambdaIntegration(updateCvFn), {
+      apiKeyRequired: true,
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    const projectsResource = api.root.addResource('projects');
+    projectsResource.addMethod('GET', new apigateway.LambdaIntegration(getProjectsFn), {
+      apiKeyRequired: true,
+    });
+    projectsResource.addMethod('PUT', new apigateway.LambdaIntegration(updateProjectsFn), {
       apiKeyRequired: true,
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
