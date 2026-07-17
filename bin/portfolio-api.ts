@@ -15,11 +15,13 @@ const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region };
 // CI passes this explicitly; defaults to "dev" for local iteration.
 const stage = (app.node.tryGetContext('stage') as string | undefined) ?? 'dev';
 
-// Prod allows the deployed portfolio-front origins; dev/local iteration only needs the Angular dev server.
+// Prod allows the deployed portfolio-front origins; dev/local iteration needs the
+// Angular dev server (`ng serve` default 4200, and portfolio-front's `npm start`
+// which pins port 3000).
 const allowedOrigins =
   stage === 'prod'
     ? ['https://nakamata.tech', 'https://nator333.github.io']
-    : ['http://localhost:4200'];
+    : ['http://localhost:4200', 'http://localhost:3000'];
 
 // Exact URLs Cognito may redirect back to after Google sign-in (one per admin
 // editor page). GitHub Pages serves the app under a repo path, so these are
