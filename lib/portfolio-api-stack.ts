@@ -32,7 +32,8 @@ const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
  * and the endpoint is Cognito-gated single-user, so the higher per-token price
  * stays within the Bedrock budget.
  */
-const AGENT_MODEL_ID = 'us.anthropic.claude-sonnet-5';
+// Sonnet 5 is listed but not yet invocable for this account; 4.6 is verified working.
+const AGENT_MODEL_ID = 'us.anthropic.claude-sonnet-4-6';
 /** Monthly Bedrock spend (USD) that triggers the budget email alert. */
 const BEDROCK_BUDGET_USD = 5;
 
