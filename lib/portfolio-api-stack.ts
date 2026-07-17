@@ -5,11 +5,30 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as path from 'path';
 
 /** Hard monthly cap on total API calls, enforced at the gateway by the usage plan. */
 const MONTHLY_REQUEST_QUOTA = 100;
+
+/**
+ * Hard monthly cap on public chat calls. Together with the request-shape
+ * limits in lambda/chat-schema.ts (~$0.008 worst case per call on Haiku),
+ * this keeps Bedrock spend under the $5/month budget.
+ */
+const CHAT_MONTHLY_REQUEST_QUOTA = 500;
+
+/** Bedrock is not offered in us-west-1, so the chat Lambda calls cross-region. */
+const BEDROCK_REGION = 'us-west-2';
+/**
+ * "us." cross-region inference profile: newer Anthropic models reject
+ * on-demand invocation of the bare model ID.
+ */
+const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
+/** Monthly Bedrock spend (USD) that triggers the budget email alert. */
+const BEDROCK_BUDGET_USD = 5;
 
 /** SSM parameter holding the Google OAuth client ID (not secret, but env-specific). */
 const GOOGLE_CLIENT_ID_PARAM = '/portfolio/cv/google-client-id';
@@ -118,13 +137,41 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantWriteData(updateProjectsFn);
 
+    // Public visitor Q&A: read-only by IAM design — this function never gets a
+    // write grant, so no prompt injection can mutate the table.
+    const chatFn = new lambdaNode.NodejsFunction(this, 'ChatFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'chat.ts'),
+      ...lambdaDefaults,
+      // Stay under API Gateway's 29s integration timeout.
+      timeout: cdk.Duration.seconds(25),
+      memorySize: 256,
+      environment: {
+        ...lambdaDefaults.environment,
+        BEDROCK_REGION,
+        CHAT_MODEL_ID,
+      },
+    });
+    cvTable.grantReadData(chatFn);
+    // Invoking a "us." inference profile needs permission on the profile in the
+    // calling region AND on the underlying foundation models in every region
+    // the profile can route to — hence the wildcard-region model ARN.
+    chatFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+        resources: [
+          `arn:aws:bedrock:${BEDROCK_REGION}:${this.account}:inference-profile/us.anthropic.*`,
+          'arn:aws:bedrock:*::foundation-model/anthropic.*',
+        ],
+      }),
+    );
+
     // REST API (v1) rather than HTTP API (v2): only REST APIs support usage
     // plans, which enforce the monthly request quota at the gateway.
     const api = new apigateway.RestApi(this, 'PortfolioRestApi', {
       deployOptions: { stageName: props.stage },
       defaultCorsPreflightOptions: {
         allowOrigins: allowedOrigins,
-        allowMethods: ['GET', 'PUT', 'OPTIONS'],
+        allowMethods: ['GET', 'PUT', 'POST', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Api-Key'],
       },
     });
@@ -153,6 +200,14 @@ export class PortfolioApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
+    // Anonymous visitors chat with the site assistant; the chat key is public
+    // in the SPA and is not a security boundary — the usage-plan quota is the
+    // spend cap for the Bedrock calls behind it.
+    const chatResource = api.root.addResource('chat');
+    chatResource.addMethod('POST', new apigateway.LambdaIntegration(chatFn), {
+      apiKeyRequired: true,
+    });
+
     const apiKey = api.addApiKey('CvApiKey');
     const usagePlan = api.addUsagePlan('CvUsagePlan', {
       quota: { limit: MONTHLY_REQUEST_QUOTA, period: apigateway.Period.MONTH },
@@ -160,6 +215,39 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     usagePlan.addApiKey(apiKey);
     usagePlan.addApiStage({ stage: api.deploymentStage });
+
+    // Chat gets its own key and quota so visitor chat can't exhaust the CV/projects
+    // quota (and vice versa).
+    const chatApiKey = api.addApiKey('ChatApiKey');
+    const chatUsagePlan = api.addUsagePlan('ChatUsagePlan', {
+      quota: { limit: CHAT_MONTHLY_REQUEST_QUOTA, period: apigateway.Period.MONTH },
+      throttle: { rateLimit: 1, burstLimit: 3 },
+    });
+    chatUsagePlan.addApiKey(chatApiKey);
+    chatUsagePlan.addApiStage({ stage: api.deploymentStage });
+
+    // Backstop for the quota-based cost cap: email when Bedrock spend nears the
+    // budget. Prod only — one budget per account is enough, and dev shares it.
+    if (props.stage === 'prod') {
+      new budgets.CfnBudget(this, 'BedrockBudget', {
+        budget: {
+          budgetName: 'portfolio-bedrock-monthly',
+          budgetType: 'COST',
+          timeUnit: 'MONTHLY',
+          budgetLimit: { amount: BEDROCK_BUDGET_USD, unit: 'USD' },
+          costFilters: { Service: ['Amazon Bedrock'] },
+        },
+        notificationsWithSubscribers: [80, 100].map((threshold) => ({
+          notification: {
+            notificationType: 'ACTUAL',
+            comparisonOperator: 'GREATER_THAN',
+            threshold,
+            thresholdType: 'PERCENTAGE',
+          },
+          subscribers: [{ subscriptionType: 'EMAIL', address: props.adminEmails[0] }],
+        })),
+      });
+    }
 
     new cdk.CfnOutput(this, 'ApiUrl', { value: api.url });
     new cdk.CfnOutput(this, 'AuthDomainUrl', {
@@ -169,6 +257,10 @@ export class PortfolioApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ApiKeyId', {
       value: apiKey.keyId,
       description: 'Fetch the key value with: aws apigateway get-api-key --include-value --api-key <id>',
+    });
+    new cdk.CfnOutput(this, 'ChatApiKeyId', {
+      value: chatApiKey.keyId,
+      description: 'API key for POST /chat; fetch the value the same way as ApiKeyId',
     });
     new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
