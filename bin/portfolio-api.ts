@@ -28,7 +28,7 @@ const authCallbackPaths = ['/cv-editor', '/projects-edit', '/cv-agent'];
 const authCallbackBases =
   stage === 'prod'
     ? ['https://nakamata.tech', 'https://nator333.github.io/portfolio-front']
-    : ['http://localhost:4200'];
+    : ['http://localhost:4200', 'http://localhost:3000'];
 const authCallbackUrls = authCallbackBases.flatMap((base) =>
   authCallbackPaths.map((p) => `${base}${p}`),
 );
