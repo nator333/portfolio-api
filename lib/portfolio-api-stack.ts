@@ -31,10 +31,8 @@ const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
  * Sonnet-class profile for the admin CV agent — writing quality matters there,
  * and the endpoint is Cognito-gated single-user, so the higher per-token price
  * stays within the Bedrock budget.
- * TODO(deploy): confirm the exact profile id with
- * `aws bedrock list-inference-profiles --region us-west-2` before first deploy.
  */
-const AGENT_MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
+const AGENT_MODEL_ID = 'us.anthropic.claude-sonnet-5';
 /** Monthly Bedrock spend (USD) that triggers the budget email alert. */
 const BEDROCK_BUDGET_USD = 5;
 

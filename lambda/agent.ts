@@ -126,6 +126,9 @@ export const handler = async (
       const response = await bedrock.messages.create({
         model: modelId,
         max_tokens: MAX_REPLY_TOKENS,
+        // Sonnet 5 defaults to adaptive thinking when this is omitted; keep it
+        // off so full-document proposals fit the API Gateway 29s window.
+        thinking: { type: 'disabled' },
         system: buildSystemPrompt(cvData, projectsData),
         tools,
         messages: conversation,
