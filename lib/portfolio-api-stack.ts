@@ -149,14 +149,13 @@ export class PortfolioApiStack extends cdk.Stack {
       },
     });
     cvTable.grantReadData(chatFn);
+    // The Bedrock Mantle endpoint (Messages-API surface used by
+    // @anthropic-ai/bedrock-sdk) authorizes with its own IAM namespace, not
+    // the classic bedrock:InvokeModel actions.
     chatFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-        resources: [
-          `arn:aws:bedrock:${BEDROCK_REGION}::foundation-model/anthropic.*`,
-          // Cross-region inference profiles, in case CHAT_MODEL_ID moves to a "us." profile.
-          `arn:aws:bedrock:*:${this.account}:inference-profile/*.anthropic.*`,
-        ],
+        actions: ['bedrock-mantle:CreateInference'],
+        resources: [`arn:aws:bedrock-mantle:${BEDROCK_REGION}:${this.account}:project/default`],
       }),
     );
 
