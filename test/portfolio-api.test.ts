@@ -1,11 +1,11 @@
 import * as cdk from 'aws-cdk-lib/core';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Match, Template } from 'aws-cdk-lib/assertions';
 import { PortfolioApiStack } from '../lib/portfolio-api-stack';
 
-function synthStack() {
+function synthStack(stage = 'test') {
   const app = new cdk.App();
   const stack = new PortfolioApiStack(app, 'MyTestStack', {
-    stage: 'test',
+    stage,
     authCallbackUrls: ['http://localhost:4200/cv-editor'],
     adminEmails: ['admin@example.com'],
   });
@@ -30,11 +30,11 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('cv, projects, and pre-signup Lambda functions created', () => {
+test('cv, projects, chat, and pre-signup Lambda functions created', () => {
   const template = synthStack();
 
-  // get-cv, update-cv, get-projects, update-projects, pre-signup
-  template.resourceCountIs('AWS::Lambda::Function', 5);
+  // get-cv, update-cv, get-projects, update-projects, chat, pre-signup
+  template.resourceCountIs('AWS::Lambda::Function', 6);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -92,9 +92,61 @@ test('REST API exposes GET and PUT for both /cv and /projects', () => {
 test('usage plan caps total requests at 100 per month', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::ApiGateway::ApiKey', 1);
   template.hasResourceProperties('AWS::ApiGateway::UsagePlan', {
     Quota: { Limit: 100, Period: 'MONTH' },
     Throttle: { RateLimit: 2, BurstLimit: 5 },
   });
+});
+
+test('POST /chat is public (key only, no Cognito)', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'chat' });
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'POST',
+    ApiKeyRequired: true,
+    AuthorizationType: 'NONE',
+  });
+  const methods = template.findResources('AWS::ApiGateway::Method');
+  const posts = Object.values(methods).filter((m) => m.Properties.HttpMethod === 'POST');
+  expect(posts.every((m) => m.Properties.AuthorizationType === 'NONE')).toBe(true);
+});
+
+test('chat has its own API key and usage plan capped at 500 requests per month', () => {
+  const template = synthStack();
+
+  template.resourceCountIs('AWS::ApiGateway::ApiKey', 2);
+  template.resourceCountIs('AWS::ApiGateway::UsagePlan', 2);
+  template.hasResourceProperties('AWS::ApiGateway::UsagePlan', {
+    Quota: { Limit: 500, Period: 'MONTH' },
+    Throttle: { RateLimit: 1, BurstLimit: 3 },
+  });
+});
+
+test('chat Lambda may invoke Bedrock models but only read the table', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+          Effect: 'Allow',
+        }),
+      ]),
+    },
+  });
+});
+
+test('prod stack alerts on Bedrock spend at a $5 monthly budget; other stages do not', () => {
+  const prod = synthStack('prod');
+  prod.hasResourceProperties('AWS::Budgets::Budget', {
+    Budget: Match.objectLike({
+      BudgetLimit: { Amount: 5, Unit: 'USD' },
+      TimeUnit: 'MONTHLY',
+    }),
+  });
+
+  const test = synthStack();
+  test.resourceCountIs('AWS::Budgets::Budget', 0);
 });
