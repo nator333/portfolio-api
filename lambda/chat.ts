@@ -1,6 +1,9 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { AnthropicBedrockMantle } from '@anthropic-ai/bedrock-sdk';
+// Legacy bedrock-runtime client: the Mantle endpoint reported Anthropic models
+// as unavailable for this account, while InvokeModel via the "us." cross-region
+// inference profile works.
+import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { CV_TABLE_ITEM_ID } from './cv-schema';
 import { PROJECTS_TABLE_ITEM_ID } from './projects-schema';
@@ -12,7 +15,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // Bounds the answer length; part of the per-request cost cap.
 const MAX_REPLY_TOKENS = 512;
 
-let bedrock: AnthropicBedrockMantle | undefined;
+let bedrock: AnthropicBedrock | undefined;
 
 function buildSystemPrompt(cv: unknown, projects: unknown): string {
   return [
@@ -69,7 +72,7 @@ export const handler = async (
     ? (({ id: _pid, ...rest }) => rest)(projectsResult.Item)
     : undefined;
 
-  bedrock ??= new AnthropicBedrockMantle({ awsRegion: bedrockRegion });
+  bedrock ??= new AnthropicBedrock({ awsRegion: bedrockRegion });
 
   try {
     const response = await bedrock.messages.create({

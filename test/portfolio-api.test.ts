@@ -130,7 +130,7 @@ test('chat Lambda may invoke Bedrock models but only read the table', () => {
     PolicyDocument: {
       Statement: Match.arrayWith([
         Match.objectLike({
-          Action: 'bedrock-mantle:CreateInference',
+          Action: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
           Effect: 'Allow',
         }),
       ]),

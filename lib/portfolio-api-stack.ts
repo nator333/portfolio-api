@@ -22,8 +22,11 @@ const CHAT_MONTHLY_REQUEST_QUOTA = 500;
 
 /** Bedrock is not offered in us-west-1, so the chat Lambda calls cross-region. */
 const BEDROCK_REGION = 'us-west-2';
-/** Bedrock model IDs carry an "anthropic." provider prefix. */
-const CHAT_MODEL_ID = 'anthropic.claude-haiku-4-5';
+/**
+ * "us." cross-region inference profile: newer Anthropic models reject
+ * on-demand invocation of the bare model ID.
+ */
+const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 /** Monthly Bedrock spend (USD) that triggers the budget email alert. */
 const BEDROCK_BUDGET_USD = 5;
 
@@ -149,13 +152,16 @@ export class PortfolioApiStack extends cdk.Stack {
       },
     });
     cvTable.grantReadData(chatFn);
-    // The Bedrock Mantle endpoint (Messages-API surface used by
-    // @anthropic-ai/bedrock-sdk) authorizes with its own IAM namespace, not
-    // the classic bedrock:InvokeModel actions.
+    // Invoking a "us." inference profile needs permission on the profile in the
+    // calling region AND on the underlying foundation models in every region
+    // the profile can route to — hence the wildcard-region model ARN.
     chatFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['bedrock-mantle:CreateInference'],
-        resources: [`arn:aws:bedrock-mantle:${BEDROCK_REGION}:${this.account}:project/default`],
+        actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+        resources: [
+          `arn:aws:bedrock:${BEDROCK_REGION}:${this.account}:inference-profile/us.anthropic.*`,
+          'arn:aws:bedrock:*::foundation-model/anthropic.*',
+        ],
       }),
     );
 
