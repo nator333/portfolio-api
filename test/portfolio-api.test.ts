@@ -30,11 +30,11 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('cv, projects, chat, and pre-signup Lambda functions created', () => {
+test('cv, projects, chat, agent, and pre-signup Lambda functions created', () => {
   const template = synthStack();
 
-  // get-cv, update-cv, get-projects, update-projects, chat, pre-signup
-  template.resourceCountIs('AWS::Lambda::Function', 6);
+  // get-cv, update-cv, get-projects, update-projects, chat, agent, pre-signup
+  template.resourceCountIs('AWS::Lambda::Function', 7);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -107,9 +107,48 @@ test('POST /chat is public (key only, no Cognito)', () => {
     ApiKeyRequired: true,
     AuthorizationType: 'NONE',
   });
+});
+
+test('POST /agent requires Cognito auth and no API key', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'agent' });
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'POST',
+    AuthorizationType: 'COGNITO_USER_POOLS',
+  });
   const methods = template.findResources('AWS::ApiGateway::Method');
-  const posts = Object.values(methods).filter((m) => m.Properties.HttpMethod === 'POST');
-  expect(posts.every((m) => m.Properties.AuthorizationType === 'NONE')).toBe(true);
+  const agentPosts = Object.values(methods).filter(
+    (m) =>
+      m.Properties.HttpMethod === 'POST' &&
+      m.Properties.AuthorizationType === 'COGNITO_USER_POOLS',
+  );
+  expect(agentPosts.length).toBe(1);
+  expect(agentPosts[0].Properties.ApiKeyRequired).toBeFalsy();
+});
+
+test('agent Lambda can invoke Bedrock but cannot write to the table', () => {
+  const template = synthStack();
+
+  // Both chat and agent roles carry the Bedrock invoke statement.
+  const policies = template.findResources('AWS::IAM::Policy');
+  const bedrockPolicies = Object.values(policies).filter((p) =>
+    p.Properties.PolicyDocument.Statement.some(
+      (s: { Action?: string | string[] }) =>
+        Array.isArray(s.Action) && s.Action.includes('bedrock:InvokeModel'),
+    ),
+  );
+  expect(bedrockPolicies.length).toBe(2);
+
+  // Neither Bedrock-holding role may carry a DynamoDB write action.
+  for (const policy of bedrockPolicies) {
+    const actions = policy.Properties.PolicyDocument.Statement.flatMap(
+      (s: { Action?: string | string[] }) =>
+        Array.isArray(s.Action) ? s.Action : [s.Action],
+    );
+    expect(actions).not.toContain('dynamodb:PutItem');
+    expect(actions).not.toContain('dynamodb:UpdateItem');
+  }
 });
 
 test('chat has its own API key and usage plan capped at 500 requests per month', () => {
