@@ -27,6 +27,14 @@ const BEDROCK_REGION = 'us-west-2';
  * on-demand invocation of the bare model ID.
  */
 const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
+/**
+ * Sonnet-class profile for the admin CV agent — writing quality matters there,
+ * and the endpoint is Cognito-gated single-user, so the higher per-token price
+ * stays within the Bedrock budget.
+ * TODO(deploy): confirm the exact profile id with
+ * `aws bedrock list-inference-profiles --region us-west-2` before first deploy.
+ */
+const AGENT_MODEL_ID = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
 /** Monthly Bedrock spend (USD) that triggers the budget email alert. */
 const BEDROCK_BUDGET_USD = 5;
 
@@ -155,15 +163,32 @@ export class PortfolioApiStack extends cdk.Stack {
     // Invoking a "us." inference profile needs permission on the profile in the
     // calling region AND on the underlying foundation models in every region
     // the profile can route to — hence the wildcard-region model ARN.
-    chatFn.addToRolePolicy(
+    const bedrockInvokePolicy = () =>
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
         resources: [
           `arn:aws:bedrock:${BEDROCK_REGION}:${this.account}:inference-profile/us.anthropic.*`,
           'arn:aws:bedrock:*::foundation-model/anthropic.*',
         ],
-      }),
-    );
+      });
+    chatFn.addToRolePolicy(bedrockInvokePolicy());
+
+    // Admin CV agent: proposes CV/projects edits but never writes — the only
+    // write path stays the Cognito-protected PUT endpoints, so this function
+    // gets read grants only.
+    const agentFn = new lambdaNode.NodejsFunction(this, 'AgentFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'agent.ts'),
+      ...lambdaDefaults,
+      timeout: cdk.Duration.seconds(25),
+      memorySize: 256,
+      environment: {
+        ...lambdaDefaults.environment,
+        BEDROCK_REGION,
+        AGENT_MODEL_ID,
+      },
+    });
+    cvTable.grantReadData(agentFn);
+    agentFn.addToRolePolicy(bedrockInvokePolicy());
 
     // REST API (v1) rather than HTTP API (v2): only REST APIs support usage
     // plans, which enforce the monthly request quota at the gateway.
@@ -206,6 +231,14 @@ export class PortfolioApiStack extends cdk.Stack {
     const chatResource = api.root.addResource('chat');
     chatResource.addMethod('POST', new apigateway.LambdaIntegration(chatFn), {
       apiKeyRequired: true,
+    });
+
+    // Admin-only agent: Cognito is the gate; no API key so agent traffic never
+    // draws down either usage-plan quota.
+    const agentResource = api.root.addResource('agent');
+    agentResource.addMethod('POST', new apigateway.LambdaIntegration(agentFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
     const apiKey = api.addApiKey('CvApiKey');
