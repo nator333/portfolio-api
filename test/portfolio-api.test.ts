@@ -30,11 +30,11 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('cv, projects, chat, agent, and pre-signup Lambda functions created', () => {
+test('cv, projects, blog, chat, agent, and pre-signup Lambda functions created', () => {
   const template = synthStack();
 
-  // get-cv, update-cv, get-projects, update-projects, chat, agent, pre-signup
-  template.resourceCountIs('AWS::Lambda::Function', 7);
+  // get-cv, update-cv, get-projects, update-projects, get-blog, update-blog, chat, agent, pre-signup
+  template.resourceCountIs('AWS::Lambda::Function', 9);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -73,20 +73,20 @@ test('REST API exposes GET /cv (key only) and PUT /cv (key + Cognito auth)', () 
   });
 });
 
-test('REST API exposes GET and PUT for both /cv and /projects', () => {
+test('REST API exposes GET and PUT for /cv, /projects, and /blog', () => {
   const template = synthStack();
 
-  for (const pathPart of ['cv', 'projects']) {
+  for (const pathPart of ['cv', 'projects', 'blog']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Two public GETs (key only) and two Cognito-guarded PUTs across the two resources.
+  // Three public GETs (key only) and three Cognito-guarded PUTs across the resources.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(2);
-  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(2);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(3);
+  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(3);
 });
 
 test('usage plan caps total requests at 100 per month', () => {

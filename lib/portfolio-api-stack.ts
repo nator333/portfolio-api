@@ -144,6 +144,18 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantWriteData(updateProjectsFn);
 
+    const getBlogFn = new lambdaNode.NodejsFunction(this, 'GetBlogFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-blog.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantReadData(getBlogFn);
+
+    const updateBlogFn = new lambdaNode.NodejsFunction(this, 'UpdateBlogFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'update-blog.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantWriteData(updateBlogFn);
+
     // Public visitor Q&A: read-only by IAM design — this function never gets a
     // write grant, so no prompt injection can mutate the table.
     const chatFn = new lambdaNode.NodejsFunction(this, 'ChatFunction', {
@@ -219,6 +231,16 @@ export class PortfolioApiStack extends cdk.Stack {
       apiKeyRequired: true,
     });
     projectsResource.addMethod('PUT', new apigateway.LambdaIntegration(updateProjectsFn), {
+      apiKeyRequired: true,
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    const blogResource = api.root.addResource('blog');
+    blogResource.addMethod('GET', new apigateway.LambdaIntegration(getBlogFn), {
+      apiKeyRequired: true,
+    });
+    blogResource.addMethod('PUT', new apigateway.LambdaIntegration(updateBlogFn), {
       apiKeyRequired: true,
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
