@@ -23,10 +23,10 @@ const allowedOrigins =
     ? ['https://nakamata.tech', 'https://nator333.github.io']
     : ['http://localhost:4200', 'http://localhost:3000'];
 
-// Exact URLs Cognito may redirect back to after Google sign-in (one per admin
-// editor page). GitHub Pages serves the app under a repo path, so these are
-// full URLs, not origins.
-const authCallbackPaths = ['/cv-editor', '/projects-edit', '/cv-agent'];
+// Exact URLs Cognito may redirect back to after Google sign-in: the app's
+// /login page, the single sign-in entry point. GitHub Pages serves the app
+// under a repo path, so these are full URLs, not origins.
+const authCallbackPaths = ['/login'];
 const authCallbackBases =
   stage === 'prod'
     ? ['https://nakamata.tech', 'https://nator333.github.io/portfolio-front']
