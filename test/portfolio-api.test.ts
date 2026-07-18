@@ -6,7 +6,7 @@ function synthStack(stage = 'test') {
   const app = new cdk.App();
   const stack = new PortfolioApiStack(app, 'MyTestStack', {
     stage,
-    authCallbackUrls: ['http://localhost:4200/cv-editor'],
+    authCallbackUrls: ['http://localhost:4200/login'],
     adminEmails: ['admin@example.com'],
   });
   return Template.fromStack(stack);
@@ -50,7 +50,7 @@ test('Google is the only sign-in provider, via hosted domain with code + PKCE fl
   template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
     SupportedIdentityProviders: ['Google'],
     AllowedOAuthFlows: ['code'],
-    CallbackURLs: ['http://localhost:4200/cv-editor'],
+    CallbackURLs: ['http://localhost:4200/login'],
   });
 });
 
