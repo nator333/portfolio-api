@@ -8,8 +8,10 @@ export const HOME_TABLE_ITEM_ID = 'home';
 export const MAX_MOTTO_COUNT = 4;
 export const MAX_MOTTO_LENGTH = 40;
 
+// An empty list is a deliberate "no mottoes" choice, distinct from the item
+// never having been saved (which GET reports as mottoes: null).
 export const homeDataSchema = z.object({
-  mottoes: z.array(z.string().min(1).max(MAX_MOTTO_LENGTH)).min(1).max(MAX_MOTTO_COUNT),
+  mottoes: z.array(z.string().min(1).max(MAX_MOTTO_LENGTH)).max(MAX_MOTTO_COUNT),
 });
 
 export type HomeData = z.infer<typeof homeDataSchema>;

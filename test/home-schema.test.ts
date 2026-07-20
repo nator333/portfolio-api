@@ -10,8 +10,8 @@ test('accepts the maximum number of mottoes', () => {
   expect(homeDataSchema.safeParse(data).success).toBe(true);
 });
 
-test('rejects an empty motto list', () => {
-  expect(homeDataSchema.safeParse({ mottoes: [] }).success).toBe(false);
+test('accepts an empty motto list as a deliberate clear', () => {
+  expect(homeDataSchema.safeParse({ mottoes: [] }).success).toBe(true);
 });
 
 test('rejects more mottoes than the layout supports', () => {

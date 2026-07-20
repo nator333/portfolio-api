@@ -20,9 +20,10 @@ export const handler = async (
     new GetCommand({ TableName: tableName, Key: { id: HOME_TABLE_ITEM_ID } }),
   );
 
-  // Empty rather than 404 when unset; the front falls back to its bundled mottoes.
+  // null rather than 404 when unset, so the front can fall back to its bundled
+  // mottoes — distinct from a saved empty list, which means "show none".
   if (!result.Item) {
-    return { statusCode: 200, headers, body: JSON.stringify({ mottoes: [] }) };
+    return { statusCode: 200, headers, body: JSON.stringify({ mottoes: null }) };
   }
 
   const { id, ...homeData } = result.Item;
