@@ -30,11 +30,11 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('cv, projects, blog, chat, agent, and pre-signup Lambda functions created', () => {
+test('cv, projects, blog, home, chat, agent, and pre-signup Lambda functions created', () => {
   const template = synthStack();
 
-  // get-cv, update-cv, get-projects, update-projects, get-blog, update-blog, chat, agent, pre-signup
-  template.resourceCountIs('AWS::Lambda::Function', 9);
+  // get/update pairs for cv, projects, blog, home, plus chat, agent, pre-signup
+  template.resourceCountIs('AWS::Lambda::Function', 11);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -73,27 +73,27 @@ test('REST API exposes GET /cv (key only) and PUT /cv (key + Cognito auth)', () 
   });
 });
 
-test('REST API exposes GET and PUT for /cv, /projects, and /blog', () => {
+test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => {
   const template = synthStack();
 
-  for (const pathPart of ['cv', 'projects', 'blog']) {
+  for (const pathPart of ['cv', 'projects', 'blog', 'home']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Three public GETs (key only) and three Cognito-guarded PUTs across the resources.
+  // Four public GETs (key only) and four Cognito-guarded PUTs across the resources.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(3);
-  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(3);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(4);
+  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(4);
 });
 
-test('usage plan caps total requests at 100 per month', () => {
+test('usage plan caps total requests at 300 per month', () => {
   const template = synthStack();
 
   template.hasResourceProperties('AWS::ApiGateway::UsagePlan', {
-    Quota: { Limit: 100, Period: 'MONTH' },
+    Quota: { Limit: 300, Period: 'MONTH' },
     Throttle: { RateLimit: 2, BurstLimit: 5 },
   });
 });

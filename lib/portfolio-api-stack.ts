@@ -10,8 +10,12 @@ import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as path from 'path';
 
-/** Hard monthly cap on total API calls, enforced at the gateway by the usage plan. */
-const MONTHLY_REQUEST_QUOTA = 100;
+/**
+ * Hard monthly cap on total API calls, enforced at the gateway by the usage plan.
+ * Raised from 100 when the home hero went API-backed: the landing page now
+ * draws a read per visitor cache-window, on top of cv/projects/blog reads.
+ */
+const MONTHLY_REQUEST_QUOTA = 300;
 
 /**
  * Hard monthly cap on public chat calls. Together with the request-shape
@@ -156,6 +160,18 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantWriteData(updateBlogFn);
 
+    const getHomeFn = new lambdaNode.NodejsFunction(this, 'GetHomeFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-home.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantReadData(getHomeFn);
+
+    const updateHomeFn = new lambdaNode.NodejsFunction(this, 'UpdateHomeFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'update-home.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantWriteData(updateHomeFn);
+
     // Public visitor Q&A: read-only by IAM design — this function never gets a
     // write grant, so no prompt injection can mutate the table.
     const chatFn = new lambdaNode.NodejsFunction(this, 'ChatFunction', {
@@ -241,6 +257,16 @@ export class PortfolioApiStack extends cdk.Stack {
       apiKeyRequired: true,
     });
     blogResource.addMethod('PUT', new apigateway.LambdaIntegration(updateBlogFn), {
+      apiKeyRequired: true,
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    const homeResource = api.root.addResource('home');
+    homeResource.addMethod('GET', new apigateway.LambdaIntegration(getHomeFn), {
+      apiKeyRequired: true,
+    });
+    homeResource.addMethod('PUT', new apigateway.LambdaIntegration(updateHomeFn), {
       apiKeyRequired: true,
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
