@@ -28,56 +28,79 @@ describe('gitHubEventsToEntries', () => {
     ...over,
   });
 
-  test('names the branch on a push, since the payload carries no commit count', () => {
-    // The real public-events payload is only {repository_id, push_id, ref,
-    // head, before} — reading a documented-but-absent `size` printed "0 commits".
+  test('rolls a day of events on one repo into a single entry', () => {
+    // The raw stream is per action: one busy day produced 114 near-identical
+    // feed lines and 114 calendar contributions, drowning every other day.
+    const entries = gitHubEventsToEntries([
+      event({ type: 'PushEvent' }),
+      event({ type: 'PushEvent' }),
+      event({ type: 'PushEvent' }),
+      event({ type: 'PullRequestEvent', payload: { action: 'merged' } }),
+      event({ type: 'PullRequestEvent', payload: { action: 'opened' } }),
+    ]);
+    expect(entries).toEqual([
+      {
+        date: '2026-07-24',
+        type: 'github',
+        title: 'octo/repo: 3 pushes, 1 PR merged, 1 PR opened',
+        url: 'https://github.com/octo/repo',
+      },
+    ]);
+  });
+
+  test('pluralises push as pushes and singularises a lone one', () => {
+    const [one] = gitHubEventsToEntries([event({ type: 'PushEvent' })]);
+    expect(one.title).toBe('octo/repo: 1 push');
+    const [many] = gitHubEventsToEntries([
+      event({ type: 'PushEvent' }),
+      event({ type: 'PushEvent' }),
+    ]);
+    expect(many.title).toBe('octo/repo: 2 pushes');
+  });
+
+  test('keeps repositories separate within a day, busiest first', () => {
+    const entries = gitHubEventsToEntries([
+      event({ type: 'PushEvent', repo: { name: 'octo/quiet' } }),
+      event({ type: 'PushEvent', repo: { name: 'octo/busy' } }),
+      event({ type: 'PushEvent', repo: { name: 'octo/busy' } }),
+    ]);
+    expect(entries.map((e) => e.title)).toEqual([
+      'octo/busy: 2 pushes',
+      'octo/quiet: 1 push',
+    ]);
+  });
+
+  test('separates the same repo on different days', () => {
+    const entries = gitHubEventsToEntries([
+      event({ type: 'PushEvent', created_at: '2026-07-24T10:00:00Z' }),
+      event({ type: 'PushEvent', created_at: '2026-07-23T10:00:00Z' }),
+    ]);
+    expect(entries.map((e) => e.date)).toEqual(['2026-07-24', '2026-07-23']);
+  });
+
+  test('distinguishes merged, opened and closed pull requests', () => {
     const [entry] = gitHubEventsToEntries([
-      event({ type: 'PushEvent', payload: { ref: 'refs/heads/master' } }),
+      event({ type: 'PullRequestEvent', payload: { action: 'merged' } }),
+      event({ type: 'PullRequestEvent', payload: { action: 'opened' } }),
+      event({ type: 'PullRequestEvent', payload: { action: 'closed' } }),
     ]);
-    expect(entry).toEqual({
-      date: '2026-07-24',
-      type: 'github',
-      title: 'Pushed to master in octo/repo',
-      url: 'https://github.com/octo/repo',
-    });
+    expect(entry.title).toBe('octo/repo: 1 PR merged, 1 PR opened, 1 PR closed');
   });
 
-  test('mentions a commit count only when the API supplies one', () => {
+  test('counts unrecognised events without inventing a category', () => {
+    // Branch churn and review comments are noise at this granularity, but a day
+    // made only of them should still register.
     const [entry] = gitHubEventsToEntries([
-      event({ type: 'PushEvent', payload: { ref: 'refs/heads/main', size: 1 } }),
+      event({ type: 'CreateEvent' }),
+      event({ type: 'DeleteEvent' }),
     ]);
-    expect(entry.title).toBe('Pushed 1 commit to main in octo/repo');
-  });
-
-  test('uses the pull request’s own action as the verb', () => {
-    // GitHub reports `merged` as well as `opened`/`closed`; treating anything
-    // not-closed as "Opened" reported the same PR as opened twice.
-    const [opened, merged, closed] = gitHubEventsToEntries([
-      event({ type: 'PullRequestEvent', payload: { action: 'opened', number: 21 } }),
-      event({ type: 'PullRequestEvent', payload: { action: 'merged', number: 21 } }),
-      event({ type: 'PullRequestEvent', payload: { action: 'closed', number: 21 } }),
-    ]);
-    expect(opened.title).toBe('Opened PR #21 in octo/repo');
-    expect(merged.title).toBe('Merged PR #21 in octo/repo');
-    expect(closed.title).toBe('Closed PR #21 in octo/repo');
-  });
-
-  test('names the branch created or deleted', () => {
-    const [created, deleted] = gitHubEventsToEntries([
-      event({ type: 'CreateEvent', payload: { ref_type: 'branch', ref: 'feature/x' } }),
-      event({ type: 'DeleteEvent', payload: { ref_type: 'branch', ref: 'feature/x' } }),
-    ]);
-    expect(created.title).toBe('Created branch feature/x in octo/repo');
-    expect(deleted.title).toBe('Deleted branch feature/x in octo/repo');
-  });
-
-  test('degrades unknown event types instead of failing', () => {
-    const [entry] = gitHubEventsToEntries([event({ type: 'SomeFutureEvent' })]);
-    expect(entry.title).toBe('Activity in octo/repo');
+    expect(entry.title).toBe('octo/repo: 2 updates');
   });
 
   test('skips events with no usable date', () => {
-    expect(gitHubEventsToEntries([event({ type: 'PushEvent', created_at: undefined })])).toEqual([]);
+    expect(
+      gitHubEventsToEntries([event({ type: 'PushEvent', created_at: undefined })]),
+    ).toEqual([]);
   });
 });
 
@@ -119,7 +142,7 @@ describe('blogPostsToEntries', () => {
 
 describe('mergeActivity', () => {
   const github = gitHubEventsToEntries([
-    { type: 'PushEvent', created_at: '2026-07-20T10:00:00Z', repo: { name: 'o/r' }, payload: { size: 1 } },
+    { type: 'PushEvent', created_at: '2026-07-20T10:00:00Z', repo: { name: 'o/r' } },
   ]);
   const gym = workoutDaysToEntries([{ sk: '2026-07-23', sets: 14, muscles: { Legs: 14 } }]);
   const blog = blogPostsToEntries([{ title: 'Post', date: '2026-07-01', url: '/blog/post' }]);
