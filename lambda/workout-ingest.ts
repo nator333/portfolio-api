@@ -15,7 +15,7 @@ import {
 } from './workout-schema';
 
 /**
- * Ingests a workout-history CSV emailed to workout@nakamata.tech.
+ * Ingests a workout-history CSV emailed to the configured workout address.
  *
  * SES email-receiving drops the raw MIME message into S3; this function triggers
  * off that PUT, extracts the CSV attachment, normalizes every set, recomputes

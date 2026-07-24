@@ -9,11 +9,7 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import { S3EventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as path from 'path';
-import {
-  WORKOUT_RECIPIENT,
-  workoutSetsTableName,
-  workoutSummaryTableName,
-} from '../lambda/workout-schema';
+import { workoutSetsTableName, workoutSummaryTableName } from '../lambda/workout-schema';
 
 /** Prefix SES writes inbound mail under, so the bucket stays tidy and the event filter is scoped. */
 const INBOX_PREFIX = 'inbox/';
@@ -23,18 +19,25 @@ export interface WorkoutIngestStackProps extends cdk.StackProps {
   readonly stage: string;
   /**
    * Name of the *existing, active* SES receipt-rule-set this stack appends its
-   * workout rule to. nakamata.tech's inbound mail is owned by kotlin-ses-forward,
-   * whose rule set is `kotlin-ses-forward-rule-set-<stage>`. Passed as context so
-   * the value (which that public repo deliberately masks) is not committed here.
+   * workout rule to. The site domain's inbound mail is owned by
+   * kotlin-ses-forward, whose rule set is named after that service. Passed as
+   * context so the value (which that public repo deliberately masks) is not
+   * committed here.
    */
   readonly ruleSetName: string;
   /** The owner's address: the only accepted sender, and where reports are sent. */
   readonly adminEmail: string;
+  /**
+   * Address the CSV is emailed to, e.g. workout@example.com. Built from
+   * deploy-time context rather than committed, so the domain stays out of this
+   * public repo. Also the verified SES sender for the report email.
+   */
+  readonly recipient: string;
 }
 
 /**
  * us-west-2 stack for the workout CSV pipeline. It must live in us-west-2 because
- * SES email-receiving for nakamata.tech (and thus the S3 drop) is only active
+ * SES email-receiving for the site domain (and thus the S3 drop) is only active
  * there; the public read API stays in us-west-1 and reads the summary table
  * cross-region. See lib/portfolio-api-stack.ts and bin/portfolio-api.ts.
  */
@@ -94,7 +97,7 @@ export class WorkoutIngestStack extends cdk.Stack {
         WORKOUT_SETS_TABLE_NAME: setsTable.tableName,
         WORKOUT_SUMMARY_TABLE_NAME: summaryTable.tableName,
         ADMIN_EMAIL: props.adminEmail,
-        MAIL_FROM: WORKOUT_RECIPIENT,
+        MAIL_FROM: props.recipient,
       },
     });
 
@@ -129,7 +132,7 @@ export class WorkoutIngestStack extends cdk.Stack {
     new ses.ReceiptRule(this, 'WorkoutReceiptRule', {
       ruleSet,
       receiptRuleName: `workout-import-${props.stage}`,
-      recipients: [WORKOUT_RECIPIENT],
+      recipients: [props.recipient],
       enabled: true,
       scanEnabled: true,
       actions: [new sesActions.S3({ bucket: mailBucket, objectKeyPrefix: INBOX_PREFIX })],

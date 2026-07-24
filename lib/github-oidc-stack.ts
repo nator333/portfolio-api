@@ -28,7 +28,7 @@ interface DeployRoleSpec {
 }
 
 export interface GithubOidcStackProps extends cdk.StackProps {
-  /** GitHub organization or user that owns every repo below, e.g. "nator333". */
+  /** GitHub organization or user that owns every repo below, supplied at synth time. */
   readonly githubOrg: string;
   /** CDK bootstrap qualifier, only needed if you bootstrapped with a custom --qualifier. */
   readonly cdkQualifier?: string;

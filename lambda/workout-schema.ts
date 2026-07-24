@@ -8,14 +8,17 @@ import { muscleFor, MUSCLE_GROUPS, type MuscleGroup } from './workout-muscles';
  * query Lambdas — and the unit tests — can depend on it without pulling in I/O.
  */
 
-/** Local-part + domain the CSV is emailed to; the SES receipt rule matches it. */
-export const WORKOUT_RECIPIENT = 'workout@nakamata.tech';
+/** Local-part of the address the CSV is emailed to; the domain is deploy config. */
+export const WORKOUT_LOCAL_PART = 'workout';
+
+/** Address the SES receipt rule matches, e.g. workout@example.com. */
+export const workoutRecipient = (domain: string): string => `${WORKOUT_LOCAL_PART}@${domain}`;
 
 /**
- * Region the workout tables and ingest pipeline live in — us-west-2, because
- * nakamata.tech's SES email-receiving (and therefore the S3 drop the ingest
- * Lambda triggers off) is only active there. The main API in us-west-1 reads the
- * summary table cross-region.
+ * Region the workout tables and ingest pipeline live in — us-west-2, because the
+ * site domain's SES email-receiving (and therefore the S3 drop the ingest Lambda
+ * triggers off) is only active there. The main API in us-west-1 reads the summary
+ * table cross-region.
  */
 export const WORKOUT_REGION = 'us-west-2';
 

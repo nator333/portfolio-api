@@ -7,8 +7,9 @@ function synthStack(stage = 'test') {
   const stack = new WorkoutIngestStack(app, 'WorkoutTestStack', {
     env: { account: '123456789012', region: 'us-west-2' },
     stage,
-    ruleSetName: 'kotlin-ses-forward-rule-set-test',
+    ruleSetName: 'ksf-rule-set-test',
     adminEmail: 'admin@example.com',
+    recipient: 'workout@example.com',
   });
   return Template.fromStack(stack);
 }
@@ -66,13 +67,13 @@ test('creates an S3 mail bucket that SES may write to', () => {
   });
 });
 
-test('appends a receipt rule matching workout@nakamata.tech to the existing rule set', () => {
+test('appends a receipt rule matching the configured address to the existing rule set', () => {
   const template = synthStack();
 
   template.hasResourceProperties('AWS::SES::ReceiptRule', {
-    RuleSetName: 'kotlin-ses-forward-rule-set-test',
+    RuleSetName: 'ksf-rule-set-test',
     Rule: Match.objectLike({
-      Recipients: ['workout@nakamata.tech'],
+      Recipients: ['workout@example.com'],
       Enabled: true,
       ScanEnabled: true,
       Actions: [Match.objectLike({ S3Action: Match.objectLike({ ObjectKeyPrefix: 'inbox/' }) })],

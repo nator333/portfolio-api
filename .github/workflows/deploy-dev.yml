@@ -35,15 +35,29 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN_DEV }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      # The admin email and site domain come from secrets, not variables: this
+      # repo is public, so variable values would appear verbatim in these logs,
+      # whereas secret values are masked.
       - name: Deploy dev stack
-        run: npx cdk deploy PortfolioApiStack-dev --context stage=dev --require-approval never
+        run: >-
+          npx cdk deploy PortfolioApiStack-dev --context stage=dev
+          --context adminEmail="$ADMIN_EMAIL"
+          --require-approval never
+        env:
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
 
       # Workout ingestion lives in us-west-2 and attaches to kotlin-ses-forward's
-      # SES rule set. Only runs once WORKOUT_RULE_SET_NAME is set as an Actions
-      # variable, so the pipeline is safe to merge before that infra exists.
+      # SES rule set. Only runs once WORKOUT_RULE_SET_NAME is set, so the pipeline
+      # is safe to merge before that infra exists.
       - name: Deploy workout ingest stack
-        if: ${{ vars.WORKOUT_RULE_SET_NAME != '' }}
+        if: ${{ secrets.WORKOUT_RULE_SET_NAME != '' }}
         run: >-
           npx cdk deploy WorkoutIngestStack-dev --context stage=dev
-          --context workoutRuleSetName=${{ vars.WORKOUT_RULE_SET_NAME }}
+          --context adminEmail="$ADMIN_EMAIL"
+          --context siteDomain="$SITE_DOMAIN"
+          --context workoutRuleSetName="$WORKOUT_RULE_SET_NAME"
           --require-approval never
+        env:
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
+          WORKOUT_RULE_SET_NAME: ${{ secrets.WORKOUT_RULE_SET_NAME }}
