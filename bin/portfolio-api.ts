@@ -89,7 +89,7 @@ if (workoutRuleSetName) {
     stage,
     ruleSetName: workoutRuleSetName,
     adminEmail,
-    recipient: workoutRecipient(requireContext('siteDomain')),
+    recipient: workoutRecipient(requireContext('siteDomain'), stage),
   });
 }
 

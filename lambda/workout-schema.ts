@@ -11,8 +11,20 @@ import { muscleFor, MUSCLE_GROUPS, type MuscleGroup } from './workout-muscles';
 /** Local-part of the address the CSV is emailed to; the domain is deploy config. */
 export const WORKOUT_LOCAL_PART = 'workout';
 
-/** Address the SES receipt rule matches, e.g. workout@example.com. */
-export const workoutRecipient = (domain: string): string => `${WORKOUT_LOCAL_PART}@${domain}`;
+/**
+ * Address the SES receipt rule matches, e.g. workout@example.com for prod and
+ * workout-dev@example.com for dev.
+ *
+ * Every stage appends its own rule to the one shared receipt-rule-set, and SES
+ * runs the actions of *every* rule whose recipient matches — no StopAction is
+ * set. Sharing a single address across stages would therefore ingest each email
+ * into all of them and send one report per stage, so only prod takes the bare
+ * local part and other stages get a suffixed address of their own.
+ */
+export const workoutRecipient = (domain: string, stage: string): string => {
+  const localPart = stage === 'prod' ? WORKOUT_LOCAL_PART : `${WORKOUT_LOCAL_PART}-${stage}`;
+  return `${localPart}@${domain}`;
+};
 
 /**
  * Region the workout tables and ingest pipeline live in — us-west-2, because the

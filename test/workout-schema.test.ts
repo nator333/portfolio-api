@@ -1,5 +1,23 @@
-import { parseWorkoutRows, summarize } from '../lambda/workout-schema';
+import { parseWorkoutRows, summarize, workoutRecipient } from '../lambda/workout-schema';
 import { muscleFor } from '../lambda/workout-muscles';
+
+describe('workoutRecipient', () => {
+  // Every stage adds a rule to the same shared SES rule set and SES runs all
+  // matching rules, so only prod may hold the bare address.
+  test('gives prod the bare address', () => {
+    expect(workoutRecipient('example.com', 'prod')).toBe('workout@example.com');
+  });
+
+  test('suffixes non-prod stages so they never match the prod address', () => {
+    expect(workoutRecipient('example.com', 'dev')).toBe('workout-dev@example.com');
+    expect(workoutRecipient('example.com', 'test')).toBe('workout-test@example.com');
+  });
+
+  test('no two stages share a recipient', () => {
+    const addresses = ['prod', 'dev', 'test'].map((s) => workoutRecipient('example.com', s));
+    expect(new Set(addresses).size).toBe(addresses.length);
+  });
+});
 
 // Mirrors the Fitness Point export header: Date,Exercise Name,Set,Weight/Distance,Reps/Time,Notes
 const row = (
