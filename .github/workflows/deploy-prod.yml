@@ -26,6 +26,9 @@ jobs:
       SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
       PAGES_ORIGIN: ${{ secrets.PAGES_ORIGIN }}
       WORKOUT_RULE_SET_NAME: ${{ secrets.WORKOUT_RULE_SET_NAME }}
+      # GH_USER, not GITHUB_USER: GitHub reserves the GITHUB_ prefix for
+      # secret names and refuses to create one using it.
+      GH_USER: ${{ secrets.GH_USER }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +49,7 @@ jobs:
       - name: Deploy production stack
         run: >-
           npx cdk deploy PortfolioApiStack-prod --context stage=prod
+          --context githubUser="$GH_USER"
           --context adminEmail="$ADMIN_EMAIL"
           --context siteDomain="$SITE_DOMAIN"
           --context pagesOrigin="$PAGES_ORIGIN"
@@ -63,6 +67,7 @@ jobs:
         if: env.WORKOUT_RULE_SET_NAME != ''
         run: >-
           npx cdk deploy WorkoutIngestStack-prod --context stage=prod
+          --context githubUser="$GH_USER"
           --context adminEmail="$ADMIN_EMAIL"
           --context siteDomain="$SITE_DOMAIN"
           --context pagesOrigin="$PAGES_ORIGIN"
