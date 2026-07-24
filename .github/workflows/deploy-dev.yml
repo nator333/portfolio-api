@@ -18,6 +18,14 @@ jobs:
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     environment: development
+    # The admin email and site domain are secrets rather than variables: this repo
+    # is public, so a variable would be expanded verbatim into these logs, while
+    # secret values are masked. They are hoisted to the job here because the
+    # `secrets` context is not available in step `if:` conditions — only `env` is.
+    env:
+      ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+      SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
+      WORKOUT_RULE_SET_NAME: ${{ secrets.WORKOUT_RULE_SET_NAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,4 +44,19 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Deploy dev stack
-        run: npx cdk deploy PortfolioApiStack-dev --context stage=dev --require-approval never
+        run: >-
+          npx cdk deploy PortfolioApiStack-dev --context stage=dev
+          --context adminEmail="$ADMIN_EMAIL"
+          --require-approval never
+
+      # Workout ingestion lives in us-west-2 and attaches to kotlin-ses-forward's
+      # SES rule set. Only runs once WORKOUT_RULE_SET_NAME is set, so the pipeline
+      # is safe to merge before that infra exists.
+      - name: Deploy workout ingest stack
+        if: env.WORKOUT_RULE_SET_NAME != ''
+        run: >-
+          npx cdk deploy WorkoutIngestStack-dev --context stage=dev
+          --context adminEmail="$ADMIN_EMAIL"
+          --context siteDomain="$SITE_DOMAIN"
+          --context workoutRuleSetName="$WORKOUT_RULE_SET_NAME"
+          --require-approval never

@@ -28,7 +28,7 @@ interface DeployRoleSpec {
 }
 
 export interface GithubOidcStackProps extends cdk.StackProps {
-  /** GitHub organization or user that owns every repo below, e.g. "nator333". */
+  /** GitHub organization or user that owns every repo below, supplied at synth time. */
   readonly githubOrg: string;
   /** CDK bootstrap qualifier, only needed if you bootstrapped with a custom --qualifier. */
   readonly cdkQualifier?: string;
@@ -230,20 +230,25 @@ export class GithubOidcStack extends cdk.Stack {
    */
   private portfolioApiRoles(qualifier: string): DeployRoleSpec[] {
     const repo = 'portfolio-api';
-    const bootstrapRole = (roleType: string) =>
-      `arn:${this.partition}:iam::${this.account}:role/cdk-${qualifier}-${roleType}-role-${this.account}-${this.region}`;
+    // The bootstrap roles are per-region. The app stack lives in this stack's
+    // region (us-west-1); WorkoutIngestStack lives in us-west-2, so CI must be
+    // able to assume the us-west-2 bootstrap roles too. Both regions therefore
+    // need `cdk bootstrap` run once.
+    const bootstrapRegions = [this.region, 'us-west-2'];
+    const bootstrapRole = (roleType: string, region: string) =>
+      `arn:${this.partition}:iam::${this.account}:role/cdk-${qualifier}-${roleType}-role-${this.account}-${region}`;
+    const bootstrapRoles = bootstrapRegions.flatMap((region) =>
+      ['deploy', 'file-publishing', 'image-publishing', 'lookup'].map((roleType) =>
+        bootstrapRole(roleType, region),
+      ),
+    );
 
     const policy = new iam.PolicyDocument({
       statements: [
         new iam.PolicyStatement({
           sid: 'AssumeCdkBootstrapRoles',
           actions: ['sts:AssumeRole'],
-          resources: [
-            bootstrapRole('deploy'),
-            bootstrapRole('file-publishing'),
-            bootstrapRole('image-publishing'),
-            bootstrapRole('lookup'),
-          ],
+          resources: bootstrapRoles,
         }),
       ],
     });

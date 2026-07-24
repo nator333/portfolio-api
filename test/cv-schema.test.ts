@@ -24,7 +24,7 @@ test('accepts valid URLs in link fields', () => {
     ...baseCv,
     personalInfo: {
       ...baseCv.personalInfo,
-      links: { website: 'https://nakamata.tech', github: '', linkedin: '' },
+      links: { website: 'https://example.com', github: '', linkedin: '' },
     },
   };
   expect(cvDataSchema.safeParse(cv).success).toBe(true);

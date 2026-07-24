@@ -16,6 +16,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    # The admin email and public hostnames are secrets rather than variables:
+    # this repo is public, so a variable would be expanded verbatim into these
+    # logs, while secret values are masked. They are hoisted to the job here
+    # because the `secrets` context is not available in step `if:` conditions —
+    # only `env` is.
+    env:
+      ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+      SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
+      PAGES_ORIGIN: ${{ secrets.PAGES_ORIGIN }}
+      WORKOUT_RULE_SET_NAME: ${{ secrets.WORKOUT_RULE_SET_NAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,4 +44,21 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Deploy production stack
-        run: npx cdk deploy PortfolioApiStack-prod --context stage=prod --require-approval never
+        run: >-
+          npx cdk deploy PortfolioApiStack-prod --context stage=prod
+          --context adminEmail="$ADMIN_EMAIL"
+          --context siteDomain="$SITE_DOMAIN"
+          --context pagesOrigin="$PAGES_ORIGIN"
+          --require-approval never
+
+      # Workout ingestion lives in us-west-2 and attaches to kotlin-ses-forward's
+      # SES rule set. Only runs once WORKOUT_RULE_SET_NAME is set, so the pipeline
+      # is safe to merge before that infra exists.
+      - name: Deploy workout ingest stack
+        if: env.WORKOUT_RULE_SET_NAME != ''
+        run: >-
+          npx cdk deploy WorkoutIngestStack-prod --context stage=prod
+          --context adminEmail="$ADMIN_EMAIL"
+          --context siteDomain="$SITE_DOMAIN"
+          --context workoutRuleSetName="$WORKOUT_RULE_SET_NAME"
+          --require-approval never

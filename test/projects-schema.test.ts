@@ -6,7 +6,7 @@ const baseProject = {
   description: 'A personal portfolio.',
   image: 'assets/projects/portfolio.png',
   tags: ['Angular', 'AWS'],
-  liveUrl: 'https://nakamata.tech',
+  liveUrl: 'https://example.com',
   githubUrl: '',
 };
 
