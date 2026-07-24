@@ -260,6 +260,12 @@ export class PortfolioApiStack extends cdk.Stack {
     const getWorkoutFn = new lambdaNode.NodejsFunction(this, 'GetWorkoutFunction', {
       entry: path.join(__dirname, '..', 'lambda', 'get-workout.ts'),
       ...lambdaDefaults,
+      // Five paginated cross-region queries — including ~1,900 monthly e1RM
+      // items — overran the 3s/128MB default. More memory buys proportionally
+      // more CPU (faster marshalling), and the timeout leaves headroom for the
+      // cross-region round trips.
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
       environment: {
         ...lambdaDefaults.environment,
         WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
