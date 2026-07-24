@@ -98,9 +98,11 @@ export const handler = async (
       bestE1rmDate: e.bestE1rmDate,
     }));
 
+  // Ranked by sets rather than volume: volume ranking surfaces whichever machine
+  // has the heaviest stack, not what is actually trained most.
   const topExercises = exerciseItems
     .slice()
-    .sort((a, b) => (b.volume as number) - (a.volume as number))
+    .sort((a, b) => (b.sets as number) - (a.sets as number))
     .slice(0, TOP_EXERCISES)
     .map((e) => ({
       name: e.sk,

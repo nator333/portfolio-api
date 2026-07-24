@@ -306,7 +306,10 @@ function buildReport(input: ReportInput): Report {
   const newSets = priorTotalSets === null ? null : meta.totalSets - priorTotalSets;
 
   const thisMonth = summaries.months[summaries.months.length - 1];
-  const topExercises = summaries.exercises.slice(0, 5);
+  // Ranked by sets, matching what the section reports. Ranking by volume put the
+  // heavy-stack machines on top regardless of how much they were actually done —
+  // the same distortion that made lifetime volume worth demoting.
+  const topExercises = [...summaries.exercises].sort((a, b) => b.sets - a.sets).slice(0, 5);
 
   // On a first import every day is "new", so listing dates says nothing; and a
   // truncated tail must say so rather than reading as the complete list.

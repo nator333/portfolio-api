@@ -207,6 +207,19 @@ describe('summarize', () => {
     expect(summaries.meta.lastDate).toBe('2026-08-02');
   });
 
+  test('ranking by sets differs from ranking by volume', () => {
+    // A heavy machine can out-rank a much more frequently trained lift on
+    // volume alone, which is why the report ranks exercises by sets.
+    const { sets: mixed } = parseWorkoutRows([
+      ...Array.from({ length: 5 }, (_, i) => row('2026-07-20', 'ベンチプレス', i + 1, 100, 10)),
+      row('2026-07-20', 'アブダクター (Outer)', 1, 5000, 10),
+    ]);
+    const s = summarize(mixed);
+    expect(s.exercises[0].sk).toBe('アブダクター (Outer)'); // volume order
+    const bySets = [...s.exercises].sort((a, b) => b.sets - a.sets);
+    expect(bySets[0].sk).toBe('ベンチプレス');
+  });
+
   test('days are returned in ascending date order', () => {
     const order = summaries.days.map((d) => d.sk);
     expect(order).toEqual([...order].sort());
