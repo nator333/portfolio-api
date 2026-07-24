@@ -45,11 +45,12 @@ export const handler = async (
     from = isoDate(d);
   }
 
-  const [dayItems, muscleItems, exerciseItems, weekItems, metaItem] = await Promise.all([
+  const [dayItems, muscleItems, exerciseItems, weekItems, e1rmItems, metaItem] = await Promise.all([
     queryRange(tableName, SUMMARY_PK.day, from, to),
     queryAll(tableName, SUMMARY_PK.muscle),
     queryAll(tableName, SUMMARY_PK.exercise),
     queryAll(tableName, SUMMARY_PK.week),
+    queryAll(tableName, SUMMARY_PK.exerciseMonth),
     ddb.send(new GetCommand({ TableName: tableName, Key: { pk: SUMMARY_PK.meta, sk: META_SK } })),
   ]);
 
@@ -98,6 +99,27 @@ export const handler = async (
       bestE1rmDate: e.bestE1rmDate,
     }));
 
+  // Strength-over-time: the monthly estimated-1RM series per lift, for exactly
+  // the lifts surfaced above. Restricting to those keeps the payload bounded
+  // (all lifts' months would be ~1,900 points); the front charts the honest
+  // month-by-month best, so declines show rather than being smoothed away.
+  const liftNames = new Set(lifts.map((l) => l.name));
+  const seriesByLift = new Map<string, { month: string; e1rmKg: number }[]>();
+  for (const item of e1rmItems) {
+    const name = item.exercise as string;
+    if (!liftNames.has(name)) continue;
+    const e1rmKg = item.bestE1rmKg as number;
+    if (!(e1rmKg > 0)) continue;
+    const points = seriesByLift.get(name) ?? [];
+    points.push({ month: item.month as string, e1rmKg });
+    seriesByLift.set(name, points);
+  }
+  const strengthSeries = lifts.map((l) => ({
+    name: l.name,
+    muscle: l.muscle,
+    points: (seriesByLift.get(l.name as string) ?? []).sort((a, b) => a.month.localeCompare(b.month)),
+  }));
+
   // Ranked by sets rather than volume: volume ranking surfaces whichever machine
   // has the heaviest stack, not what is actually trained most.
   const topExercises = exerciseItems
@@ -126,6 +148,7 @@ export const handler = async (
       days,
       weeks,
       lifts,
+      strengthSeries,
       muscles,
       topExercises,
       totals,
