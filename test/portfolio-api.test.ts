@@ -90,13 +90,41 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(4);
 });
 
-test('usage plan caps total requests at 300 per month', () => {
+test('content usage plan caps requests per DAY, not per month', () => {
   const template = synthStack();
 
   template.hasResourceProperties('AWS::ApiGateway::UsagePlan', {
-    Quota: { Limit: 300, Period: 'MONTH' },
-    Throttle: { RateLimit: 2, BurstLimit: 5 },
+    Quota: { Limit: 350, Period: 'DAY' },
+    Throttle: { RateLimit: 10, BurstLimit: 20 },
   });
+});
+
+test('no content-facing plan uses a monthly quota', () => {
+  // The key is public in the SPA, so a monthly quota drained early leaves the
+  // site blank until the 1st. Only chat, which guards real Bedrock spend, may
+  // cap monthly.
+  const template = synthStack();
+
+  const monthly = Object.values(template.findResources('AWS::ApiGateway::UsagePlan')).filter(
+    (p) => p.Properties.Quota?.Period === 'MONTH',
+  );
+  expect(monthly).toHaveLength(1);
+  expect(monthly[0].Properties.Quota.Limit).toBe(500);
+});
+
+test('workout has its own key and daily plan so it cannot starve content', () => {
+  const template = synthStack();
+
+  template.resourceCountIs('AWS::ApiGateway::ApiKey', 3);
+  template.resourceCountIs('AWS::ApiGateway::UsagePlan', 3);
+
+  const daily = Object.values(template.findResources('AWS::ApiGateway::UsagePlan')).filter(
+    (p) => p.Properties.Quota?.Period === 'DAY',
+  );
+  expect(daily).toHaveLength(2);
+  for (const plan of daily) {
+    expect(plan.Properties.Quota.Limit).toBe(350);
+  }
 });
 
 test('POST /chat is public (key only, no Cognito)', () => {
@@ -155,8 +183,8 @@ test('agent Lambda can invoke Bedrock but cannot write to the table', () => {
 test('chat has its own API key and usage plan capped at 500 requests per month', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::ApiGateway::ApiKey', 2);
-  template.resourceCountIs('AWS::ApiGateway::UsagePlan', 2);
+  // Chat keeps a monthly cap: unlike the content plan it guards real spend
+  // (~$4 of Bedrock at the limit), and a monthly ceiling is what guarantees it.
   template.hasResourceProperties('AWS::ApiGateway::UsagePlan', {
     Quota: { Limit: 500, Period: 'MONTH' },
     Throttle: { RateLimit: 1, BurstLimit: 3 },
