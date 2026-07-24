@@ -120,6 +120,36 @@ export function parseWorkoutRows(records: readonly unknown[]): {
   return { sets, skipped };
 }
 
+/** A set plus the sort key it is stored under, within its date partition. */
+export type KeyedWorkoutSet = WorkoutSet & { readonly sk: string };
+
+/**
+ * Assigns each set its sort key within the day.
+ *
+ * A set number is *not* unique per exercise per day: the history contains a day
+ * that logs two different "Set 1" rows for the same exercise (130kg x10 and
+ * 140kg x5). Keying on `<exercise>#<set>` alone therefore collides, which
+ * DynamoDB rejects outright — BatchWriteItem refuses a request containing two
+ * items with the same key — so repeats take an occurrence suffix instead of
+ * silently overwriting each other.
+ *
+ * The first occurrence keeps the bare key, so the common case stays readable,
+ * and the weight is deliberately not part of the key: correcting a logged weight
+ * should overwrite that set rather than orphan the old value alongside it.
+ */
+export function assignSetKeys(sets: readonly WorkoutSet[]): KeyedWorkoutSet[] {
+  const seen = new Map<string, number>();
+  return sets.map((set) => {
+    const base = `${set.exercise}#${set.setNo}`;
+    // Scoped per date: the date is the partition key, so the same base key on a
+    // different day is not a collision.
+    const counterKey = `${set.date}|${base}`;
+    const occurrence = (seen.get(counterKey) ?? 0) + 1;
+    seen.set(counterKey, occurrence);
+    return { ...set, sk: occurrence === 1 ? base : `${base}#${occurrence}` };
+  });
+}
+
 export type MuscleTally = Partial<Record<MuscleGroup, number>>;
 
 export interface DaySummary {

@@ -7,6 +7,7 @@ import { simpleParser } from 'mailparser';
 import { parse as parseCsv } from 'csv-parse/sync';
 import {
   META_SK,
+  assignSetKeys,
   SUMMARY_PK,
   parseWorkoutRows,
   summarize,
@@ -189,9 +190,9 @@ async function loadPriorTotalSets(summaryTable: string): Promise<number | null> 
 }
 
 async function writeSets(setsTable: string, sets: readonly WorkoutSet[]): Promise<void> {
-  const items = sets.map((s) => ({
+  const items = assignSetKeys(sets).map((s) => ({
     date: s.date,
-    sk: `${s.exercise}#${s.setNo}`,
+    sk: s.sk,
     exercise: s.exercise,
     setNo: s.setNo,
     weight: s.weight,
@@ -200,7 +201,7 @@ async function writeSets(setsTable: string, sets: readonly WorkoutSet[]): Promis
     muscle: s.muscle,
     notes: s.notes,
   }));
-  await batchWrite(setsTable, items);
+  await batchWrite(setsTable, items, (item) => `${item.date}|${item.sk}`);
 }
 
 async function writeSummaries(
@@ -215,18 +216,34 @@ async function writeSummaries(
     ...summaries.muscles.map((m) => ({ pk: SUMMARY_PK.muscle, ...m })),
     { pk: SUMMARY_PK.meta, sk: META_SK, ...summaries.meta, lastImportAt: new Date().toISOString(), sourceFileName: filename },
   ];
-  await batchWrite(summaryTable, items);
+  await batchWrite(summaryTable, items, (item) => `${item.pk}|${item.sk}`);
 }
 
 /**
  * BatchWrites items in chunks of 25 with bounded concurrency, retrying any
  * UnprocessedItems with a short backoff. The full-history import can be ~16k
  * items, well past the 25-item per-request cap.
+ *
+ * `keyOf` identifies an item's primary key. BatchWriteItem rejects an entire
+ * request that contains two items with the same key, which once failed a whole
+ * import over a single duplicated row, so the last write for each key wins here
+ * rather than reaching DynamoDB as a fatal ValidationException.
  */
-async function batchWrite(table: string, items: readonly Record<string, unknown>[]): Promise<void> {
+async function batchWrite(
+  table: string,
+  items: readonly Record<string, unknown>[],
+  keyOf: (item: Record<string, unknown>) => string,
+): Promise<void> {
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const item of items) byKey.set(keyOf(item), item);
+  const deduped = [...byKey.values()];
+  if (deduped.length !== items.length) {
+    console.warn(`Collapsed ${items.length - deduped.length} duplicate key(s) writing to ${table}`);
+  }
+
   const chunks: Record<string, unknown>[][] = [];
-  for (let i = 0; i < items.length; i += DDB_BATCH_LIMIT) {
-    chunks.push(items.slice(i, i + DDB_BATCH_LIMIT));
+  for (let i = 0; i < deduped.length; i += DDB_BATCH_LIMIT) {
+    chunks.push(deduped.slice(i, i + DDB_BATCH_LIMIT));
   }
 
   const concurrency = 5;

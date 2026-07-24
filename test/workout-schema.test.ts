@@ -1,4 +1,4 @@
-import { parseWorkoutRows, summarize, workoutRecipient } from '../lambda/workout-schema';
+import { assignSetKeys, parseWorkoutRows, summarize, workoutRecipient } from '../lambda/workout-schema';
 import { muscleFor } from '../lambda/workout-muscles';
 
 describe('workoutRecipient', () => {
@@ -78,6 +78,45 @@ describe('parseWorkoutRows', () => {
     expect(sets[0].weight).toBe(55.25);
     expect(sets[0].volume).toBe(552.5);
     expect(sets[1].volume).toBe(0);
+  });
+});
+
+describe('assignSetKeys', () => {
+  test('uses the bare exercise#set key when there is no repeat', () => {
+    const { sets } = parseWorkoutRows([row('2026-07-24', 'ベンチプレス', 1, 100, 5)]);
+    expect(assignSetKeys(sets).map((s) => s.sk)).toEqual(['ベンチプレス#1']);
+  });
+
+  test('suffixes a repeated set number instead of colliding', () => {
+    // The real history logs two different "Set 1" rows for one exercise on
+    // 2024-05-02; both are distinct sets and must both survive the import.
+    const { sets } = parseWorkoutRows([
+      row('2024-05-02', 'ラットプルダウン', 1, 130, 10),
+      row('2024-05-02', 'ラットプルダウン', 1, 140, 5),
+    ]);
+    const keyed = assignSetKeys(sets);
+    expect(keyed.map((s) => s.sk)).toEqual(['ラットプルダウン#1', 'ラットプルダウン#1#2']);
+    expect(new Set(keyed.map((s) => s.sk)).size).toBe(2);
+  });
+
+  test('does not treat the same key on a different day as a repeat', () => {
+    const { sets } = parseWorkoutRows([
+      row('2026-07-20', 'ベンチプレス', 1, 100, 5),
+      row('2026-07-21', 'ベンチプレス', 1, 100, 5),
+    ]);
+    expect(assignSetKeys(sets).map((s) => s.sk)).toEqual(['ベンチプレス#1', 'ベンチプレス#1']);
+  });
+
+  test('produces keys unique per (date, sk) across a whole import', () => {
+    const { sets } = parseWorkoutRows([
+      row('2026-07-20', 'ベンチプレス', 1, 100, 5),
+      row('2026-07-20', 'ベンチプレス', 1, 110, 3),
+      row('2026-07-20', 'ベンチプレス', 2, 100, 5),
+      row('2026-07-21', 'ベンチプレス', 1, 100, 5),
+    ]);
+    const keyed = assignSetKeys(sets);
+    const composite = keyed.map((s) => `${s.date}|${s.sk}`);
+    expect(new Set(composite).size).toBe(composite.length);
   });
 });
 
