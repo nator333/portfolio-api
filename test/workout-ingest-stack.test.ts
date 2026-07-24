@@ -34,6 +34,22 @@ test('creates the raw-sets and summary tables with deterministic names', () => {
   });
 });
 
+test('retains tables in prod but destroys them elsewhere', () => {
+  // Non-prod must be destroyable: retained tables have fixed names, so a failed
+  // first deploy would otherwise orphan them and block every later retry with
+  // "already exists".
+  const dev = synthStack('dev');
+  for (const table of Object.values(dev.findResources('AWS::DynamoDB::Table'))) {
+    expect(table.DeletionPolicy).toBe('Delete');
+  }
+
+  const prod = synthStack('prod');
+  for (const table of Object.values(prod.findResources('AWS::DynamoDB::Table'))) {
+    expect(table.DeletionPolicy).toBe('Retain');
+  }
+  prod.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Retain' });
+});
+
 test('creates an S3 mail bucket that SES may write to', () => {
   const template = synthStack();
 

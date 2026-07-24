@@ -44,13 +44,24 @@ export class WorkoutIngestStack extends cdk.Stack {
 
     cdk.Tags.of(this).add('stage', props.stage);
 
+    // Retaining named resources is right for prod, but it turns any failed
+    // *first* deploy into a dead end: the tables survive the rollback, and the
+    // retry then fails with "already exists" because their names are fixed. The
+    // workout data is fully reconstructible by re-sending the CSV (every import
+    // recomputes from scratch), so outside prod these are disposable.
+    const isProd = props.stage === 'prod';
+    const removalPolicy = isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY;
+
     // Raw inbound MIME messages. Parsed data lives in DynamoDB, so the raw mail
     // is transient — expire it after 90 days to cap storage.
     const mailBucket = new s3.Bucket(this, 'WorkoutMailBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       lifecycleRules: [{ prefix: INBOX_PREFIX, expiration: cdk.Duration.days(90) }],
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy,
+      // A retained bucket cannot be emptied by CloudFormation; only ask for
+      // auto-delete where the bucket is destroyed anyway.
+      autoDeleteObjects: !isProd,
     });
 
     // Explicit, deterministic names so the us-west-1 query Lambda can reference
@@ -60,7 +71,7 @@ export class WorkoutIngestStack extends cdk.Stack {
       partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy,
     });
 
     const summaryTable = new dynamodb.Table(this, 'WorkoutSummaryTable', {
@@ -68,7 +79,7 @@ export class WorkoutIngestStack extends cdk.Stack {
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy,
     });
 
     const ingestFn = new lambdaNode.NodejsFunction(this, 'WorkoutIngestFunction', {
