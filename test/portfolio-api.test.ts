@@ -30,11 +30,11 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('cv, projects, blog, home, chat, agent, and pre-signup Lambda functions created', () => {
+test('cv, projects, blog, home, chat, agent, workout, and pre-signup Lambda functions created', () => {
   const template = synthStack();
 
-  // get/update pairs for cv, projects, blog, home, plus chat, agent, pre-signup
-  template.resourceCountIs('AWS::Lambda::Function', 11);
+  // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout, pre-signup
+  template.resourceCountIs('AWS::Lambda::Function', 12);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -79,13 +79,14 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   for (const pathPart of ['cv', 'projects', 'blog', 'home']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Four public GETs (key only) and four Cognito-guarded PUTs across the resources.
+  // Five public GETs (key only): cv, projects, blog, home, and workout; and four
+  // Cognito-guarded PUTs across the content resources.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(4);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(5);
   expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(4);
 });
 
@@ -175,6 +176,36 @@ test('chat Lambda may invoke Bedrock models but only read the table', () => {
       ]),
     },
   });
+});
+
+test('GET /workout is public (key only, no Cognito)', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'workout' });
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'GET',
+    ApiKeyRequired: true,
+    AuthorizationType: 'NONE',
+  });
+});
+
+test('workout Lambda reads the summary table cross-region and never writes', () => {
+  const template = synthStack('prod');
+
+  const policies = template.findResources('AWS::IAM::Policy');
+  const workoutPolicies = Object.values(policies).filter((p) =>
+    p.Properties.PolicyDocument.Statement.some((s: { Resource?: unknown }) =>
+      JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
+    ),
+  );
+  expect(workoutPolicies.length).toBe(1);
+
+  const actions = workoutPolicies[0].Properties.PolicyDocument.Statement.flatMap(
+    (s: { Action?: string | string[] }) => (Array.isArray(s.Action) ? s.Action : [s.Action]),
+  );
+  expect(actions).toContain('dynamodb:Query');
+  expect(actions).not.toContain('dynamodb:PutItem');
+  expect(actions).not.toContain('dynamodb:BatchWriteItem');
 });
 
 test('prod stack alerts on Bedrock spend at a $5 monthly budget; other stages do not', () => {

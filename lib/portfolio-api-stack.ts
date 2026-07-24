@@ -9,6 +9,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as path from 'path';
+import { workoutSummaryTableName, WORKOUT_REGION } from '../lambda/workout-schema';
 
 /**
  * Hard monthly cap on total API calls, enforced at the gateway by the usage plan.
@@ -217,6 +218,28 @@ export class PortfolioApiStack extends cdk.Stack {
     cvTable.grantReadData(agentFn);
     agentFn.addToRolePolicy(bedrockInvokePolicy());
 
+    // Public read of the workout summaries. The summary table lives in us-west-2
+    // with the ingest pipeline (WorkoutIngestStack), so this function reads it
+    // cross-region. The table is referenced by its deterministic name + a
+    // constructed ARN rather than a cross-region CloudFormation import.
+    const workoutSummaryTable = workoutSummaryTableName(props.stage);
+    const workoutSummaryArn = `arn:aws:dynamodb:${WORKOUT_REGION}:${this.account}:table/${workoutSummaryTable}`;
+    const getWorkoutFn = new lambdaNode.NodejsFunction(this, 'GetWorkoutFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-workout.ts'),
+      ...lambdaDefaults,
+      environment: {
+        ...lambdaDefaults.environment,
+        WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
+        WORKOUT_REGION,
+      },
+    });
+    getWorkoutFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:BatchGetItem'],
+        resources: [workoutSummaryArn],
+      }),
+    );
+
     // REST API (v1) rather than HTTP API (v2): only REST APIs support usage
     // plans, which enforce the monthly request quota at the gateway.
     const api = new apigateway.RestApi(this, 'PortfolioRestApi', {
@@ -286,6 +309,13 @@ export class PortfolioApiStack extends cdk.Stack {
     agentResource.addMethod('POST', new apigateway.LambdaIntegration(agentFn), {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // Public workout summaries: key only (draws on the shared CvUsagePlan quota),
+    // no Cognito — same posture as the other public GETs.
+    const workoutResource = api.root.addResource('workout');
+    workoutResource.addMethod('GET', new apigateway.LambdaIntegration(getWorkoutFn), {
+      apiKeyRequired: true,
     });
 
     const apiKey = api.addApiKey('CvApiKey');
