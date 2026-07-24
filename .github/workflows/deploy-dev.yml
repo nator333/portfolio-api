@@ -26,6 +26,9 @@ jobs:
       ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
       SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
       WORKOUT_RULE_SET_NAME: ${{ secrets.WORKOUT_RULE_SET_NAME }}
+      # GH_USER, not GITHUB_USER: GitHub reserves the GITHUB_ prefix for
+      # secret names and refuses to create one using it.
+      GH_USER: ${{ secrets.GH_USER }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +49,7 @@ jobs:
       - name: Deploy dev stack
         run: >-
           npx cdk deploy PortfolioApiStack-dev --context stage=dev
+          --context githubUser="$GH_USER"
           --context adminEmail="$ADMIN_EMAIL"
           --require-approval never
 
@@ -56,6 +60,7 @@ jobs:
         if: env.WORKOUT_RULE_SET_NAME != ''
         run: >-
           npx cdk deploy WorkoutIngestStack-dev --context stage=dev
+          --context githubUser="$GH_USER"
           --context adminEmail="$ADMIN_EMAIL"
           --context siteDomain="$SITE_DOMAIN"
           --context workoutRuleSetName="$WORKOUT_RULE_SET_NAME"
