@@ -1,7 +1,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { META_SK, SUMMARY_PK } from './workout-schema';
+import { META_SK, SOURCE_WEIGHT_UNIT, SUMMARY_PK } from './workout-schema';
 import { corsHeaders } from './cors';
 
 /**
@@ -48,17 +48,27 @@ export const handler = async (
     ddb.send(new GetCommand({ TableName: tableName, Key: { pk: SUMMARY_PK.meta, sk: META_SK } })),
   ]);
 
+  // Volumes and weights are served in both the export's unit and kilograms
+  // (`*Kg`), so the front end can present either without a conversion of its own.
   const days = dayItems.map((d) => ({
     date: d.sk,
     sets: d.sets,
     reps: d.reps,
     volume: d.volume,
+    volumeKg: d.volumeKg,
     exerciseCount: d.exerciseCount,
     muscles: d.muscles ?? {},
   }));
 
   const muscles = muscleItems
-    .map((m) => ({ muscle: m.sk, sets: m.sets, reps: m.reps, volume: m.volume, exercises: m.exercises }))
+    .map((m) => ({
+      muscle: m.sk,
+      sets: m.sets,
+      reps: m.reps,
+      volume: m.volume,
+      volumeKg: m.volumeKg,
+      exercises: m.exercises,
+    }))
     .sort((a, b) => (b.volume as number) - (a.volume as number));
 
   const topExercises = exerciseItems
@@ -70,7 +80,9 @@ export const handler = async (
       muscle: e.muscle,
       sets: e.sets,
       volume: e.volume,
+      volumeKg: e.volumeKg,
       maxWeight: e.maxWeight,
+      maxWeightKg: e.maxWeightKg,
       lastDate: e.lastDate,
     }));
 
@@ -79,7 +91,14 @@ export const handler = async (
   return {
     statusCode: 200,
     headers,
-    body: JSON.stringify({ range: { from, to }, days, muscles, topExercises, totals }),
+    body: JSON.stringify({
+      range: { from, to },
+      unit: SOURCE_WEIGHT_UNIT,
+      days,
+      muscles,
+      topExercises,
+      totals,
+    }),
   };
 };
 

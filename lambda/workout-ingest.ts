@@ -8,6 +8,7 @@ import { parse as parseCsv } from 'csv-parse/sync';
 import {
   META_SK,
   assignSetKeys,
+  SOURCE_WEIGHT_UNIT,
   SUMMARY_PK,
   parseWorkoutRows,
   summarize,
@@ -195,9 +196,13 @@ async function writeSets(setsTable: string, sets: readonly WorkoutSet[]): Promis
     sk: s.sk,
     exercise: s.exercise,
     setNo: s.setNo,
+    // The exported figure is the source of truth; the kg conversion rides along
+    // so consumers never have to know the export's unit.
     weight: s.weight,
+    weightKg: s.weightKg,
     reps: s.reps,
     volume: s.volume,
+    volumeKg: s.volumeKg,
     muscle: s.muscle,
     notes: s.notes,
   }));
@@ -280,8 +285,14 @@ interface ReportInput {
   filename: string;
 }
 
-const num = (n: number): string => n.toLocaleString('en-US');
-const kg = (n: number): string => `${n.toLocaleString('en-US', { maximumFractionDigits: 0 })} kg`;
+const num = (n: number): string => Math.round(n).toLocaleString('en-US');
+const whole = (n: number): string => n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+/** Kilograms lead, with the export's own pound figure kept alongside. */
+const mass = (kgValue: number, sourceValue: number): string =>
+  `${whole(kgValue)} kg (${whole(sourceValue)} ${SOURCE_WEIGHT_UNIT})`;
+
+/** Dates listed inline before the report just points at the totals instead. */
+const MAX_LISTED_DAYS = 20;
 
 function buildReport(input: ReportInput): Report {
   const { summaries, skipped, newDays, priorTotalSets, filename } = input;
@@ -291,22 +302,35 @@ function buildReport(input: ReportInput): Report {
   const thisMonth = summaries.months[summaries.months.length - 1];
   const topExercises = summaries.exercises.slice(0, 5);
 
+  // On a first import every day is "new", so listing dates says nothing; and a
+  // truncated tail must say so rather than reading as the complete list.
+  const listed = newDays.slice(-MAX_LISTED_DAYS);
+  const newDaysLine =
+    priorTotalSets === null
+      ? `New workout days: ${num(newDays.length)} (all of them — first import)`
+      : newDays.length === 0
+        ? 'New workout days: 0'
+        : newDays.length > MAX_LISTED_DAYS
+          ? `New workout days: ${num(newDays.length)} (latest ${MAX_LISTED_DAYS}: ${listed.join(', ')})`
+          : `New workout days: ${newDays.length} (${listed.join(', ')})`;
+
   const lines: string[] = [
     `File: ${filename}`,
+    `Weights as exported in ${SOURCE_WEIGHT_UNIT}; kilograms shown first.`,
     '',
     '— Import —',
     `Rows imported: ${num(meta.totalSets)} sets${skipped ? ` (${num(skipped)} skipped)` : ''}`,
     newSets === null
       ? 'First import (no prior baseline).'
       : `New sets since last import: ${num(newSets)}`,
-    `New workout days: ${newDays.length}${newDays.length ? ` (${newDays.slice(-20).join(', ')})` : ''}`,
+    newDaysLine,
     '',
     '— All-time —',
     `Date range: ${meta.firstDate} → ${meta.lastDate}`,
     `Workout days: ${num(meta.workoutDays)}`,
     `Distinct exercises: ${num(meta.exerciseCount)}`,
     `Total reps: ${num(meta.totalReps)}`,
-    `Total volume: ${kg(meta.totalVolume)}`,
+    `Total volume: ${mass(meta.totalVolumeKg, meta.totalVolume)}`,
   ];
 
   if (thisMonth) {
@@ -314,21 +338,23 @@ function buildReport(input: ReportInput): Report {
       '',
       `— This month (${thisMonth.sk}) —`,
       `Sets: ${num(thisMonth.sets)} over ${num(thisMonth.workoutDays)} days`,
-      `Volume: ${kg(thisMonth.volume)}`,
+      `Volume: ${mass(thisMonth.volumeKg, thisMonth.volume)}`,
     );
   }
 
   if (summaries.muscles.length) {
     lines.push('', '— Volume by muscle group (all-time) —');
     for (const m of summaries.muscles) {
-      lines.push(`${m.sk}: ${kg(m.volume)} (${num(m.sets)} sets)`);
+      lines.push(`${m.sk}: ${mass(m.volumeKg, m.volume)} (${num(m.sets)} sets)`);
     }
   }
 
   if (topExercises.length) {
     lines.push('', '— Top exercises by volume —');
     for (const e of topExercises) {
-      lines.push(`${e.sk}: ${kg(e.volume)} (${num(e.sets)} sets, max ${e.maxWeight} kg)`);
+      lines.push(
+        `${e.sk}: ${mass(e.volumeKg, e.volume)} (${num(e.sets)} sets, max ${mass(e.maxWeightKg, e.maxWeight)})`,
+      );
     }
   }
 

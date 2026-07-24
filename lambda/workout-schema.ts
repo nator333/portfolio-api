@@ -67,21 +67,45 @@ const csvRecordSchema = z.object({
   Notes: z.string().optional().default(''),
 });
 
+/**
+ * Unit of the export's Weight/Distance column.
+ *
+ * The values are pounds, not kilograms. Two independent signals: every 2016-2017
+ * weight carries a messy decimal that resolves to an exact kilogram figure when
+ * divided by the factor below (55.116 -> 25, 88.185 -> 40, 143.3 -> 65), i.e.
+ * they were entered in kg and converted on export; and the later, cleanly-round
+ * values only make sense as pounds — a bench working up to 204 would be near a
+ * world record in kilograms but is ~92.5 kg, a plausible decade of progress.
+ *
+ * The exported figure is kept as the stored source of truth and a converted
+ * kilogram figure is carried alongside it, so neither unit is lost and each
+ * consumer picks.
+ */
+export const SOURCE_WEIGHT_UNIT = 'lb';
+export const LB_PER_KG = 2.20462;
+
 export interface WorkoutSet {
   /** YYYY-MM-DD. */
   readonly date: string;
   readonly exercise: string;
   readonly setNo: number;
-  /** As recorded in the export (kilograms). */
+  /** As recorded in the export — pounds; see SOURCE_WEIGHT_UNIT. */
   readonly weight: number;
+  /** `weight` converted to kilograms. */
+  readonly weightKg: number;
   readonly reps: number;
-  /** weight × reps, the standard training-volume proxy. */
+  /** weight × reps, the standard training-volume proxy, in the export's unit. */
   readonly volume: number;
+  /** `volume` converted to kilograms. */
+  readonly volumeKg: number;
   readonly muscle: MuscleGroup;
   readonly notes: string;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** Converts a figure in the export's unit (pounds) to kilograms. */
+export const toKg = (value: number): number => round2(value / LB_PER_KG);
 
 /**
  * Normalizes CSV records (as produced by csv-parse with `columns: true`) into
@@ -105,13 +129,16 @@ export function parseWorkoutRows(records: readonly unknown[]): {
     const exercise = r['Exercise Name'];
     const weight = r['Weight/Distance'];
     const reps = r['Reps/Time'];
+    const volume = round2(weight * reps);
     sets.push({
       date: r.Date,
       exercise,
       setNo: r.Set,
       weight,
+      weightKg: toKg(weight),
       reps,
-      volume: round2(weight * reps),
+      volume,
+      volumeKg: toKg(volume),
       muscle: muscleFor(exercise),
       notes: r.Notes ?? '',
     });
@@ -127,8 +154,8 @@ export type KeyedWorkoutSet = WorkoutSet & { readonly sk: string };
  * Assigns each set its sort key within the day.
  *
  * A set number is *not* unique per exercise per day: the history contains a day
- * that logs two different "Set 1" rows for the same exercise (130kg x10 and
- * 140kg x5). Keying on `<exercise>#<set>` alone therefore collides, which
+ * that logs two different "Set 1" rows for the same exercise (130x10 and
+ * 140x5). Keying on `<exercise>#<set>` alone therefore collides, which
  * DynamoDB rejects outright — BatchWriteItem refuses a request containing two
  * items with the same key — so repeats take an occurrence suffix instead of
  * silently overwriting each other.
@@ -157,7 +184,9 @@ export interface DaySummary {
   readonly sk: string;
   readonly sets: number;
   readonly reps: number;
+  /** In the export's unit (pounds); `volumeKg` carries the same figure in kg. */
   readonly volume: number;
+  readonly volumeKg: number;
   readonly exerciseCount: number;
   /** Set counts per muscle group worked that day. */
   readonly muscles: MuscleTally;
@@ -169,6 +198,7 @@ export interface MonthSummary {
   readonly sets: number;
   readonly reps: number;
   readonly volume: number;
+  readonly volumeKg: number;
   readonly workoutDays: number;
   readonly muscles: MuscleTally;
 }
@@ -179,7 +209,9 @@ export interface ExerciseSummary {
   readonly sets: number;
   readonly reps: number;
   readonly volume: number;
+  readonly volumeKg: number;
   readonly maxWeight: number;
+  readonly maxWeightKg: number;
   readonly firstDate: string;
   readonly lastDate: string;
   /** Distinct days the exercise was performed. */
@@ -193,6 +225,7 @@ export interface MuscleSummary {
   readonly sets: number;
   readonly reps: number;
   readonly volume: number;
+  readonly volumeKg: number;
   /** Distinct exercises mapped to this group. */
   readonly exercises: number;
 }
@@ -201,6 +234,9 @@ export interface WorkoutMeta {
   readonly totalSets: number;
   readonly totalReps: number;
   readonly totalVolume: number;
+  readonly totalVolumeKg: number;
+  /** Unit of every non-Kg weight/volume figure above. */
+  readonly unit: string;
   readonly firstDate: string;
   readonly lastDate: string;
   readonly workoutDays: number;
@@ -357,6 +393,7 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
       sets: d.sets,
       reps: d.reps,
       volume: round2(d.volume),
+      volumeKg: toKg(d.volume),
       exerciseCount: d.exercises.size,
       muscles: tally(d.muscles),
     }));
@@ -368,6 +405,7 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
       sets: m.sets,
       reps: m.reps,
       volume: round2(m.volume),
+      volumeKg: toKg(m.volume),
       workoutDays: m.days.size,
       muscles: tally(m.muscles),
     }));
@@ -379,7 +417,9 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
       sets: e.sets,
       reps: e.reps,
       volume: round2(e.volume),
+      volumeKg: toKg(e.volume),
       maxWeight: e.maxWeight,
+      maxWeightKg: toKg(e.maxWeight),
       firstDate: e.firstDate,
       lastDate: e.lastDate,
       sessions: e.days.size,
@@ -393,6 +433,7 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
       sets: m.sets,
       reps: m.reps,
       volume: round2(m.volume),
+      volumeKg: toKg(m.volume),
       exercises: m.exercises.size,
     }));
 
@@ -405,6 +446,8 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
       totalSets,
       totalReps,
       totalVolume: round2(totalVolume),
+      totalVolumeKg: toKg(totalVolume),
+      unit: SOURCE_WEIGHT_UNIT,
       firstDate,
       lastDate,
       workoutDays: allDays.size,

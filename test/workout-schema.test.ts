@@ -1,4 +1,11 @@
-import { assignSetKeys, parseWorkoutRows, summarize, workoutRecipient } from '../lambda/workout-schema';
+import {
+  assignSetKeys,
+  parseWorkoutRows,
+  SOURCE_WEIGHT_UNIT,
+  summarize,
+  toKg,
+  workoutRecipient,
+} from '../lambda/workout-schema';
 import { muscleFor } from '../lambda/workout-muscles';
 
 describe('workoutRecipient', () => {
@@ -46,8 +53,10 @@ describe('parseWorkoutRows', () => {
         exercise: 'ベンチプレス',
         setNo: 1,
         weight: 100,
+        weightKg: 45.36,
         reps: 5,
         volume: 500,
+        volumeKg: 226.8,
         muscle: 'Chest',
         notes: '',
       },
@@ -78,6 +87,41 @@ describe('parseWorkoutRows', () => {
     expect(sets[0].weight).toBe(55.25);
     expect(sets[0].volume).toBe(552.5);
     expect(sets[1].volume).toBe(0);
+  });
+});
+
+describe('weight units', () => {
+  // The export records pounds. The 2016-2017 rows are the evidence: they carry
+  // messy decimals that resolve to exact kilogram figures, i.e. they were entered
+  // in kg and converted on export.
+  test.each([
+    [55.116, 25],
+    [66.139, 30],
+    [88.185, 40],
+    [22.046, 10],
+    [143.3, 65],
+  ])('converts the exported %p to %p kg', (lb, expectedKg) => {
+    expect(toKg(lb)).toBeCloseTo(expectedKg, 1);
+  });
+
+  test('keeps the exported figure as the stored value and carries kg alongside', () => {
+    const { sets } = parseWorkoutRows([row('2017-01-09', 'ベンチプレス', 1, 143.3, 5)]);
+    const [set] = sets;
+    expect(set.weight).toBe(143.3);
+    expect(set.weightKg).toBeCloseTo(65, 1);
+    expect(set.volume).toBeCloseTo(143.3 * 5, 1);
+    expect(set.volumeKg).toBeCloseTo(325, 0);
+  });
+
+  test('summaries expose both units and name the source unit', () => {
+    const { sets } = parseWorkoutRows([row('2026-07-24', 'ベンチプレス', 1, 220.462, 10)]);
+    const s = summarize(sets);
+    expect(s.meta.unit).toBe(SOURCE_WEIGHT_UNIT);
+    expect(s.meta.totalVolume).toBeCloseTo(2204.62, 1);
+    expect(s.meta.totalVolumeKg).toBeCloseTo(1000, 0);
+    expect(s.days[0].volumeKg).toBeCloseTo(1000, 0);
+    expect(s.exercises[0].maxWeight).toBe(220.462);
+    expect(s.exercises[0].maxWeightKg).toBeCloseTo(100, 0);
   });
 });
 
