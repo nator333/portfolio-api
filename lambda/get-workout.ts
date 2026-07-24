@@ -16,6 +16,10 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient(region ? { region } :
 
 const DEFAULT_WINDOW_DAYS = 365;
 const TOP_EXERCISES = 10;
+/** ISO weeks of sets-per-muscle history returned (~1 year). */
+const WEEKS_RETURNED = 52;
+/** Lifts returned in the strength-progression series. */
+const TOP_LIFTS = 8;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
@@ -41,10 +45,11 @@ export const handler = async (
     from = isoDate(d);
   }
 
-  const [dayItems, muscleItems, exerciseItems, metaItem] = await Promise.all([
+  const [dayItems, muscleItems, exerciseItems, weekItems, metaItem] = await Promise.all([
     queryRange(tableName, SUMMARY_PK.day, from, to),
     queryAll(tableName, SUMMARY_PK.muscle),
     queryAll(tableName, SUMMARY_PK.exercise),
+    queryAll(tableName, SUMMARY_PK.week),
     ddb.send(new GetCommand({ TableName: tableName, Key: { pk: SUMMARY_PK.meta, sk: META_SK } })),
   ]);
 
@@ -71,6 +76,28 @@ export const handler = async (
     }))
     .sort((a, b) => (b.volume as number) - (a.volume as number));
 
+  // Sets per muscle per week — the actionable training-volume series, and what
+  // the progress page should chart instead of total mass lifted.
+  const weeks = weekItems
+    .slice()
+    .sort((a, b) => String(a.sk).localeCompare(String(b.sk)))
+    .slice(-WEEKS_RETURNED)
+    .map((w) => ({ week: w.sk, sets: w.sets, sessions: w.sessions, muscles: w.muscles ?? {} }));
+
+  // Strength progression: best estimated 1RM per lift, most-trained lifts first.
+  const lifts = exerciseItems
+    .filter((e) => typeof e.bestE1rm === 'number' && (e.bestE1rm as number) > 0)
+    .sort((a, b) => (b.sets as number) - (a.sets as number))
+    .slice(0, TOP_LIFTS)
+    .map((e) => ({
+      name: e.sk,
+      muscle: e.muscle,
+      sets: e.sets,
+      bestE1rm: e.bestE1rm,
+      bestE1rmKg: e.bestE1rmKg,
+      bestE1rmDate: e.bestE1rmDate,
+    }));
+
   const topExercises = exerciseItems
     .slice()
     .sort((a, b) => (b.volume as number) - (a.volume as number))
@@ -95,6 +122,8 @@ export const handler = async (
       range: { from, to },
       unit: SOURCE_WEIGHT_UNIT,
       days,
+      weeks,
+      lifts,
       muscles,
       topExercises,
       totals,

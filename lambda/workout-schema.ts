@@ -47,6 +47,10 @@ export const SUMMARY_PK = {
   month: 'MONTH',
   exercise: 'EXERCISE',
   muscle: 'MUSCLE',
+  /** Estimated-1RM progression: one item per exercise per month. */
+  exerciseMonth: 'E1RM',
+  /** Sets per muscle per ISO week. */
+  week: 'WEEK',
   meta: 'META',
 } as const;
 
@@ -106,6 +110,42 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 /** Converts a figure in the export's unit (pounds) to kilograms. */
 export const toKg = (value: number): number => round2(value / LB_PER_KG);
+
+/**
+ * Rep ceiling for a trustworthy one-rep-max estimate. The Epley formula is a
+ * linear extrapolation and drifts badly on high-rep sets, so sets above this are
+ * ignored for progression rather than inflating the estimate.
+ */
+export const E1RM_MAX_REPS = 12;
+
+/**
+ * Epley estimated one-rep max, in whatever unit `weight` is given.
+ *
+ * Returns 0 for bodyweight sets and for rep counts outside the trustworthy
+ * range, so callers can simply take the max and ignore the zeroes. Note this is
+ * only meaningful for free-weight lifts; on a machine it reduces to "heaviest
+ * stack used", which is not comparable between gyms.
+ */
+export const estimate1rm = (weight: number, reps: number): number => {
+  if (weight <= 0 || reps < 1 || reps > E1RM_MAX_REPS) return 0;
+  return round2(weight * (1 + reps / 30));
+};
+
+/** ISO-8601 week label, e.g. "2026-W30" — the bucket for weekly training volume. */
+export function isoWeek(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  // Shift to the Thursday of this week; the ISO year is that Thursday's year.
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = Date.UTC(d.getUTCFullYear(), 0, 1);
+  const week = Math.ceil(((d.getTime() - yearStart) / 86400000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+/** Whole days between two YYYY-MM-DD dates. */
+const daysBetween = (from: string, to: string): number =>
+  Math.round(
+    (new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86400000,
+  );
 
 /**
  * Normalizes CSV records (as produced by csv-parse with `columns: true`) into
@@ -212,6 +252,10 @@ export interface ExerciseSummary {
   readonly volumeKg: number;
   readonly maxWeight: number;
   readonly maxWeightKg: number;
+  /** Best Epley estimate across all qualifying sets; 0 if none qualified. */
+  readonly bestE1rm: number;
+  readonly bestE1rmKg: number;
+  readonly bestE1rmDate: string;
   readonly firstDate: string;
   readonly lastDate: string;
   /** Distinct days the exercise was performed. */
@@ -230,6 +274,48 @@ export interface MuscleSummary {
   readonly exercises: number;
 }
 
+/** One exercise in one month — the estimated-1RM progression series. */
+export interface ExerciseMonthSummary {
+  /** `<exercise>#<YYYY-MM>`. */
+  readonly sk: string;
+  readonly exercise: string;
+  readonly month: string;
+  readonly muscle: MuscleGroup;
+  readonly sets: number;
+  readonly bestE1rm: number;
+  readonly bestE1rmKg: number;
+  readonly bestWeight: number;
+  readonly bestWeightKg: number;
+}
+
+/**
+ * One ISO week of training. `muscles` counts sets per muscle group, which is the
+ * metric training guidance is actually expressed in (commonly ~10-20 hard sets
+ * per muscle per week) — unlike total mass lifted, it is directly actionable.
+ */
+export interface WeekSummary {
+  /** ISO week, e.g. "2026-W30". */
+  readonly sk: string;
+  readonly sets: number;
+  readonly sessions: number;
+  readonly muscles: MuscleTally;
+}
+
+/**
+ * Training frequency. Every window is measured back from `lastDate` rather than
+ * wall-clock now, so the figures are reproducible from the file alone and do not
+ * silently rot between imports.
+ */
+export interface FrequencySummary {
+  readonly sessionsLast30: number;
+  readonly sessionsLast90: number;
+  /** Sessions per week across the 90-day window. */
+  readonly sessionsPerWeek: number;
+  /** Consecutive ISO weeks with at least one session, ending at lastDate. */
+  readonly currentStreakWeeks: number;
+  readonly longestGapDays: number;
+}
+
 export interface WorkoutMeta {
   readonly totalSets: number;
   readonly totalReps: number;
@@ -241,12 +327,15 @@ export interface WorkoutMeta {
   readonly lastDate: string;
   readonly workoutDays: number;
   readonly exerciseCount: number;
+  readonly frequency: FrequencySummary;
 }
 
 export interface WorkoutSummaries {
   readonly days: DaySummary[];
   readonly months: MonthSummary[];
   readonly exercises: ExerciseSummary[];
+  readonly exerciseMonths: ExerciseMonthSummary[];
+  readonly weeks: WeekSummary[];
   readonly muscles: MuscleSummary[];
   readonly meta: WorkoutMeta;
 }
@@ -272,10 +361,25 @@ interface ExerciseAcc {
   reps: number;
   volume: number;
   maxWeight: number;
+  bestE1rm: number;
+  bestE1rmDate: string;
   firstDate: string;
   lastDate: string;
   days: Set<string>;
   muscle: MuscleGroup;
+}
+interface ExerciseMonthAcc {
+  exercise: string;
+  month: string;
+  muscle: MuscleGroup;
+  sets: number;
+  bestE1rm: number;
+  bestWeight: number;
+}
+interface WeekAcc {
+  sets: number;
+  days: Set<string>;
+  muscles: Map<MuscleGroup, number>;
 }
 interface MuscleAcc {
   sets: number;
@@ -306,6 +410,8 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
   const dayAcc = new Map<string, DayAcc>();
   const monthAcc = new Map<string, MonthAcc>();
   const exerciseAcc = new Map<string, ExerciseAcc>();
+  const exerciseMonthAcc = new Map<string, ExerciseMonthAcc>();
+  const weekAcc = new Map<string, WeekAcc>();
   const muscleAcc = new Map<MuscleGroup, MuscleAcc>();
 
   let totalSets = 0;
@@ -354,11 +460,15 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
     bump(month.muscles, s.muscle, 1);
     monthAcc.set(monthKey, month);
 
-    const ex = exerciseAcc.get(s.exercise) ?? {
+    const e1rm = estimate1rm(s.weight, s.reps);
+
+    const ex: ExerciseAcc = exerciseAcc.get(s.exercise) ?? {
       sets: 0,
       reps: 0,
       volume: 0,
       maxWeight: 0,
+      bestE1rm: 0,
+      bestE1rmDate: '',
       firstDate: s.date,
       lastDate: s.date,
       days: new Set<string>(),
@@ -368,10 +478,39 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
     ex.reps += s.reps;
     ex.volume += s.volume;
     ex.maxWeight = Math.max(ex.maxWeight, s.weight);
+    if (e1rm > ex.bestE1rm) {
+      ex.bestE1rm = e1rm;
+      ex.bestE1rmDate = s.date;
+    }
     if (s.date < ex.firstDate) ex.firstDate = s.date;
     if (s.date > ex.lastDate) ex.lastDate = s.date;
     ex.days.add(s.date);
     exerciseAcc.set(s.exercise, ex);
+
+    const exMonthKey = `${s.exercise}#${monthKey}`;
+    const exMonth = exerciseMonthAcc.get(exMonthKey) ?? {
+      exercise: s.exercise,
+      month: monthKey,
+      muscle: s.muscle,
+      sets: 0,
+      bestE1rm: 0,
+      bestWeight: 0,
+    };
+    exMonth.sets += 1;
+    exMonth.bestE1rm = Math.max(exMonth.bestE1rm, e1rm);
+    exMonth.bestWeight = Math.max(exMonth.bestWeight, s.weight);
+    exerciseMonthAcc.set(exMonthKey, exMonth);
+
+    const weekKey = isoWeek(s.date);
+    const week = weekAcc.get(weekKey) ?? {
+      sets: 0,
+      days: new Set<string>(),
+      muscles: new Map<MuscleGroup, number>(),
+    };
+    week.sets += 1;
+    week.days.add(s.date);
+    bump(week.muscles, s.muscle, 1);
+    weekAcc.set(weekKey, week);
 
     const mus = muscleAcc.get(s.muscle) ?? {
       sets: 0,
@@ -420,10 +559,36 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
       volumeKg: toKg(e.volume),
       maxWeight: e.maxWeight,
       maxWeightKg: toKg(e.maxWeight),
+      bestE1rm: e.bestE1rm,
+      bestE1rmKg: toKg(e.bestE1rm),
+      bestE1rmDate: e.bestE1rmDate,
       firstDate: e.firstDate,
       lastDate: e.lastDate,
       sessions: e.days.size,
       muscle: e.muscle,
+    }));
+
+  const exerciseMonths: ExerciseMonthSummary[] = [...exerciseMonthAcc.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([sk, m]) => ({
+      sk,
+      exercise: m.exercise,
+      month: m.month,
+      muscle: m.muscle,
+      sets: m.sets,
+      bestE1rm: m.bestE1rm,
+      bestE1rmKg: toKg(m.bestE1rm),
+      bestWeight: m.bestWeight,
+      bestWeightKg: toKg(m.bestWeight),
+    }));
+
+  const weeks: WeekSummary[] = [...weekAcc.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([sk, w]) => ({
+      sk,
+      sets: w.sets,
+      sessions: w.days.size,
+      muscles: tally(w.muscles),
     }));
 
   const muscles: MuscleSummary[] = [...muscleAcc.entries()]
@@ -441,6 +606,8 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
     days,
     months,
     exercises,
+    exerciseMonths,
+    weeks,
     muscles,
     meta: {
       totalSets,
@@ -452,6 +619,53 @@ export function summarize(sets: readonly WorkoutSet[]): WorkoutSummaries {
       lastDate,
       workoutDays: allDays.size,
       exerciseCount: allExercises.size,
+      frequency: frequencyOf([...allDays].sort(), lastDate, weeks),
     },
+  };
+}
+
+/**
+ * Training frequency, measured back from the last recorded session rather than
+ * from wall-clock now so the numbers stay reproducible from the file alone.
+ */
+function frequencyOf(
+  sortedDays: readonly string[],
+  lastDate: string,
+  weeks: readonly WeekSummary[],
+): FrequencySummary {
+  if (sortedDays.length === 0) {
+    return {
+      sessionsLast30: 0,
+      sessionsLast90: 0,
+      sessionsPerWeek: 0,
+      currentStreakWeeks: 0,
+      longestGapDays: 0,
+    };
+  }
+
+  const within = (days: number): number =>
+    sortedDays.filter((d) => daysBetween(d, lastDate) <= days).length;
+
+  let longestGapDays = 0;
+  for (let i = 1; i < sortedDays.length; i += 1) {
+    longestGapDays = Math.max(longestGapDays, daysBetween(sortedDays[i - 1], sortedDays[i]));
+  }
+
+  // Walk back through consecutive ISO weeks that actually contain a session.
+  const trained = new Set(weeks.map((w) => w.sk));
+  let currentStreakWeeks = 0;
+  const cursor = new Date(`${lastDate}T00:00:00Z`);
+  while (trained.has(isoWeek(cursor.toISOString().slice(0, 10)))) {
+    currentStreakWeeks += 1;
+    cursor.setUTCDate(cursor.getUTCDate() - 7);
+  }
+
+  const sessionsLast90 = within(90);
+  return {
+    sessionsLast30: within(30),
+    sessionsLast90,
+    sessionsPerWeek: round2(sessionsLast90 / (90 / 7)),
+    currentStreakWeeks,
+    longestGapDays,
   };
 }

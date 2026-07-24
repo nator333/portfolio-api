@@ -218,6 +218,8 @@ async function writeSummaries(
     ...summaries.days.map((d) => ({ pk: SUMMARY_PK.day, ...d })),
     ...summaries.months.map((m) => ({ pk: SUMMARY_PK.month, ...m })),
     ...summaries.exercises.map((e) => ({ pk: SUMMARY_PK.exercise, ...e })),
+    ...summaries.exerciseMonths.map((e) => ({ pk: SUMMARY_PK.exerciseMonth, ...e })),
+    ...summaries.weeks.map((w) => ({ pk: SUMMARY_PK.week, ...w })),
     ...summaries.muscles.map((m) => ({ pk: SUMMARY_PK.muscle, ...m })),
     { pk: SUMMARY_PK.meta, sk: META_SK, ...summaries.meta, lastImportAt: new Date().toISOString(), sourceFileName: filename },
   ];
@@ -293,6 +295,10 @@ const mass = (kgValue: number, sourceValue: number): string =>
 
 /** Dates listed inline before the report just points at the totals instead. */
 const MAX_LISTED_DAYS = 20;
+/** Weeks averaged for the sets-per-muscle-per-week figure. */
+const WEEKS_WINDOW = 12;
+/** Lifts shown in the strength-progression section, most-trained first. */
+const TOP_LIFTS = 6;
 
 function buildReport(input: ReportInput): Report {
   const { summaries, skipped, newDays, priorTotalSets, filename } = input;
@@ -314,6 +320,8 @@ function buildReport(input: ReportInput): Report {
           ? `New workout days: ${num(newDays.length)} (latest ${MAX_LISTED_DAYS}: ${listed.join(', ')})`
           : `New workout days: ${newDays.length} (${listed.join(', ')})`;
 
+  const { frequency: freq } = meta;
+
   const lines: string[] = [
     `File: ${filename}`,
     `Weights as exported in ${SOURCE_WEIGHT_UNIT}; kilograms shown first.`,
@@ -325,41 +333,73 @@ function buildReport(input: ReportInput): Report {
       : `New sets since last import: ${num(newSets)}`,
     newDaysLine,
     '',
-    '— All-time —',
-    `Date range: ${meta.firstDate} → ${meta.lastDate}`,
-    `Workout days: ${num(meta.workoutDays)}`,
-    `Distinct exercises: ${num(meta.exerciseCount)}`,
-    `Total reps: ${num(meta.totalReps)}`,
-    `Total volume: ${mass(meta.totalVolumeKg, meta.totalVolume)}`,
+    '— Consistency —',
+    `Sessions: ${num(freq.sessionsLast30)} in the last 30 days, ${num(freq.sessionsLast90)} in 90 (${freq.sessionsPerWeek}/week)`,
+    `Current streak: ${num(freq.currentStreakWeeks)} consecutive weeks`,
+    `Last session: ${meta.lastDate}`,
   ];
+
+  // Sets per muscle per week is the metric training guidance is expressed in
+  // (~10-20 hard sets per muscle per week), unlike total mass lifted.
+  const recentWeeks = summaries.weeks.slice(-WEEKS_WINDOW);
+  if (recentWeeks.length) {
+    const perMuscle = new Map<string, number>();
+    for (const w of recentWeeks) {
+      for (const [muscle, count] of Object.entries(w.muscles)) {
+        perMuscle.set(muscle, (perMuscle.get(muscle) ?? 0) + (count ?? 0));
+      }
+    }
+    lines.push('', `— Sets per muscle per week (last ${recentWeeks.length} weeks, guide ~10-20) —`);
+    for (const [muscle, total] of [...perMuscle.entries()].sort((a, b) => b[1] - a[1])) {
+      const perWeek = total / recentWeeks.length;
+      lines.push(`${muscle}: ${perWeek.toFixed(1)}${perWeek < 10 ? '  (below guide)' : ''}`);
+    }
+  }
+
+  // Estimated 1RM progression: the headline strength signal. Free-weight lifts
+  // only — on a machine this reduces to "heaviest stack", which is not comparable.
+  const progressing = summaries.exercises
+    .filter((e) => e.bestE1rm > 0)
+    .sort((a, b) => b.sets - a.sets)
+    .slice(0, TOP_LIFTS);
+  if (progressing.length) {
+    lines.push('', '— Estimated 1RM, best ever vs this year —');
+    const thisYear = meta.lastDate.slice(0, 4);
+    for (const e of progressing) {
+      const yearBest = summaries.exerciseMonths
+        .filter((m) => m.exercise === e.sk && m.month.startsWith(thisYear))
+        .reduce((best, m) => Math.max(best, m.bestE1rmKg), 0);
+      const trend = yearBest === 0 ? 'none logged' : `${yearBest.toFixed(0)} kg in ${thisYear}`;
+      lines.push(`${e.sk}: best ${e.bestE1rmKg.toFixed(0)} kg (${e.bestE1rmDate}) — ${trend}`);
+    }
+  }
 
   if (thisMonth) {
     lines.push(
       '',
       `— This month (${thisMonth.sk}) —`,
       `Sets: ${num(thisMonth.sets)} over ${num(thisMonth.workoutDays)} days`,
-      `Volume: ${mass(thisMonth.volumeKg, thisMonth.volume)}`,
     );
   }
 
-  if (summaries.muscles.length) {
-    lines.push('', '— Volume by muscle group (all-time) —');
-    for (const m of summaries.muscles) {
-      lines.push(`${m.sk}: ${mass(m.volumeKg, m.volume)} (${num(m.sets)} sets)`);
-    }
-  }
-
   if (topExercises.length) {
-    lines.push('', '— Top exercises by volume —');
+    lines.push('', '— Most-trained exercises —');
     for (const e of topExercises) {
       lines.push(
-        `${e.sk}: ${mass(e.volumeKg, e.volume)} (${num(e.sets)} sets, max ${mass(e.maxWeightKg, e.maxWeight)})`,
+        `${e.sk}: ${num(e.sets)} sets, max ${mass(e.maxWeightKg, e.maxWeight)}`,
       );
     }
   }
 
-  const subject = `Workout import: ${num(meta.totalSets)} sets, ${num(meta.workoutDays)} days${
-    newDays.length ? `, +${newDays.length} new` : ''
+  lines.push(
+    '',
+    '— Lifetime —',
+    `${meta.firstDate} → ${meta.lastDate} · ${num(meta.workoutDays)} days · ${num(meta.totalSets)} sets · ${num(meta.exerciseCount)} exercises`,
+    `Total volume ${mass(meta.totalVolumeKg, meta.totalVolume)} (a curiosity, not a training signal)`,
+  );
+
+  const subject = `Workout import: ${num(meta.totalSets)} sets, ${freq.sessionsPerWeek}/week${
+    newDays.length ? `, +${newDays.length} new day${newDays.length === 1 ? '' : 's'}` : ''
   }`;
   return { subject, lines };
 }
