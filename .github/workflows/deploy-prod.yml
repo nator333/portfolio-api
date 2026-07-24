@@ -54,11 +54,17 @@ jobs:
       # Workout ingestion lives in us-west-2 and attaches to kotlin-ses-forward's
       # SES rule set. Only runs once WORKOUT_RULE_SET_NAME is set, so the pipeline
       # is safe to merge before that infra exists.
+      #
+      # Every context value the *app* needs must be passed here, not just the
+      # ones this stack reads: `cdk deploy` synthesises the whole app, so
+      # PortfolioApiStack-prod is constructed too and demands pagesOrigin even
+      # when the workout stack is the only deploy target.
       - name: Deploy workout ingest stack
         if: env.WORKOUT_RULE_SET_NAME != ''
         run: >-
           npx cdk deploy WorkoutIngestStack-prod --context stage=prod
           --context adminEmail="$ADMIN_EMAIL"
           --context siteDomain="$SITE_DOMAIN"
+          --context pagesOrigin="$PAGES_ORIGIN"
           --context workoutRuleSetName="$WORKOUT_RULE_SET_NAME"
           --require-approval never
