@@ -43,12 +43,36 @@ new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   adminEmails: ['m.nakamata35@gmail.com'],
 });
 
-// One-time, account-wide setup for GitHub Actions OIDC deploys.
-// Deploy manually once with `npx cdk deploy GithubOidcStack`; see lib/github-oidc-stack.ts.
-new GithubOidcStack(app, 'GithubOidcStack', {
-  env,
-  githubOrg: 'nator333',
-  githubRepo: 'portfolio-api',
-  prodEnvironment: 'production',
-  devEnvironment: 'development',
-});
+// One-time, account-wide setup for GitHub Actions OIDC deploys, covering every
+// repo in this account rather than just this one. Deploy manually with admin
+// credentials, never from CI; see lib/github-oidc-stack.ts.
+//
+// This repo is public, so kotlin-ses-forward's bucket names — which its README
+// deliberately masks — are supplied at synth time instead of being committed:
+//
+//   npx cdk deploy GithubOidcStack \
+//     -c ksfRegion=us-west-2 \
+//     -c ksfDeploymentBucket=<DEPLOYMENT_BUCKET> \
+//     -c ksfEventBucket=<EVENT_BUCKET>
+//
+// Synthesising any other stack must not require them, so they are only demanded
+// when this stack is actually the target.
+// The stack is declared only when that context is present. `cdk deploy
+// PortfolioApiStack-*` synthesises the whole app, and the deploy workflows pass
+// no OIDC context — throwing on a missing value would break every app deploy to
+// configure a stack those runs never touch.
+const ksfRegion = app.node.tryGetContext('ksfRegion') as string | undefined;
+const ksfDeploymentBucket = app.node.tryGetContext('ksfDeploymentBucket') as string | undefined;
+const ksfEventBucket = app.node.tryGetContext('ksfEventBucket') as string | undefined;
+
+if (ksfRegion && ksfDeploymentBucket && ksfEventBucket) {
+  new GithubOidcStack(app, 'GithubOidcStack', {
+    env,
+    githubOrg: 'nator333',
+    kotlinSesForwardRegion: ksfRegion,
+    kotlinSesForwardDeploymentBucket: ksfDeploymentBucket,
+    kotlinSesForwardEventBucket: ksfEventBucket,
+    // samconfig.toml in nator333/3-things.
+    threeThingsRegion: 'us-east-1',
+  });
+}
