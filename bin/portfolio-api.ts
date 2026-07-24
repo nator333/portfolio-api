@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import { PortfolioApiStack } from '../lib/portfolio-api-stack';
 import { GithubOidcStack } from '../lib/github-oidc-stack';
+import { WorkoutIngestStack } from '../lib/workout-ingest-stack';
 
 const app = new cdk.App();
 
@@ -42,6 +43,24 @@ new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   authCallbackUrls,
   adminEmails: ['m.nakamata35@gmail.com'],
 });
+
+// Workout CSV ingestion lives in us-west-2, where nakamata.tech's SES
+// email-receiving is active (owned by kotlin-ses-forward). It appends a receipt
+// rule to that repo's existing active rule set, whose name is supplied as context
+// so this public repo need not commit it. Only declared when the context is
+// present, so plain PortfolioApiStack deploys don't require it.
+//
+//   npx cdk deploy WorkoutIngestStack-<stage> \
+//     -c stage=<stage> -c workoutRuleSetName=<ksf-rule-set-name>
+const workoutRuleSetName = app.node.tryGetContext('workoutRuleSetName') as string | undefined;
+if (workoutRuleSetName) {
+  new WorkoutIngestStack(app, `WorkoutIngestStack-${stage}`, {
+    env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: 'us-west-2' },
+    stage,
+    ruleSetName: workoutRuleSetName,
+    adminEmail: 'm.nakamata35@gmail.com',
+  });
+}
 
 // One-time, account-wide setup for GitHub Actions OIDC deploys, covering every
 // repo in this account rather than just this one. Deploy manually with admin

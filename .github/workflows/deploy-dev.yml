@@ -37,3 +37,13 @@ jobs:
 
       - name: Deploy dev stack
         run: npx cdk deploy PortfolioApiStack-dev --context stage=dev --require-approval never
+
+      # Workout ingestion lives in us-west-2 and attaches to kotlin-ses-forward's
+      # SES rule set. Only runs once WORKOUT_RULE_SET_NAME is set as an Actions
+      # variable, so the pipeline is safe to merge before that infra exists.
+      - name: Deploy workout ingest stack
+        if: ${{ vars.WORKOUT_RULE_SET_NAME != '' }}
+        run: >-
+          npx cdk deploy WorkoutIngestStack-dev --context stage=dev
+          --context workoutRuleSetName=${{ vars.WORKOUT_RULE_SET_NAME }}
+          --require-approval never
