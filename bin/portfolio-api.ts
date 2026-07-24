@@ -71,6 +71,9 @@ new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   allowedOrigins,
   authCallbackUrls,
   adminEmails: [adminEmail],
+  // Optional: without it the GitHub snapshot schedule is not created and
+  // /activity serves the blog and gym sources only.
+  githubUser: context('githubUser'),
 });
 
 // Workout CSV ingestion lives in us-west-2, where the site domain's SES

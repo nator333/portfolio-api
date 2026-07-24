@@ -6,6 +6,7 @@ function synthStack(stage = 'test') {
   const app = new cdk.App();
   const stack = new PortfolioApiStack(app, 'MyTestStack', {
     stage,
+    githubUser: 'octocat',
     authCallbackUrls: ['http://localhost:4200/login'],
     adminEmails: ['admin@example.com'],
   });
@@ -30,11 +31,12 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('cv, projects, blog, home, chat, agent, workout, and pre-signup Lambda functions created', () => {
+test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup Lambdas created', () => {
   const template = synthStack();
 
-  // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout, pre-signup
-  template.resourceCountIs('AWS::Lambda::Function', 12);
+  // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
+  // get-activity, github-ingest, pre-signup.
+  template.resourceCountIs('AWS::Lambda::Function', 14);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -79,14 +81,14 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   for (const pathPart of ['cv', 'projects', 'blog', 'home']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Five public GETs (key only): cv, projects, blog, home, and workout; and four
-  // Cognito-guarded PUTs across the content resources.
+  // Six public GETs (key only): cv, projects, blog, home, workout and activity;
+  // and four Cognito-guarded PUTs across the content resources.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(5);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(6);
   expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(4);
 });
 
@@ -206,6 +208,47 @@ test('chat Lambda may invoke Bedrock models but only read the table', () => {
   });
 });
 
+test('GET /activity is public and merges sources server-side', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'activity' });
+
+  // One Lambda reads both the local table and the cross-region workout table,
+  // so the landing page makes a single call instead of one per source.
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const activityPolicy = policies.filter((p) =>
+    p.Properties.PolicyDocument.Statement.some(
+      (s: { Resource?: unknown; Action?: string | string[] }) =>
+        JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary') &&
+        (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:Query'),
+    ),
+  );
+  // get-workout and get-activity each hold one.
+  expect(activityPolicy.length).toBe(2);
+});
+
+test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
+  const template = synthStack();
+
+  template.resourceCountIs('AWS::Events::Rule', 1);
+  template.hasResourceProperties('AWS::Events::Rule', {
+    ScheduleExpression: 'rate(1 day)',
+  });
+});
+
+test('no GitHub user means no schedule, and the feed still deploys', () => {
+  const app = new cdk.App();
+  const stack = new PortfolioApiStack(app, 'NoGitHubStack', {
+    stage: 'test',
+    authCallbackUrls: ['http://localhost:4200/login'],
+    adminEmails: ['admin@example.com'],
+  });
+  const template = Template.fromStack(stack);
+
+  template.resourceCountIs('AWS::Events::Rule', 0);
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'activity' });
+});
+
 test('GET /workout is public (key only, no Cognito)', () => {
   const template = synthStack();
 
@@ -217,7 +260,9 @@ test('GET /workout is public (key only, no Cognito)', () => {
   });
 });
 
-test('workout Lambda reads the summary table cross-region and never writes', () => {
+test('every reader of the workout table is cross-region and read-only', () => {
+  // get-workout and get-activity both read it; neither may ever write, since
+  // the only writer is the ingest Lambda in us-west-2.
   const template = synthStack('prod');
 
   const policies = template.findResources('AWS::IAM::Policy');
@@ -226,14 +271,20 @@ test('workout Lambda reads the summary table cross-region and never writes', () 
       JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
     ),
   );
-  expect(workoutPolicies.length).toBe(1);
+  expect(workoutPolicies.length).toBe(2);
 
-  const actions = workoutPolicies[0].Properties.PolicyDocument.Statement.flatMap(
-    (s: { Action?: string | string[] }) => (Array.isArray(s.Action) ? s.Action : [s.Action]),
-  );
-  expect(actions).toContain('dynamodb:Query');
-  expect(actions).not.toContain('dynamodb:PutItem');
-  expect(actions).not.toContain('dynamodb:BatchWriteItem');
+  for (const policy of workoutPolicies) {
+    const crossRegion = policy.Properties.PolicyDocument.Statement.filter(
+      (s: { Resource?: unknown }) =>
+        JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
+    );
+    const actions = crossRegion.flatMap((s: { Action?: string | string[] }) =>
+      Array.isArray(s.Action) ? s.Action : [s.Action],
+    );
+    expect(actions).toContain('dynamodb:Query');
+    expect(actions).not.toContain('dynamodb:PutItem');
+    expect(actions).not.toContain('dynamodb:BatchWriteItem');
+  }
 });
 
 test('prod stack alerts on Bedrock spend at a $5 monthly budget; other stages do not', () => {
