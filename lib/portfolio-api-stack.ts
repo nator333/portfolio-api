@@ -8,6 +8,8 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
 import { workoutSummaryTableName, WORKOUT_REGION } from '../lambda/workout-schema';
 
@@ -80,6 +82,13 @@ export interface PortfolioApiStackProps extends cdk.StackProps {
   readonly authCallbackUrls: string[];
   /** Emails allowed to sign in to the CV editor via Google. */
   readonly adminEmails: string[];
+  /**
+   * GitHub account whose public activity feeds the home-page calendar. Supplied
+   * at deploy time rather than committed, like the other identity config. When
+   * absent the scheduled ingest is not created and /activity simply serves the
+   * blog and gym sources.
+   */
+  readonly githubUser?: string;
 }
 
 export class PortfolioApiStack extends cdk.Stack {
@@ -264,6 +273,49 @@ export class PortfolioApiStack extends cdk.Stack {
       }),
     );
 
+    // Unified activity feed: blog and the GitHub snapshot locally, gym sessions
+    // cross-region. Merged here so the landing page makes one call rather than
+    // three against a quota every visitor shares.
+    const getActivityFn = new lambdaNode.NodejsFunction(this, 'GetActivityFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-activity.ts'),
+      ...lambdaDefaults,
+      environment: {
+        ...lambdaDefaults.environment,
+        WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
+        WORKOUT_REGION,
+      },
+    });
+    cvTable.grantReadData(getActivityFn);
+    getActivityFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: [workoutSummaryArn],
+      }),
+    );
+
+    // Daily snapshot of public GitHub activity. Scheduled rather than proxied on
+    // request: the feed is on the landing page's critical path, and calling
+    // GitHub inline would put its rate limit and availability there too.
+    if (props.githubUser) {
+      const gitHubIngestFn = new lambdaNode.NodejsFunction(this, 'GitHubIngestFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'github-ingest.ts'),
+        runtime: lambda.Runtime.NODEJS_20_X,
+        bundling: { externalModules: ['@aws-sdk/*'] },
+        timeout: cdk.Duration.seconds(30),
+        environment: {
+          CV_TABLE_NAME: cvTable.tableName,
+          GITHUB_USER: props.githubUser,
+        },
+      });
+      cvTable.grantWriteData(gitHubIngestFn);
+
+      new events.Rule(this, 'GitHubIngestSchedule', {
+        schedule: events.Schedule.rate(cdk.Duration.days(1)),
+        targets: [new eventsTargets.LambdaFunction(gitHubIngestFn)],
+        description: 'Refreshes the GitHub activity snapshot for the home-page calendar',
+      });
+    }
+
     // REST API (v1) rather than HTTP API (v2): only REST APIs support usage
     // plans, which enforce the monthly request quota at the gateway.
     const api = new apigateway.RestApi(this, 'PortfolioRestApi', {
@@ -339,6 +391,14 @@ export class PortfolioApiStack extends cdk.Stack {
     // no Cognito — same posture as the other public GETs.
     const workoutResource = api.root.addResource('workout');
     workoutResource.addMethod('GET', new apigateway.LambdaIntegration(getWorkoutFn), {
+      apiKeyRequired: true,
+    });
+
+    // Public activity feed for the home calendar; same posture as the other
+    // public GETs, and drawing on the content quota since the landing page is
+    // exactly what that quota is for.
+    const activityResource = api.root.addResource('activity');
+    activityResource.addMethod('GET', new apigateway.LambdaIntegration(getActivityFn), {
       apiKeyRequired: true,
     });
 
