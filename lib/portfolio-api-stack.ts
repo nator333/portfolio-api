@@ -12,11 +12,35 @@ import * as path from 'path';
 import { workoutSummaryTableName, WORKOUT_REGION } from '../lambda/workout-schema';
 
 /**
- * Hard monthly cap on total API calls, enforced at the gateway by the usage plan.
- * Raised from 100 when the home hero went API-backed: the landing page now
- * draws a read per visitor cache-window, on top of cv/projects/blog reads.
+ * Hard **daily** cap on content API calls, enforced at the gateway by the usage
+ * plan. Roughly 10,500/month — up from a 300/month cap that real traffic
+ * exhausted, blanking the blog and projects pages.
+ *
+ * The period is the security control here, not the limit. The API key is public
+ * in the SPA, so anyone can spend this quota, and no usable rate limit protects
+ * a *monthly* one: spreading 10,500 calls evenly over a month is 0.004 req/s.
+ * A monthly quota drained in an hour leaves the site blank until the 1st,
+ * whereas a daily period caps any outage — accidental or malicious — at the
+ * remainder of that day and self-heals at midnight UTC.
+ *
+ * Spend is not the concern: the whole daily quota costs well under a cent.
  */
-const MONTHLY_REQUEST_QUOTA = 300;
+const CONTENT_DAILY_REQUEST_QUOTA = 350;
+
+/**
+ * The workout progress page reads the heaviest endpoint and will be chart-driven,
+ * so it gets its own key and quota. Sharing the content plan would let one page
+ * starve /cv, /blog and /projects.
+ */
+const WORKOUT_DAILY_REQUEST_QUOTA = 350;
+
+/**
+ * Throttle applied per key, i.e. shared by every visitor using it. The previous
+ * 2/s with a burst of 5 was tight enough that a page fetching several endpoints
+ * at once, or a few concurrent visitors, could draw spurious 429s. With a daily
+ * quota the recovery window is already bounded, so this favours real users.
+ */
+const API_THROTTLE = { rateLimit: 10, burstLimit: 20 };
 
 /**
  * Hard monthly cap on public chat calls. Together with the request-shape
@@ -318,16 +342,33 @@ export class PortfolioApiStack extends cdk.Stack {
       apiKeyRequired: true,
     });
 
+    // Note on what a separate plan does and does not buy: a usage plan is bound
+    // to the whole stage, not to individual methods, so any valid key can call
+    // any key-required endpoint. Which quota is debited follows the key the
+    // caller presents, so the separation below is a client convention that the
+    // gateway accounts for — not a per-path boundary it enforces.
     const apiKey = api.addApiKey('CvApiKey');
     const usagePlan = api.addUsagePlan('CvUsagePlan', {
-      quota: { limit: MONTHLY_REQUEST_QUOTA, period: apigateway.Period.MONTH },
-      throttle: { rateLimit: 2, burstLimit: 5 },
+      quota: { limit: CONTENT_DAILY_REQUEST_QUOTA, period: apigateway.Period.DAY },
+      throttle: API_THROTTLE,
     });
     usagePlan.addApiKey(apiKey);
     usagePlan.addApiStage({ stage: api.deploymentStage });
 
+    // The workout progress page gets its own key and daily quota so it cannot
+    // starve the content endpoints.
+    const workoutApiKey = api.addApiKey('WorkoutApiKey');
+    const workoutUsagePlan = api.addUsagePlan('WorkoutUsagePlan', {
+      quota: { limit: WORKOUT_DAILY_REQUEST_QUOTA, period: apigateway.Period.DAY },
+      throttle: API_THROTTLE,
+    });
+    workoutUsagePlan.addApiKey(workoutApiKey);
+    workoutUsagePlan.addApiStage({ stage: api.deploymentStage });
+
     // Chat gets its own key and quota so visitor chat can't exhaust the CV/projects
-    // quota (and vice versa).
+    // quota (and vice versa). Its cap stays monthly: unlike the content plan it
+    // guards real spend (~$4 of Bedrock at the limit), and a monthly ceiling is
+    // what makes that guarantee.
     const chatApiKey = api.addApiKey('ChatApiKey');
     const chatUsagePlan = api.addUsagePlan('ChatUsagePlan', {
       quota: { limit: CHAT_MONTHLY_REQUEST_QUOTA, period: apigateway.Period.MONTH },
@@ -371,6 +412,10 @@ export class PortfolioApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ChatApiKeyId', {
       value: chatApiKey.keyId,
       description: 'API key for POST /chat; fetch the value the same way as ApiKeyId',
+    });
+    new cdk.CfnOutput(this, 'WorkoutApiKeyId', {
+      value: workoutApiKey.keyId,
+      description: 'API key for GET /workout; fetch the value the same way as ApiKeyId',
     });
     new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
