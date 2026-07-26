@@ -415,6 +415,58 @@ export class PortfolioApiStack extends cdk.Stack {
       { prefix: 'incoming/' },
     );
 
+    // Media library management (all Cognito-gated). Read-only listing, metadata
+    // edits, and delete — the write paths for the admin picker/library UI.
+    const mediaLambdaEnv = {
+      MEDIA_TABLE_NAME: mediaTable.tableName,
+      CORS_ALLOWED_ORIGINS: allowedOrigins.join(','),
+    };
+
+    const listMediaFn = new lambdaNode.NodejsFunction(this, 'ListMediaFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'list-media.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      bundling: { externalModules: ['@aws-sdk/*'] },
+      environment: mediaLambdaEnv,
+    });
+    mediaTable.grantReadData(listMediaFn);
+
+    const updateMediaFn = new lambdaNode.NodejsFunction(this, 'UpdateMediaFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'update-media.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      bundling: { externalModules: ['@aws-sdk/*'] },
+      environment: mediaLambdaEnv,
+    });
+    mediaTable.grantWriteData(updateMediaFn);
+
+    const deleteMediaFn = new lambdaNode.NodejsFunction(this, 'DeleteMediaFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'delete-media.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      // client-cloudfront is not guaranteed in the Lambda runtime SDK, so bundle
+      // it; the heavier s3/dynamodb clients stay external (runtime-provided).
+      bundling: {
+        externalModules: [
+          '@aws-sdk/client-s3',
+          '@aws-sdk/client-dynamodb',
+          '@aws-sdk/lib-dynamodb',
+        ],
+      },
+      environment: {
+        ...mediaLambdaEnv,
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        MEDIA_DISTRIBUTION_ID: mediaDistribution.distributionId,
+      },
+    });
+    mediaTable.grantReadWriteData(deleteMediaFn);
+    mediaBucket.grantDelete(deleteMediaFn, 'public/*');
+    deleteMediaFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['cloudfront:CreateInvalidation'],
+        resources: [
+          `arn:aws:cloudfront::${this.account}:distribution/${mediaDistribution.distributionId}`,
+        ],
+      }),
+    );
+
     // Daily snapshot of public GitHub activity. Scheduled rather than proxied on
     // request: the feed is on the landing page's critical path, and calling
     // GitHub inline would put its rate limit and availability there too.
@@ -444,7 +496,7 @@ export class PortfolioApiStack extends cdk.Stack {
       deployOptions: { stageName: props.stage },
       defaultCorsPreflightOptions: {
         allowOrigins: allowedOrigins,
-        allowMethods: ['GET', 'PUT', 'POST', 'OPTIONS'],
+        allowMethods: ['GET', 'PUT', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Api-Key'],
       },
     });
@@ -513,6 +565,23 @@ export class PortfolioApiStack extends cdk.Stack {
     // never draws down a usage-plan quota, same posture as /agent.
     const uploadsResource = api.root.addResource('uploads');
     uploadsResource.addMethod('POST', new apigateway.LambdaIntegration(createUploadFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // Media library: list the catalog, and edit/delete individual assets. All
+    // Cognito-gated, no API key — same admin posture as /uploads and /agent.
+    const mediaResource = api.root.addResource('media');
+    mediaResource.addMethod('GET', new apigateway.LambdaIntegration(listMediaFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    const mediaItemResource = mediaResource.addResource('{id}');
+    mediaItemResource.addMethod('PATCH', new apigateway.LambdaIntegration(updateMediaFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    mediaItemResource.addMethod('DELETE', new apigateway.LambdaIntegration(deleteMediaFn), {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

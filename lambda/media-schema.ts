@@ -71,6 +71,25 @@ export const mediaAssetSchema = z.object({
 export type MediaAsset = z.infer<typeof mediaAssetSchema>;
 
 /**
+ * Editable metadata on a stored asset. Every field is optional, but at least one
+ * must be present — an empty body has nothing to change and is rejected so the
+ * handler never issues a no-op write.
+ */
+export const updateMediaRequestSchema = z
+  .object({
+    alt: z.string().max(500).optional(),
+    title: z.string().max(200).optional(),
+    category: z.enum(MEDIA_CATEGORIES).optional(),
+  })
+  .refine(
+    (value) =>
+      value.alt !== undefined || value.title !== undefined || value.category !== undefined,
+    { message: 'Provide at least one of alt, title or category' },
+  );
+
+export type UpdateMediaRequest = z.infer<typeof updateMediaRequestSchema>;
+
+/**
  * Reduce a client-supplied filename to a safe key segment: strip path traversal,
  * collapse separators and unsafe characters to single dashes, and keep it out of
  * the way of the object-key prefix structure. Never trusted as-is.

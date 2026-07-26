@@ -107,6 +107,60 @@ test('create-upload may only write the incoming prefix, never read the catalog',
   expect(uploadPolicy).toBeDefined();
 });
 
+test('GET /media lists the catalog behind Cognito, with no API key', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'media' });
+  const methods = template.findResources('AWS::ApiGateway::Method');
+  const listGet = Object.values(methods).filter(
+    (m) =>
+      m.Properties.HttpMethod === 'GET' &&
+      m.Properties.AuthorizationType === 'COGNITO_USER_POOLS' &&
+      JSON.stringify(m.Properties.ResourceId ?? '').includes('media'),
+  );
+  expect(listGet.length).toBe(1);
+  expect(listGet[0].Properties.ApiKeyRequired).toBeFalsy();
+});
+
+test('PATCH and DELETE /media/{id} are Cognito-gated', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: '{id}' });
+  const methods = Object.values(template.findResources('AWS::ApiGateway::Method'));
+  for (const verb of ['PATCH', 'DELETE']) {
+    const guarded = methods.filter(
+      (m) =>
+        m.Properties.HttpMethod === verb &&
+        m.Properties.AuthorizationType === 'COGNITO_USER_POOLS',
+    );
+    expect(guarded.length).toBe(1);
+    expect(guarded[0].Properties.ApiKeyRequired).toBeFalsy();
+  }
+});
+
+test('delete-media may purge the public prefix and invalidate CloudFront', () => {
+  const template = synthStack();
+
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const deletePolicy = policies.find((p) =>
+    p.Properties.PolicyDocument.Statement.some(
+      (s: { Action?: string | string[]; Resource?: unknown }) =>
+        // CDK's grantDelete grants the wildcard s3:DeleteObject* action.
+        (Array.isArray(s.Action) ? s.Action : [s.Action]).some((a: string | undefined) =>
+          a?.startsWith('s3:DeleteObject'),
+        ) && JSON.stringify(s.Resource ?? '').includes('public/*'),
+    ),
+  );
+  expect(deletePolicy).toBeDefined();
+
+  const canInvalidate = policies.some((p) =>
+    p.Properties.PolicyDocument.Statement.some((s: { Action?: string | string[] }) =>
+      (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('cloudfront:CreateInvalidation'),
+    ),
+  );
+  expect(canInvalidate).toBe(true);
+});
+
 test('create-upload and resize-image functions are wired with their env config', () => {
   const template = synthStack();
 

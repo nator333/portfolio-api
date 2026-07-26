@@ -7,6 +7,7 @@ import {
   incomingKey,
   publicKey,
   sanitizeFilename,
+  updateMediaRequestSchema,
 } from '../lambda/media-schema';
 
 const baseRequest = {
@@ -69,4 +70,21 @@ test('publicKey lands under the public prefix with the variant label', () => {
   const key = publicKey('abc-123', 'w1600');
   expect(key.startsWith(MEDIA_PUBLIC_PREFIX)).toBe(true);
   expect(key).toBe(`${MEDIA_PUBLIC_PREFIX}abc-123/w1600.webp`);
+});
+
+test('accepts a metadata update of a single field', () => {
+  expect(updateMediaRequestSchema.safeParse({ alt: 'A dog' }).success).toBe(true);
+  expect(updateMediaRequestSchema.safeParse({ title: 'Hero', category: 'blog' }).success).toBe(true);
+});
+
+test('rejects an empty metadata update (nothing to change)', () => {
+  expect(updateMediaRequestSchema.safeParse({}).success).toBe(false);
+});
+
+test('rejects an unknown category in a metadata update', () => {
+  expect(updateMediaRequestSchema.safeParse({ category: 'invoices' }).success).toBe(false);
+});
+
+test('rejects an over-long alt text', () => {
+  expect(updateMediaRequestSchema.safeParse({ alt: 'x'.repeat(501) }).success).toBe(false);
 });

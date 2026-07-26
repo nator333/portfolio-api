@@ -38,8 +38,9 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
 
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
   // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
-  // for media (16); and the CDK-managed S3 bucket-notifications handler (17).
-  template.resourceCountIs('AWS::Lambda::Function', 17);
+  // for media (16); the CDK-managed S3 bucket-notifications handler (17); and
+  // list/update/delete-media for the media library (20).
+  template.resourceCountIs('AWS::Lambda::Function', 20);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
