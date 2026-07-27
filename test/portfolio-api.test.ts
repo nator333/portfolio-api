@@ -3,7 +3,9 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { PortfolioApiStack } from '../lib/portfolio-api-stack';
 
 function synthStack(stage = 'test') {
-  const app = new cdk.App();
+  // Skip esbuild + sharp asset bundling: these assertions read the CloudFormation
+  // template shape, not the built code, and bundling is the slow part of synth.
+  const app = new cdk.App({ context: { 'aws:cdk:bundling-stacks': [] } });
   const stack = new PortfolioApiStack(app, 'MyTestStack', {
     stage,
     githubUser: 'octocat',
@@ -35,8 +37,10 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   const template = synthStack();
 
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
-  // get-activity, github-ingest, pre-signup.
-  template.resourceCountIs('AWS::Lambda::Function', 14);
+  // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
+  // for media (16); the CDK-managed S3 bucket-notifications handler (17); and
+  // list/update/delete-media for the media library (20).
+  template.resourceCountIs('AWS::Lambda::Function', 20);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -148,14 +152,18 @@ test('POST /agent requires Cognito auth and no API key', () => {
     HttpMethod: 'POST',
     AuthorizationType: 'COGNITO_USER_POOLS',
   });
+  // The Cognito-guarded POSTs are /agent and /uploads; neither carries an API key
+  // so admin traffic never draws down a usage-plan quota.
   const methods = template.findResources('AWS::ApiGateway::Method');
-  const agentPosts = Object.values(methods).filter(
+  const cognitoPosts = Object.values(methods).filter(
     (m) =>
       m.Properties.HttpMethod === 'POST' &&
       m.Properties.AuthorizationType === 'COGNITO_USER_POOLS',
   );
-  expect(agentPosts.length).toBe(1);
-  expect(agentPosts[0].Properties.ApiKeyRequired).toBeFalsy();
+  expect(cognitoPosts.length).toBe(2);
+  for (const post of cognitoPosts) {
+    expect(post.Properties.ApiKeyRequired).toBeFalsy();
+  }
 });
 
 test('agent Lambda can invoke Bedrock but cannot write to the table', () => {
@@ -237,7 +245,7 @@ test('GitHub activity is snapshotted on a schedule, not proxied per request', ()
 });
 
 test('no GitHub user means no schedule, and the feed still deploys', () => {
-  const app = new cdk.App();
+  const app = new cdk.App({ context: { 'aws:cdk:bundling-stacks': [] } });
   const stack = new PortfolioApiStack(app, 'NoGitHubStack', {
     stage: 'test',
     authCallbackUrls: ['http://localhost:4200/login'],

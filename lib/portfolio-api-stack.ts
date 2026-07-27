@@ -5,6 +5,10 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -72,6 +76,14 @@ const BEDROCK_BUDGET_USD = 5;
 const GOOGLE_CLIENT_ID_PARAM = '/portfolio/cv/google-client-id';
 /** Secrets Manager secret holding the Google OAuth client secret (json field: client_secret). */
 const GOOGLE_CLIENT_SECRET_NAME = 'cv-google-oauth';
+
+/**
+ * Pinned sharp version for the resize Lambda. sharp ships prebuilt native
+ * binaries, so the bundling hook cross-installs the Lambda-linux/x64 build for
+ * this exact version — no Docker, reproducible on macOS and CI alike. Keep in
+ * step with the `sharp` range in package.json.
+ */
+const SHARP_VERSION = '0.35.3';
 
 export interface PortfolioApiStackProps extends cdk.StackProps {
   /** Deployment stage, e.g. "dev" or "prod". Applied as a tag on all stack resources. */
@@ -148,6 +160,52 @@ export class PortfolioApiStack extends cdk.Stack {
     userPoolClient.node.addDependency(googleIdp);
 
     const allowedOrigins = props.allowedOrigins ?? ['http://localhost:4200'];
+
+    // Media (blog eye-catch + project images). Uploads land under `incoming/`
+    // via a presigned POST, a resize Lambda writes optimised WebP variants to
+    // `public/`, and CloudFront serves `public/` over a locked-down bucket.
+    const mediaBucket = new s3.Bucket(this, 'MediaBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      cors: [
+        {
+          // The browser POSTs the file straight to S3 from the admin SPA origin.
+          allowedMethods: [s3.HttpMethods.POST],
+          allowedOrigins,
+          allowedHeaders: ['*'],
+          exposedHeaders: ['ETag', 'Location'],
+        },
+      ],
+      lifecycleRules: [
+        // Safety net: any raw upload the resize Lambda didn't consume is swept
+        // up rather than left to accumulate under the ingest prefix.
+        { prefix: 'incoming/', expiration: cdk.Duration.days(1) },
+      ],
+    });
+
+    // One row per uploaded image; written by the resize Lambda. Kept separate
+    // from the single-document CvTable since media is a growing collection.
+    const mediaTable = new dynamodb.Table(this, 'MediaAssetsTable', {
+      partitionKey: { name: 'assetId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Only the `public/` prefix is web-reachable, via Origin Access Control;
+    // the bucket itself stays private (no public policy, no OAI legacy).
+    const mediaDistribution = new cloudfront.Distribution(this, 'MediaDistribution', {
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessControl(mediaBucket, {
+          originPath: '/public',
+        }),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+      },
+      comment: `portfolio media (${props.stage})`,
+    });
+    const mediaCdnBaseUrl = `https://${mediaDistribution.distributionDomainName}`;
 
     const lambdaDefaults: Partial<lambdaNode.NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -299,6 +357,116 @@ export class PortfolioApiStack extends cdk.Stack {
       }),
     );
 
+    // Presigned-POST issuer for admin image uploads. Cognito-gated at the
+    // gateway; signs a short-lived POST to the ingest prefix and nothing more,
+    // so it never reads the catalog or the public prefix.
+    const createUploadFn = new lambdaNode.NodejsFunction(this, 'CreateUploadFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'create-upload.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      bundling: { externalModules: ['@aws-sdk/*'] },
+      environment: {
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        CORS_ALLOWED_ORIGINS: allowedOrigins.join(','),
+      },
+    });
+    mediaBucket.grantPut(createUploadFn, 'incoming/*');
+
+    // Resize pipeline: triggered by ObjectCreated on `incoming/`, emits WebP
+    // variants to `public/`, writes the catalog row, deletes the raw upload.
+    const resizeImageFn = new lambdaNode.NodejsFunction(this, 'ResizeImageFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'resize-image.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      // sharp decoding of a full-size photo is CPU-bound; more memory buys more
+      // CPU, and the timeout covers a couple of variants plus the S3 round trips.
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 1536,
+      environment: {
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        MEDIA_TABLE_NAME: mediaTable.tableName,
+        MEDIA_CDN_BASE_URL: mediaCdnBaseUrl,
+      },
+      bundling: {
+        // sharp carries a native binary esbuild must not touch; the hook installs
+        // the Lambda-linux/x64 prebuilt into the bundle (no Docker needed).
+        externalModules: ['@aws-sdk/*', 'sharp'],
+        commandHooks: {
+          beforeBundling: () => [],
+          beforeInstall: () => [],
+          // sharp is installed into the bundle by giving it its own manifest in
+          // the output dir and pointing npm at that dir with --prefix. Absolute
+          // paths only, and no `cd`: CDK runs each hook line as a separate
+          // command, so a `cd` would not persist and a bare `package.json`/
+          // `npm install` would land in — and clobber — the project root. The
+          // platform flags fetch the Lambda linux/x64 prebuilt (no Docker).
+          afterBundling: (_inputDir: string, outputDir: string) => [
+            `echo '{"dependencies":{"sharp":"${SHARP_VERSION}"}}' > ${outputDir}/package.json`,
+            `npm install --prefix ${outputDir} --cpu=x64 --os=linux --libc=glibc --omit=dev`,
+          ],
+        },
+      },
+    });
+    mediaBucket.grantRead(resizeImageFn, 'incoming/*');
+    mediaBucket.grantDelete(resizeImageFn, 'incoming/*');
+    mediaBucket.grantPut(resizeImageFn, 'public/*');
+    mediaTable.grantWriteData(resizeImageFn);
+    mediaBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(resizeImageFn),
+      { prefix: 'incoming/' },
+    );
+
+    // Media library management (all Cognito-gated). Read-only listing, metadata
+    // edits, and delete — the write paths for the admin picker/library UI.
+    const mediaLambdaEnv = {
+      MEDIA_TABLE_NAME: mediaTable.tableName,
+      CORS_ALLOWED_ORIGINS: allowedOrigins.join(','),
+    };
+
+    const listMediaFn = new lambdaNode.NodejsFunction(this, 'ListMediaFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'list-media.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      bundling: { externalModules: ['@aws-sdk/*'] },
+      environment: mediaLambdaEnv,
+    });
+    mediaTable.grantReadData(listMediaFn);
+
+    const updateMediaFn = new lambdaNode.NodejsFunction(this, 'UpdateMediaFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'update-media.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      bundling: { externalModules: ['@aws-sdk/*'] },
+      environment: mediaLambdaEnv,
+    });
+    mediaTable.grantWriteData(updateMediaFn);
+
+    const deleteMediaFn = new lambdaNode.NodejsFunction(this, 'DeleteMediaFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'delete-media.ts'),
+      runtime: lambda.Runtime.NODEJS_20_X,
+      // client-cloudfront is not guaranteed in the Lambda runtime SDK, so bundle
+      // it; the heavier s3/dynamodb clients stay external (runtime-provided).
+      bundling: {
+        externalModules: [
+          '@aws-sdk/client-s3',
+          '@aws-sdk/client-dynamodb',
+          '@aws-sdk/lib-dynamodb',
+        ],
+      },
+      environment: {
+        ...mediaLambdaEnv,
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        MEDIA_DISTRIBUTION_ID: mediaDistribution.distributionId,
+      },
+    });
+    mediaTable.grantReadWriteData(deleteMediaFn);
+    mediaBucket.grantDelete(deleteMediaFn, 'public/*');
+    deleteMediaFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['cloudfront:CreateInvalidation'],
+        resources: [
+          `arn:aws:cloudfront::${this.account}:distribution/${mediaDistribution.distributionId}`,
+        ],
+      }),
+    );
+
     // Daily snapshot of public GitHub activity. Scheduled rather than proxied on
     // request: the feed is on the landing page's critical path, and calling
     // GitHub inline would put its rate limit and availability there too.
@@ -328,7 +496,7 @@ export class PortfolioApiStack extends cdk.Stack {
       deployOptions: { stageName: props.stage },
       defaultCorsPreflightOptions: {
         allowOrigins: allowedOrigins,
-        allowMethods: ['GET', 'PUT', 'POST', 'OPTIONS'],
+        allowMethods: ['GET', 'PUT', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
         allowHeaders: ['Content-Type', 'Authorization', 'X-Api-Key'],
       },
     });
@@ -389,6 +557,31 @@ export class PortfolioApiStack extends cdk.Stack {
     // draws down either usage-plan quota.
     const agentResource = api.root.addResource('agent');
     agentResource.addMethod('POST', new apigateway.LambdaIntegration(agentFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // Admin image uploads: Cognito is the gate; no API key so upload traffic
+    // never draws down a usage-plan quota, same posture as /agent.
+    const uploadsResource = api.root.addResource('uploads');
+    uploadsResource.addMethod('POST', new apigateway.LambdaIntegration(createUploadFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // Media library: list the catalog, and edit/delete individual assets. All
+    // Cognito-gated, no API key — same admin posture as /uploads and /agent.
+    const mediaResource = api.root.addResource('media');
+    mediaResource.addMethod('GET', new apigateway.LambdaIntegration(listMediaFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    const mediaItemResource = mediaResource.addResource('{id}');
+    mediaItemResource.addMethod('PATCH', new apigateway.LambdaIntegration(updateMediaFn), {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    mediaItemResource.addMethod('DELETE', new apigateway.LambdaIntegration(deleteMediaFn), {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -485,5 +678,10 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
+    new cdk.CfnOutput(this, 'MediaBucketName', { value: mediaBucket.bucketName });
+    new cdk.CfnOutput(this, 'MediaCdnBaseUrl', {
+      value: mediaCdnBaseUrl,
+      description: 'CloudFront base URL for uploaded images; store <base>/<assetId>/<variant>.webp',
+    });
   }
 }
