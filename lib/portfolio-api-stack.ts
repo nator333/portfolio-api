@@ -41,6 +41,16 @@ const CONTENT_DAILY_REQUEST_QUOTA = 350;
 const WORKOUT_DAILY_REQUEST_QUOTA = 350;
 
 /**
+ * The MCP endpoint gets its own key and daily quota, like /workout and /chat, so
+ * agent traffic can neither starve the content endpoints nor be starved by them.
+ * The key is public-by-design (a spend cap, not a boundary, exactly like the
+ * content key); write authorization is the in-Lambda admin-token check, not the
+ * key. Reads are cheap DynamoDB round trips, so the ceiling mirrors the content
+ * plan rather than the tighter chat one.
+ */
+const MCP_DAILY_REQUEST_QUOTA = 350;
+
+/**
  * Throttle applied per key, i.e. shared by every visitor using it. The previous
  * 2/s with a burst of 5 was tight enough that a page fetching several endpoints
  * at once, or a few concurrent visitors, could draw spurious 429s. With a daily
@@ -467,6 +477,45 @@ export class PortfolioApiStack extends cdk.Stack {
       }),
     );
 
+    // Model Context Protocol server: re-exposes the site's own handlers as MCP
+    // tools over one public POST /mcp, so any agent can read the portfolio and —
+    // with an admin token — edit it. Reads are anonymous; every write tool is
+    // refused in the handler unless the caller presents a Cognito ID token for
+    // an allowlisted admin. That in-code gate, not the absence of an IAM grant,
+    // is the write boundary here (see lambda/mcp.ts), so unlike chat/agent this
+    // role does carry the write grants the admin tools need.
+    const mcpFn = new lambdaNode.NodejsFunction(this, 'McpFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'mcp.ts'),
+      ...lambdaDefaults,
+      // get_workout runs the same five cross-region paginated queries as the
+      // /workout endpoint, so it inherits that function's headroom.
+      timeout: cdk.Duration.seconds(20),
+      memorySize: 256,
+      environment: {
+        ...lambdaDefaults.environment,
+        MEDIA_TABLE_NAME: mediaTable.tableName,
+        WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
+        WORKOUT_REGION,
+        // The write gate verifies Cognito ID tokens against this pool + client
+        // and checks the email against the same admin allowlist as the PUTs.
+        USER_POOL_ID: userPool.userPoolId,
+        USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
+        ADMIN_EMAILS: props.adminEmails.join(','),
+      },
+    });
+    // Read for the get_ tools (CV/projects/blog/home/activity all live here) and
+    // write for the update_ tools; the token check gates which path a caller reaches.
+    cvTable.grantReadWriteData(mcpFn);
+    // list_media reads the catalogue; update_media edits a row's metadata.
+    mediaTable.grantReadWriteData(mcpFn);
+    // get_workout / get_activity read the cross-region summary table, read-only.
+    mcpFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:BatchGetItem'],
+        resources: [workoutSummaryArn],
+      }),
+    );
+
     // Daily snapshot of public GitHub activity. Scheduled rather than proxied on
     // request: the feed is on the landing page's critical path, and calling
     // GitHub inline would put its rate limit and availability there too.
@@ -601,6 +650,14 @@ export class PortfolioApiStack extends cdk.Stack {
       apiKeyRequired: true,
     });
 
+    // MCP server: one public POST, key only (its own quota), no Cognito at the
+    // gateway — reads must stay anonymous, so the write authorization is the
+    // admin-token check inside the Lambda rather than a gateway authorizer.
+    const mcpResource = api.root.addResource('mcp');
+    mcpResource.addMethod('POST', new apigateway.LambdaIntegration(mcpFn), {
+      apiKeyRequired: true,
+    });
+
     // Note on what a separate plan does and does not buy: a usage plan is bound
     // to the whole stage, not to individual methods, so any valid key can call
     // any key-required endpoint. Which quota is debited follows the key the
@@ -623,6 +680,18 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     workoutUsagePlan.addApiKey(workoutApiKey);
     workoutUsagePlan.addApiStage({ stage: api.deploymentStage });
+
+    // MCP gets its own key and daily quota so agent traffic is isolated from the
+    // content and workout plans in both directions. Daily, not monthly: like the
+    // content key it is public-by-design and guards no real spend (no Bedrock on
+    // this path), so a bounded, self-healing period is the right cap.
+    const mcpApiKey = api.addApiKey('McpApiKey');
+    const mcpUsagePlan = api.addUsagePlan('McpUsagePlan', {
+      quota: { limit: MCP_DAILY_REQUEST_QUOTA, period: apigateway.Period.DAY },
+      throttle: API_THROTTLE,
+    });
+    mcpUsagePlan.addApiKey(mcpApiKey);
+    mcpUsagePlan.addApiStage({ stage: api.deploymentStage });
 
     // Chat gets its own key and quota so visitor chat can't exhaust the CV/projects
     // quota (and vice versa). Its cap stays monthly: unlike the content plan it
@@ -675,6 +744,10 @@ export class PortfolioApiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'WorkoutApiKeyId', {
       value: workoutApiKey.keyId,
       description: 'API key for GET /workout; fetch the value the same way as ApiKeyId',
+    });
+    new cdk.CfnOutput(this, 'McpApiKeyId', {
+      value: mcpApiKey.keyId,
+      description: 'API key for POST /mcp (send as X-Api-Key); fetch the value the same way as ApiKeyId',
     });
     new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });

@@ -38,9 +38,9 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
 
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
   // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
-  // for media (16); the CDK-managed S3 bucket-notifications handler (17); and
-  // list/update/delete-media for the media library (20).
-  template.resourceCountIs('AWS::Lambda::Function', 20);
+  // for media (16); the CDK-managed S3 bucket-notifications handler (17);
+  // list/update/delete-media for the media library (20); and the MCP server (21).
+  template.resourceCountIs('AWS::Lambda::Function', 21);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -121,13 +121,15 @@ test('no content-facing plan uses a monthly quota', () => {
 test('workout has its own key and daily plan so it cannot starve content', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::ApiGateway::ApiKey', 3);
-  template.resourceCountIs('AWS::ApiGateway::UsagePlan', 3);
+  // Four keys/plans: content, workout, chat and mcp.
+  template.resourceCountIs('AWS::ApiGateway::ApiKey', 4);
+  template.resourceCountIs('AWS::ApiGateway::UsagePlan', 4);
 
   const daily = Object.values(template.findResources('AWS::ApiGateway::UsagePlan')).filter(
     (p) => p.Properties.Quota?.Period === 'DAY',
   );
-  expect(daily).toHaveLength(2);
+  // Content, workout and mcp are all daily at 350; only chat caps monthly.
+  expect(daily).toHaveLength(3);
   for (const plan of daily) {
     expect(plan.Properties.Quota.Limit).toBe(350);
   }
@@ -231,8 +233,8 @@ test('GET /activity is public and merges sources server-side', () => {
         (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:Query'),
     ),
   );
-  // get-workout and get-activity each hold one.
-  expect(activityPolicy.length).toBe(2);
+  // get-workout, get-activity and the MCP server each read it with a Query.
+  expect(activityPolicy.length).toBe(3);
 });
 
 test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
@@ -268,9 +270,72 @@ test('GET /workout is public (key only, no Cognito)', () => {
   });
 });
 
+test('POST /mcp is public at the gateway (key only, no Cognito authorizer)', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'mcp' });
+
+  // Reads must stay anonymous, so the gateway gates only with the key; the write
+  // authorization is the admin-token check inside the Lambda, not a Cognito
+  // authorizer here. So /mcp is a POST with auth NONE, unlike /agent.
+  const methods = template.findResources('AWS::ApiGateway::Method');
+  const mcpPosts = Object.values(methods).filter(
+    (m) =>
+      m.Properties.HttpMethod === 'POST' &&
+      JSON.stringify(m.Properties.ResourceId ?? '').includes('mcp'),
+  );
+  expect(mcpPosts.length).toBe(1);
+  expect(mcpPosts[0].Properties.ApiKeyRequired).toBe(true);
+  expect(mcpPosts[0].Properties.AuthorizationType).toBe('NONE');
+});
+
+test('the MCP Lambda carries the admin write-gate config and stays off Bedrock', () => {
+  const template = synthStack();
+
+  // The write gate verifies Cognito ID tokens and checks the admin allowlist, so
+  // the function must know the pool, its client and the allowlisted emails.
+  const functions = Object.values(template.findResources('AWS::Lambda::Function'));
+  const envVars = (f: { Properties?: { Environment?: { Variables?: Record<string, unknown> } } }) =>
+    f.Properties?.Environment?.Variables ?? {};
+  const mcp = functions.filter((f) => {
+    const keys = Object.keys(envVars(f));
+    return (
+      keys.includes('USER_POOL_ID') &&
+      keys.includes('USER_POOL_CLIENT_ID') &&
+      keys.includes('ADMIN_EMAILS') &&
+      keys.includes('MEDIA_TABLE_NAME')
+    );
+  });
+  expect(mcp.length).toBe(1);
+  expect(envVars(mcp[0]).ADMIN_EMAILS).toBe('admin@example.com');
+});
+
+test('the MCP role can write the content/media tables but never invoke Bedrock', () => {
+  const template = synthStack();
+
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+
+  // Exactly one role both writes DynamoDB and never touches Bedrock while holding
+  // the cross-region workout read — that combination is unique to the MCP Lambda.
+  const mcpPolicies = policies.filter((p) => {
+    const statements = p.Properties.PolicyDocument.Statement as Array<{
+      Action?: string | string[];
+      Resource?: unknown;
+    }>;
+    const actions = statements.flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
+    const writesTable = actions.includes('dynamodb:PutItem') || actions.includes('dynamodb:UpdateItem');
+    const readsWorkout = statements.some((s) =>
+      JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
+    );
+    const invokesBedrock = actions.some((a) => a?.startsWith('bedrock:'));
+    return writesTable && readsWorkout && !invokesBedrock;
+  });
+  expect(mcpPolicies.length).toBeGreaterThanOrEqual(1);
+});
+
 test('every reader of the workout table is cross-region and read-only', () => {
-  // get-workout and get-activity both read it; neither may ever write, since
-  // the only writer is the ingest Lambda in us-west-2.
+  // get-workout, get-activity and the MCP server all read it; none may ever
+  // write, since the only writer is the ingest Lambda in us-west-2.
   const template = synthStack('prod');
 
   const policies = template.findResources('AWS::IAM::Policy');
@@ -279,7 +344,7 @@ test('every reader of the workout table is cross-region and read-only', () => {
       JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
     ),
   );
-  expect(workoutPolicies.length).toBe(2);
+  expect(workoutPolicies.length).toBe(3);
 
   for (const policy of workoutPolicies) {
     const crossRegion = policy.Properties.PolicyDocument.Statement.filter(
