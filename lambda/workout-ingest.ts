@@ -161,25 +161,30 @@ function extractCsv(mail: Awaited<ReturnType<typeof simpleParser>>): ExtractedCs
   return null;
 }
 
-async function loadExistingDays(summaryTable: string): Promise<Set<string>> {
-  const days = new Set<string>();
+/** Every sort key currently stored under one summary partition. */
+async function queryPartitionSks(summaryTable: string, pk: string): Promise<Set<string>> {
+  const sks = new Set<string>();
   let lastKey: Record<string, unknown> | undefined;
   do {
     const page = await ddb.send(
       new QueryCommand({
         TableName: summaryTable,
         KeyConditionExpression: 'pk = :pk',
-        ExpressionAttributeValues: { ':pk': SUMMARY_PK.day },
+        ExpressionAttributeValues: { ':pk': pk },
         ProjectionExpression: 'sk',
         ExclusiveStartKey: lastKey,
       }),
     );
     for (const item of page.Items ?? []) {
-      if (typeof item.sk === 'string') days.add(item.sk);
+      if (typeof item.sk === 'string') sks.add(item.sk);
     }
     lastKey = page.LastEvaluatedKey;
   } while (lastKey);
-  return days;
+  return sks;
+}
+
+async function loadExistingDays(summaryTable: string): Promise<Set<string>> {
+  return queryPartitionSks(summaryTable, SUMMARY_PK.day);
 }
 
 async function loadPriorTotalSets(summaryTable: string): Promise<number | null> {
@@ -224,6 +229,29 @@ async function writeSummaries(
     { pk: SUMMARY_PK.meta, sk: META_SK, ...summaries.meta, lastImportAt: new Date().toISOString(), sourceFileName: filename },
   ];
   await batchWrite(summaryTable, items, (item) => `${item.pk}|${item.sk}`);
+  // Write first, then prune: the fresh rollup is always in place even if the
+  // prune fails, and pruning never removes a group the new rollup still has.
+  await deleteStaleMuscleRows(summaryTable, summaries.muscles.map((m) => m.sk));
+}
+
+/**
+ * The import rebuilds every rollup from scratch, but BatchWrite only upserts —
+ * it can't remove a MUSCLE row the new rollup no longer produces. When exercises
+ * are re-classified into a different group (e.g. the Legs split into
+ * Quads/Hamstrings/Glutes, or folding Traps into Back), the old group's row would
+ * otherwise linger forever and double-count in the all-time muscle balance.
+ * Delete any MUSCLE row whose group is absent from the freshly written summary.
+ */
+async function deleteStaleMuscleRows(
+  summaryTable: string,
+  keptMuscles: readonly string[],
+): Promise<void> {
+  const keep = new Set<string>(keptMuscles);
+  const existing = await queryPartitionSks(summaryTable, SUMMARY_PK.muscle);
+  const stale = [...existing].filter((sk) => !keep.has(sk));
+  if (stale.length === 0) return;
+  await batchDelete(summaryTable, stale.map((sk) => ({ pk: SUMMARY_PK.muscle, sk })));
+  console.log(`Removed ${stale.length} stale muscle summary row(s): ${stale.join(', ')}`);
 }
 
 /**
@@ -270,6 +298,33 @@ async function writeChunk(table: string, chunk: Record<string, unknown>[]): Prom
   }
   if (requests.length > 0) {
     throw new Error(`BatchWrite to ${table} left ${requests.length} items unprocessed after retries`);
+  }
+}
+
+/** Mirror of batchWrite for removals, used to prune summary rows the rebuild dropped. */
+async function batchDelete(table: string, keys: readonly Record<string, string>[]): Promise<void> {
+  const chunks: Record<string, string>[][] = [];
+  for (let i = 0; i < keys.length; i += DDB_BATCH_LIMIT) {
+    chunks.push(keys.slice(i, i + DDB_BATCH_LIMIT));
+  }
+
+  const concurrency = 5;
+  for (let i = 0; i < chunks.length; i += concurrency) {
+    await Promise.all(chunks.slice(i, i + concurrency).map((chunk) => deleteChunk(table, chunk)));
+  }
+}
+
+async function deleteChunk(table: string, chunk: Record<string, string>[]): Promise<void> {
+  let requests = chunk.map((Key) => ({ DeleteRequest: { Key } }));
+  for (let attempt = 0; attempt < 5 && requests.length > 0; attempt += 1) {
+    const result = await ddb.send(new BatchWriteCommand({ RequestItems: { [table]: requests } }));
+    const unprocessed = result.UnprocessedItems?.[table] ?? [];
+    if (unprocessed.length === 0) return;
+    requests = unprocessed as typeof requests;
+    await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+  }
+  if (requests.length > 0) {
+    throw new Error(`BatchDelete to ${table} left ${requests.length} items unprocessed after retries`);
   }
 }
 
