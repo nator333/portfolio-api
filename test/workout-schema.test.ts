@@ -178,7 +178,7 @@ describe('summarize', () => {
     expect(day.sets).toBe(3);
     expect(day.exerciseCount).toBe(2);
     expect(day.volume).toBe(100 * 5 + 100 * 5 + 120 * 5);
-    expect(day.muscles).toEqual({ Chest: 2, Legs: 1 });
+    expect(day.muscles).toEqual({ Chest: 2, Quads: 1 });
   });
 
   test('rolls up per-month totals across distinct workout days', () => {
@@ -233,9 +233,12 @@ describe('muscleFor', () => {
     ['ラットプルダウン', 'Back'],
     ['Pull ups', 'Back'],
     ['シーテッドケーブルロウズ', 'Back'],
-    ['バーベル スクワット', 'Legs'],
-    ['レッグ プレス', 'Legs'],
-    ['ルーマニアン デッドリフト', 'Legs'],
+    ['バーベル スクワット', 'Quads'],
+    ['レッグ プレス', 'Quads'],
+    ['レッグ エクステンション', 'Quads'],
+    ['ルーマニアン デッドリフト', 'Hamstrings'],
+    ['Barbell Hip Thrust', 'Glutes'],
+    ['アブダクター (Outer)', 'Glutes'],
     ['サイド ラテラル レイズ', 'Shoulders'],
     ['ダンベル ショルダー プレス', 'Shoulders'],
     ['マシン リバース バタフライ', 'Shoulders'],
@@ -244,7 +247,7 @@ describe('muscleFor', () => {
     ['ナロー グリップ ベンチプレス', 'Triceps'],
     ['シーテッド カーフ レイズ', 'Calves'],
     ['ダンベルシュラッグ', 'Traps'],
-    ['ライング レッグカール', 'Legs'],
+    ['ライング レッグカール', 'Hamstrings'],
     ['スタンディング ビハインド ザ バック ケーブル リストカール', 'Forearms'],
     ['デクライン・クランチ', 'Abs'],
     ['水泳', 'Cardio'],

@@ -107,12 +107,12 @@ describe('gitHubEventsToEntries', () => {
 describe('workoutDaysToEntries', () => {
   test('leads the title with the day’s most-worked muscles', () => {
     const [entry] = workoutDaysToEntries([
-      { sk: '2026-07-23', sets: 14, muscles: { Legs: 12, Calves: 2 } },
+      { sk: '2026-07-23', sets: 14, muscles: { Quads: 12, Calves: 2 } },
     ]);
     expect(entry).toEqual({
       date: '2026-07-23',
       type: 'gym',
-      title: 'Workout: 14 sets — Legs, Calves',
+      title: 'Workout: 14 sets — Quads, Calves',
     });
   });
 
@@ -144,7 +144,7 @@ describe('mergeActivity', () => {
   const github = gitHubEventsToEntries([
     { type: 'PushEvent', created_at: '2026-07-20T10:00:00Z', repo: { name: 'o/r' } },
   ]);
-  const gym = workoutDaysToEntries([{ sk: '2026-07-23', sets: 14, muscles: { Legs: 14 } }]);
+  const gym = workoutDaysToEntries([{ sk: '2026-07-23', sets: 14, muscles: { Quads: 14 } }]);
   const blog = blogPostsToEntries([{ title: 'Post', date: '2026-07-01', url: '/blog/post' }]);
 
   test('returns every source newest first', () => {
@@ -164,7 +164,7 @@ describe('mergeActivity', () => {
 
   test('orders same-day entries deterministically across requests', () => {
     const sameDay = [
-      workoutDaysToEntries([{ sk: '2026-07-20', sets: 5, muscles: { Legs: 5 } }]),
+      workoutDaysToEntries([{ sk: '2026-07-20', sets: 5, muscles: { Quads: 5 } }]),
       github,
       blogPostsToEntries([{ title: 'P', date: '2026-07-20', url: '/p' }]),
     ];

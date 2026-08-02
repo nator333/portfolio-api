@@ -9,19 +9,24 @@
  *
  * Order matters — earlier rules override later ones for names that could match
  * several. For example a wrist curl must resolve to Forearms before the generic
- * "curl"→Biceps rule, and a leg curl to Legs before it, so both sit above
+ * "curl"→Biceps rule, and a leg curl to Hamstrings before it, so both sit above
  * Biceps. Rear-delt work sits above the generic Shoulders/Chest rules so
  * "reverse butterfly" is a shoulder movement, not a chest one.
  *
- * These are training-convention judgment calls, not anatomy: deadlift variants
- * are counted as Legs (posterior-chain dominant), face pulls and upright rows as
- * Shoulders. Adjust the rules here as the exercise vocabulary evolves.
+ * These are training-convention judgment calls, not anatomy. The lower body is
+ * split into Quads (knee-extension dominant: squats, presses, extensions,
+ * lunges), Hamstrings (hip-hinge / knee-flexion: deadlift variants, leg curls,
+ * rack pulls) and Glutes (hip thrusts, glute-ham/abductor work); face pulls and
+ * upright rows count as Shoulders. Adjust the rules here as the exercise
+ * vocabulary evolves.
  */
 
 export type MuscleGroup =
   | 'Chest'
   | 'Back'
-  | 'Legs'
+  | 'Quads'
+  | 'Hamstrings'
+  | 'Glutes'
   | 'Shoulders'
   | 'Biceps'
   | 'Triceps'
@@ -35,7 +40,9 @@ export type MuscleGroup =
 export const MUSCLE_GROUPS: readonly MuscleGroup[] = [
   'Chest',
   'Back',
-  'Legs',
+  'Quads',
+  'Hamstrings',
+  'Glutes',
   'Shoulders',
   'Biceps',
   'Triceps',
@@ -89,14 +96,30 @@ const RULES: readonly MuscleRule[] = [
     ],
   },
   {
-    muscle: 'Legs',
+    // Knee-extension dominant. Squats, presses, extensions, lunges and their
+    // hack/zercher/Bulgarian variants. Sits above Back so "leg extension" beats
+    // the generic "extension"→Back rule.
+    muscle: 'Quads',
     keywords: [
       'スクワット', 'squat', 'レッグ プレス', 'レッグプレス', 'leg press', 'レッグ エクステンション',
-      'leg extension', 'レッグ カール', 'レッグカール', 'leg curl', 'ランジ', 'lunge', 'デッドリフト',
-      'deadlift', 'dead lift', 'rdl', 'ルーマニアン', 'romanian', 'グルート', 'glute', 'hip thrust',
-      'ブルガリアン', 'bulgarian', 'ハック', 'hack', 'ゼッカ', 'zercher', 'アブダクター', 'abductor',
-      'thigh', 'rack pull', 'block pull', 'レッグ',
+      'leg extension', 'ランジ', 'lunge', 'ブルガリアン', 'bulgarian', 'ハック', 'hack', 'ゼッカ',
+      'zercher', 'thigh',
     ],
+  },
+  {
+    // Hip-hinge and knee-flexion posterior chain. Leg curls sit above the
+    // generic "curl"→Biceps rule; deadlift/RDL/rack-pull variants are counted
+    // as hamstring-dominant.
+    muscle: 'Hamstrings',
+    keywords: [
+      'レッグ カール', 'レッグカール', 'leg curl', 'デッドリフト', 'deadlift', 'dead lift', 'rdl',
+      'ルーマニアン', 'romanian', 'rack pull', 'block pull',
+    ],
+  },
+  {
+    // Hip thrusts, glute-ham and hip-abductor work.
+    muscle: 'Glutes',
+    keywords: ['グルート', 'glute', 'hip thrust', 'アブダクター', 'abductor'],
   },
   {
     // "hammer" is deliberately absent — it also names Hammer Strength machines
