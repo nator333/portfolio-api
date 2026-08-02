@@ -17,13 +17,15 @@
  * split into Quads (knee-extension dominant: squats, presses, extensions,
  * lunges), Hamstrings (hip-hinge / knee-flexion: deadlift variants, leg curls,
  * rack pulls) and Glutes (hip thrusts, glute-ham/abductor work); face pulls and
- * upright rows count as Shoulders. Adjust the rules here as the exercise
- * vocabulary evolves.
+ * upright rows count as Shoulders. The pulling group (rows, pulldowns, pull-ups)
+ * is named "Lats" rather than "Back" so it doesn't read as a superset of Traps —
+ * anatomically the traps are part of the back, so a "Back" group sitting beside a
+ * "Traps" group is ambiguous. Adjust the rules here as the vocabulary evolves.
  */
 
 export type MuscleGroup =
   | 'Chest'
-  | 'Back'
+  | 'Lats'
   | 'Quads'
   | 'Hamstrings'
   | 'Glutes'
@@ -39,7 +41,7 @@ export type MuscleGroup =
 
 export const MUSCLE_GROUPS: readonly MuscleGroup[] = [
   'Chest',
-  'Back',
+  'Lats',
   'Quads',
   'Hamstrings',
   'Glutes',
@@ -129,7 +131,10 @@ const RULES: readonly MuscleRule[] = [
   },
   { muscle: 'Traps', keywords: ['シュラッグ', 'shrug'] },
   {
-    muscle: 'Back',
+    // The lat/row pulling group. Named "Lats" (not "Back") to disambiguate from
+    // Traps, which anatomically also belongs to the back. Sits below Traps so a
+    // shrug resolves there first.
+    muscle: 'Lats',
     keywords: [
       'ラット', 'lat pull', 'プルダウン', 'pulldown', 'pull down', 'プルアップ', 'pull up', 'pull ups',
       'pullup', 'チンアップ', 'チン アップ', 'chin', 'ロウ', 'ロウズ', 'row', 'tirage', 'triage',

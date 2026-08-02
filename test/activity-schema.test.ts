@@ -118,7 +118,7 @@ describe('workoutDaysToEntries', () => {
 
   test('caps the named muscles so the line stays readable', () => {
     const [entry] = workoutDaysToEntries([
-      { sk: '2026-07-21', sets: 22, muscles: { Shoulders: 7, Chest: 6, Biceps: 6, Back: 3 } },
+      { sk: '2026-07-21', sets: 22, muscles: { Shoulders: 7, Chest: 6, Biceps: 6, Lats: 3 } },
     ]);
     expect(entry.title).toBe('Workout: 22 sets — Shoulders, Chest');
   });
