@@ -118,7 +118,7 @@ export class GithubOidcStack extends cdk.Stack {
     const roles: DeployRoleSpec[] = [
       ...this.portfolioApiRoles(qualifier),
       this.kotlinSesForwardRole(props, boundary),
-      this.threeThingsRole(props, boundary),
+      ...this.threeThingsRoles(props, boundary),
     ];
 
     for (const spec of roles) {
@@ -435,24 +435,67 @@ export class GithubOidcStack extends cdk.Stack {
   }
 
   /**
-   * 3-things deploys with AWS SAM. Beyond its own `three-things` stack it needs
-   * the SAM-managed bucket stack, because samconfig.toml sets resolve_s3 = true.
+   * 3-things has two isolated SAM deployments — the prod `three-things` stack and
+   * the dev `three-things-dev` stack — each with its own role scoped to its own
+   * stack, function, tables and log groups. Both also reach the SAM-managed
+   * bucket stack, because samconfig.toml sets resolve_s3 = true.
    */
+  private threeThingsRoles(
+    props: GithubOidcStackProps,
+    boundary: iam.ManagedPolicy,
+  ): DeployRoleSpec[] {
+    return [
+      this.threeThingsRole(props, boundary, {
+        id: 'GithubActionsThreeThingsRole',
+        roleName: 'github-actions-3-things-prod',
+        stack: 'three-things',
+        environment: 'production',
+        // Prod deploys manually from main only.
+        jobWorkflowRefs: [`${this.org}/3-things/.github/workflows/deploy.yml@refs/heads/main`],
+        tableNames: ['ThreeThingsTable', 'ThreeThingsPersistentAttributes'],
+        description: 'Assumed by GitHub Actions to deploy 3-things via AWS SAM',
+      }),
+      this.threeThingsRole(props, boundary, {
+        id: 'GithubActionsThreeThingsDevRole',
+        roleName: 'github-actions-3-things-dev',
+        stack: 'three-things-dev',
+        environment: 'development',
+        // Dev deploys on push to any non-main branch, so job_workflow_ref carries
+        // the branch ref (refs/heads/<branch>) rather than main — wildcard the ref
+        // while keeping the workflow file pinned, mirroring the portfolio-api dev
+        // role. The GitHub "development" environment's branch policy is what keeps
+        // this from being assumable off an arbitrary branch.
+        jobWorkflowRefs: [`${this.org}/3-things/.github/workflows/deploy-dev.yml@*`],
+        tableNames: ['ThreeThingsTable-dev', 'ThreeThingsPersistentAttributes-dev'],
+        description: 'Assumed by GitHub Actions to deploy the 3-things dev stack',
+      }),
+    ];
+  }
+
   private threeThingsRole(
     props: GithubOidcStackProps,
     boundary: iam.ManagedPolicy,
+    cfg: {
+      readonly id: string;
+      readonly roleName: string;
+      readonly stack: string;
+      readonly environment: string;
+      readonly jobWorkflowRefs: string[];
+      readonly tableNames: string[];
+      readonly description: string;
+    },
   ): DeployRoleSpec {
     const repo = '3-things';
     const region = props.threeThingsRegion;
-    const stack = 'three-things';
+    const stack = cfg.stack;
 
     return {
-      id: 'GithubActionsThreeThingsRole',
-      roleName: 'github-actions-3-things-prod',
+      id: cfg.id,
+      roleName: cfg.roleName,
       repo,
-      environment: 'production',
-      jobWorkflowRefs: [`${this.org}/${repo}/.github/workflows/deploy.yml@refs/heads/main`],
-      description: 'Assumed by GitHub Actions to deploy 3-things via AWS SAM',
+      environment: cfg.environment,
+      jobWorkflowRefs: cfg.jobWorkflowRefs,
+      description: cfg.description,
       policy: new iam.PolicyDocument({
         statements: [
           new iam.PolicyStatement({
@@ -556,10 +599,10 @@ export class GithubOidcStack extends cdk.Stack {
               'dynamodb:ListTagsOfResource',
               'dynamodb:DescribeContinuousBackups',
             ],
-            resources: [
-              `arn:${this.partition}:dynamodb:${region}:${this.account}:table/ThreeThingsTable`,
-              `arn:${this.partition}:dynamodb:${region}:${this.account}:table/ThreeThingsPersistentAttributes`,
-            ],
+            resources: cfg.tableNames.map(
+              (table) =>
+                `arn:${this.partition}:dynamodb:${region}:${this.account}:table/${table}`,
+            ),
           }),
           new iam.PolicyStatement({
             sid: 'ManageOwnLogGroups',
