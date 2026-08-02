@@ -66,7 +66,7 @@ describe('parseWorkoutRows', () => {
   test('trims a trailing space in the exercise name', () => {
     const { sets } = parseWorkoutRows([row('2026-07-24', 'Pull ups ', 1, 0, 10)]);
     expect(sets[0].exercise).toBe('Pull ups');
-    expect(sets[0].muscle).toBe('Back');
+    expect(sets[0].muscle).toBe('Lats');
   });
 
   test('skips invalid rows without aborting the import', () => {
@@ -230,9 +230,9 @@ describe('muscleFor', () => {
   test.each([
     ['ベンチプレス', 'Chest'],
     ['ケーブルクロスオーバー', 'Chest'],
-    ['ラットプルダウン', 'Back'],
-    ['Pull ups', 'Back'],
-    ['シーテッドケーブルロウズ', 'Back'],
+    ['ラットプルダウン', 'Lats'],
+    ['Pull ups', 'Lats'],
+    ['シーテッドケーブルロウズ', 'Lats'],
     ['バーベル スクワット', 'Quads'],
     ['レッグ プレス', 'Quads'],
     ['レッグ エクステンション', 'Quads'],
