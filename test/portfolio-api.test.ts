@@ -38,9 +38,10 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
 
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
   // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
-  // for media (16); the CDK-managed S3 bucket-notifications handler (17); and
-  // list/update/delete-media for the media library (20).
-  template.resourceCountIs('AWS::Lambda::Function', 20);
+  // for media (16); the CDK-managed S3 bucket-notifications handler (17);
+  // list/update/delete-media for the media library (20); and the draft-returning
+  // admin blog reader behind /blog/all (21).
+  template.resourceCountIs('AWS::Lambda::Function', 21);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -94,6 +95,23 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   }));
   expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(6);
   expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(4);
+});
+
+test('GET /blog/all returns drafts and is Cognito-gated with no API key', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'all' });
+  // The draft-returning method: Cognito auth, and no API key so it never draws
+  // the public content quota.
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'GET',
+    AuthorizationType: 'COGNITO_USER_POOLS',
+    ApiKeyRequired: Match.absent(),
+  });
+  // Its handler is the shared blog reader flipped into draft-returning mode.
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    Environment: { Variables: Match.objectLike({ INCLUDE_DRAFTS: 'true' }) },
+  });
 });
 
 test('content usage plan caps requests per DAY, not per month', () => {

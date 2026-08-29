@@ -1,10 +1,15 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { BLOG_TABLE_ITEM_ID } from './blog-schema';
+import { BLOG_TABLE_ITEM_ID, BlogData, visiblePosts } from './blog-schema';
 import { corsHeaders } from './cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+// The admin variant (INCLUDE_DRAFTS=true, wired behind the Cognito-gated
+// /blog/all route) returns every post; the public /blog function leaves this
+// unset and withholds drafts so their content never reaches anonymous callers.
+const includeDrafts = process.env.INCLUDE_DRAFTS === 'true';
 
 export const handler = async (
   event: APIGatewayProxyEvent,
@@ -25,7 +30,9 @@ export const handler = async (
     return { statusCode: 200, headers, body: JSON.stringify({ posts: [] }) };
   }
 
-  const { id, ...blogData } = result.Item;
+  const { id, ...blogData } = result.Item as { id: string } & BlogData;
 
-  return { statusCode: 200, headers, body: JSON.stringify(blogData) };
+  const posts = visiblePosts(blogData.posts, includeDrafts);
+
+  return { statusCode: 200, headers, body: JSON.stringify({ ...blogData, posts }) };
 };

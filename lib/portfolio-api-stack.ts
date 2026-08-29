@@ -246,6 +246,16 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantReadData(getBlogFn);
 
+    // Admin variant of the blog reader: same handler, but INCLUDE_DRAFTS makes
+    // it return draft posts too. Wired behind the Cognito-gated /blog/all route
+    // so draft content never reaches the public /blog endpoint.
+    const getBlogAdminFn = new lambdaNode.NodejsFunction(this, 'GetBlogAdminFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-blog.ts'),
+      ...lambdaDefaults,
+      environment: { ...lambdaDefaults.environment, INCLUDE_DRAFTS: 'true' },
+    });
+    cvTable.grantReadData(getBlogAdminFn);
+
     const updateBlogFn = new lambdaNode.NodejsFunction(this, 'UpdateBlogFunction', {
       entry: path.join(__dirname, '..', 'lambda', 'update-blog.ts'),
       ...lambdaDefaults,
@@ -531,6 +541,14 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     blogResource.addMethod('PUT', new apigateway.LambdaIntegration(updateBlogFn), {
       apiKeyRequired: true,
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    // Full blog including drafts, for the admin editor and logged-in browsing.
+    // Cognito is the gate; no API key so it never draws the content quota, same
+    // posture as the other admin-only endpoints.
+    const blogAllResource = blogResource.addResource('all');
+    blogAllResource.addMethod('GET', new apigateway.LambdaIntegration(getBlogAdminFn), {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

@@ -12,6 +12,10 @@ export const MAX_MOTTO_LENGTH = 40;
 // never having been saved (which GET reports as mottoes: null).
 export const homeDataSchema = z.object({
   mottoes: z.array(z.string().min(1).max(MAX_MOTTO_LENGTH)).max(MAX_MOTTO_COUNT),
+  // When true the hero renders no motto lines even though the saved mottoes are
+  // preserved, so they can be hidden and restored without retyping. Omitted
+  // rather than false to keep documents clean and stay back-compatible.
+  mottoesHidden: z.boolean().optional(),
 });
 
 export type HomeData = z.infer<typeof homeDataSchema>;

@@ -1,4 +1,4 @@
-import { blogDataSchema } from '../lambda/blog-schema';
+import { blogDataSchema, visiblePosts } from '../lambda/blog-schema';
 
 const basePost = {
   title: 'Building a Portfolio with Angular',
@@ -41,4 +41,25 @@ test('rejects a post without a title', () => {
 test('rejects a post without a url', () => {
   const post = { ...basePost, url: '' };
   expect(blogDataSchema.safeParse({ posts: [post] }).success).toBe(false);
+});
+
+test('accepts a post marked as a draft', () => {
+  const post = { ...basePost, draft: true };
+  expect(blogDataSchema.safeParse({ posts: [post] }).success).toBe(true);
+});
+
+test('visiblePosts drops drafts for the public audience', () => {
+  const draft = { ...basePost, url: '/blog/wip', draft: true };
+  const posts = [basePost, draft];
+  expect(visiblePosts(posts, false)).toEqual([basePost]);
+});
+
+test('visiblePosts keeps drafts for authenticated callers', () => {
+  const draft = { ...basePost, url: '/blog/wip', draft: true };
+  const posts = [basePost, draft];
+  expect(visiblePosts(posts, true)).toEqual(posts);
+});
+
+test('visiblePosts tolerates a missing posts list', () => {
+  expect(visiblePosts(undefined, false)).toEqual([]);
 });
