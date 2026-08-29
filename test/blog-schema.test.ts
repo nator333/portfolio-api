@@ -48,6 +48,14 @@ test('accepts a post marked as a draft', () => {
   expect(blogDataSchema.safeParse({ posts: [post] }).success).toBe(true);
 });
 
+test('accepts and preserves a post language', () => {
+  const post = { ...basePost, lang: 'ja' };
+  const result = blogDataSchema.safeParse({ posts: [post] });
+  expect(result.success).toBe(true);
+  // The parsed output is what update-blog persists, so lang must survive it.
+  expect(result.success && result.data.posts[0].lang).toBe('ja');
+});
+
 test('visiblePosts drops drafts for the public audience', () => {
   const draft = { ...basePost, url: '/blog/wip', draft: true };
   const posts = [basePost, draft];
