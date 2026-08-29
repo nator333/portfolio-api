@@ -89,6 +89,19 @@ describe('parseWorkoutRows', () => {
     expect(sets[1].volume).toBe(0);
   });
 
+  test('excludes cardio rows from the sets and counts them separately', () => {
+    const { sets, skipped, excludedCardio } = parseWorkoutRows([
+      row('2026-08-24', 'ベンチプレス', 1, 100, 5),
+      row('2026-08-24', 'Walking', 1, 1.06, 27),
+      row('2026-08-24', 'Running', 1, 0.65, 16),
+      row('2026-08-24', '水泳', 1, 0, 30),
+    ]);
+    expect(sets).toHaveLength(1);
+    expect(sets[0].exercise).toBe('ベンチプレス');
+    expect(skipped).toBe(0);
+    expect(excludedCardio).toBe(3);
+  });
+
   test('parses locale-formatted numbers with a comma decimal separator', () => {
     // Fitness Point exports in the phone's locale, so weights/distances can
     // arrive as "27,5" — these must not be dropped as invalid (they once were,
@@ -271,6 +284,9 @@ describe('muscleFor', () => {
     ['スタンディング ビハインド ザ バック ケーブル リストカール', 'Forearms'],
     ['デクライン・クランチ', 'Abs'],
     ['水泳', 'Cardio'],
+    ['Walking', 'Cardio'],
+    ['Running', 'Cardio'],
+    ['Swimming', 'Cardio'],
   ])('maps %s to %s', (exercise, muscle) => {
     expect(muscleFor(exercise)).toBe(muscle);
   });

@@ -101,7 +101,7 @@ async function processObject(bucket: string, key: string, config: Config): Promi
     bom: true,
   }) as Record<string, string>[];
 
-  const { sets, skipped } = parseWorkoutRows(records);
+  const { sets, skipped, excludedCardio } = parseWorkoutRows(records);
   if (sets.length === 0) {
     await sendReport(config, {
       subject: 'Workout import failed: no valid rows',
@@ -125,10 +125,10 @@ async function processObject(bucket: string, key: string, config: Config): Promi
   await writeSummaries(config.summaryTable, summaries, csv.filename);
 
   const newDays = summaries.days.map((d) => d.sk).filter((sk) => !priorDays.has(sk));
-  await sendReport(config, buildReport({ summaries, sets, skipped, newDays, priorTotalSets, filename: csv.filename }));
+  await sendReport(config, buildReport({ summaries, sets, skipped, excludedCardio, newDays, priorTotalSets, filename: csv.filename }));
 
   console.log(
-    `Imported ${sets.length} sets over ${summaries.meta.workoutDays} days from ${csv.filename} (${skipped} skipped, ${newDays.length} new days)`,
+    `Imported ${sets.length} sets over ${summaries.meta.workoutDays} days from ${csv.filename} (${skipped} skipped, ${excludedCardio} cardio excluded, ${newDays.length} new days)`,
   );
 }
 
@@ -337,6 +337,7 @@ interface ReportInput {
   summaries: WorkoutSummaries;
   sets: readonly WorkoutSet[];
   skipped: number;
+  excludedCardio: number;
   newDays: string[];
   priorTotalSets: number | null;
   filename: string;
@@ -356,7 +357,7 @@ const WEEKS_WINDOW = 12;
 const TOP_LIFTS = 6;
 
 function buildReport(input: ReportInput): Report {
-  const { summaries, skipped, newDays, priorTotalSets, filename } = input;
+  const { summaries, skipped, excludedCardio, newDays, priorTotalSets, filename } = input;
   const { meta } = summaries;
   const newSets = priorTotalSets === null ? null : meta.totalSets - priorTotalSets;
 
@@ -385,7 +386,9 @@ function buildReport(input: ReportInput): Report {
     `Weights as exported in ${SOURCE_WEIGHT_UNIT}; kilograms shown first.`,
     '',
     '— Import —',
-    `Rows imported: ${num(meta.totalSets)} sets${skipped ? ` (${num(skipped)} skipped)` : ''}`,
+    `Rows imported: ${num(meta.totalSets)} sets${skipped ? ` (${num(skipped)} skipped)` : ''}${
+      excludedCardio ? ` (${num(excludedCardio)} cardio excluded)` : ''
+    }`,
     newSets === null
       ? 'First import (no prior baseline).'
       : `New sets since last import: ${num(newSets)}`,

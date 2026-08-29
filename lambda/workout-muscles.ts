@@ -63,7 +63,18 @@ interface MuscleRule {
 
 // First matching rule wins; see the file header for why the order is what it is.
 const RULES: readonly MuscleRule[] = [
-  { muscle: 'Cardio', keywords: ['水泳', 'トレッドミル', 'リカベントバイク', 'treadmill', 'recumbent', 'exercise bike', 'stationary bike'] },
+  {
+    // Conditioning / steady-state work, not a resistance muscle group. The ingest
+    // drops these rows entirely (this is a strength log), so the list only has to
+    // recognize them, not place them anatomically. Plain English activity names
+    // ("Walking", "Running", "Swimming") are included alongside the machine terms.
+    muscle: 'Cardio',
+    keywords: [
+      '水泳', 'スイミング', 'ランニング', 'ウォーキング', 'ジョギング', 'トレッドミル', 'リカベントバイク',
+      'treadmill', 'recumbent', 'exercise bike', 'stationary bike', 'cycling', 'elliptical',
+      'stair climber', 'stairmaster', 'walk', 'run', 'swim', 'jog',
+    ],
+  },
   { muscle: 'Forearms', keywords: ['リストカール', 'リスト', 'wrist curl', 'wrist', 'plate pinch', 'pinch', 'ピンチ'] },
   { muscle: 'Calves', keywords: ['カーフ', 'calf', 'calve'] },
   {

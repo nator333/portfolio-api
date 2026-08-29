@@ -163,13 +163,21 @@ const daysBetween = (from: string, to: string): number =>
  * Normalizes CSV records (as produced by csv-parse with `columns: true`) into
  * WorkoutSets. Rows that fail validation are skipped rather than aborting the
  * whole import, and their count is returned so the summary email can report it.
+ *
+ * Cardio/conditioning rows (Walking, Running, Swimming, treadmill, …) are dropped
+ * entirely: this is a strength log, so counting a daily walk as a workout day or
+ * charting it against a muscle would distort every rollup. They are reported
+ * separately from invalid rows (`excludedCardio`) since they are valid data we
+ * chose to exclude, not malformed input.
  */
 export function parseWorkoutRows(records: readonly unknown[]): {
   sets: WorkoutSet[];
   skipped: number;
+  excludedCardio: number;
 } {
   const sets: WorkoutSet[] = [];
   let skipped = 0;
+  let excludedCardio = 0;
 
   for (const record of records) {
     const parsed = csvRecordSchema.safeParse(record);
@@ -179,6 +187,11 @@ export function parseWorkoutRows(records: readonly unknown[]): {
     }
     const r = parsed.data;
     const exercise = r['Exercise Name'];
+    const muscle = muscleFor(exercise);
+    if (muscle === 'Cardio') {
+      excludedCardio += 1;
+      continue;
+    }
     const weight = r['Weight/Distance'];
     const reps = r['Reps/Time'];
     const volume = round2(weight * reps);
@@ -191,12 +204,12 @@ export function parseWorkoutRows(records: readonly unknown[]): {
       reps,
       volume,
       volumeKg: toKg(volume),
-      muscle: muscleFor(exercise),
+      muscle,
       notes: r.Notes ?? '',
     });
   }
 
-  return { sets, skipped };
+  return { sets, skipped, excludedCardio };
 }
 
 /** A set plus the sort key it is stored under, within its date partition. */
