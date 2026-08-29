@@ -230,28 +230,42 @@ async function writeSummaries(
   ];
   await batchWrite(summaryTable, items, (item) => `${item.pk}|${item.sk}`);
   // Write first, then prune: the fresh rollup is always in place even if the
-  // prune fails, and pruning never removes a group the new rollup still has.
-  await deleteStaleMuscleRows(summaryTable, summaries.muscles.map((m) => m.sk));
+  // prune fails, and pruning never removes a key the new rollup still has.
+  await deleteStaleRows(summaryTable, {
+    [SUMMARY_PK.day]: summaries.days.map((d) => d.sk),
+    [SUMMARY_PK.month]: summaries.months.map((m) => m.sk),
+    [SUMMARY_PK.exercise]: summaries.exercises.map((e) => e.sk),
+    [SUMMARY_PK.exerciseMonth]: summaries.exerciseMonths.map((e) => e.sk),
+    [SUMMARY_PK.week]: summaries.weeks.map((w) => w.sk),
+    [SUMMARY_PK.muscle]: summaries.muscles.map((m) => m.sk),
+  });
 }
 
 /**
- * The import rebuilds every rollup from scratch, but BatchWrite only upserts —
- * it can't remove a MUSCLE row the new rollup no longer produces. When exercises
- * are re-classified into a different group (e.g. the Legs split into
- * Quads/Hamstrings/Glutes, or folding Traps into Back), the old group's row would
- * otherwise linger forever and double-count in the all-time muscle balance.
- * Delete any MUSCLE row whose group is absent from the freshly written summary.
+ * The import rebuilds every rollup from scratch, but BatchWrite only upserts — it
+ * can't remove a summary row the new rollup no longer produces. Any partition
+ * whose sort key is derived from the data can orphan rows when that data changes:
+ * a muscle group re-classified away (Legs split into Quads/Hamstrings/Glutes),
+ * an exercise renamed or merged (Japanese names canonicalized to English), or a
+ * day/week/month that emptied out (its only sets were cardio, now dropped). Left
+ * behind, the ghost rows double-count in the all-time balance and show renamed
+ * exercises twice. For each partition, delete every row whose key is absent from
+ * the freshly written summary.
  */
-async function deleteStaleMuscleRows(
+async function deleteStaleRows(
   summaryTable: string,
-  keptMuscles: readonly string[],
+  keptByPartition: Record<string, readonly string[]>,
 ): Promise<void> {
-  const keep = new Set<string>(keptMuscles);
-  const existing = await queryPartitionSks(summaryTable, SUMMARY_PK.muscle);
-  const stale = [...existing].filter((sk) => !keep.has(sk));
-  if (stale.length === 0) return;
-  await batchDelete(summaryTable, stale.map((sk) => ({ pk: SUMMARY_PK.muscle, sk })));
-  console.log(`Removed ${stale.length} stale muscle summary row(s): ${stale.join(', ')}`);
+  await Promise.all(
+    Object.entries(keptByPartition).map(async ([pk, keptSks]) => {
+      const keep = new Set<string>(keptSks);
+      const existing = await queryPartitionSks(summaryTable, pk);
+      const stale = [...existing].filter((sk) => !keep.has(sk));
+      if (stale.length === 0) return;
+      await batchDelete(summaryTable, stale.map((sk) => ({ pk, sk })));
+      console.log(`Removed ${stale.length} stale ${pk} summary row(s)`);
+    }),
+  );
 }
 
 /**
