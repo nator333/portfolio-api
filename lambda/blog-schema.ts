@@ -3,6 +3,13 @@ import { z } from 'zod';
 // Stored in the same single-document table as the CV, under a distinct id.
 export const BLOG_TABLE_ITEM_ID = 'blog';
 
+// A parseable date/time string, shared by the audit timestamps below.
+const isoDateString = z
+  .string()
+  .refine((value) => !Number.isNaN(Date.parse(value)), {
+    message: 'must be a parseable date string',
+  });
+
 const blogPostSchema = z.object({
   title: z.string().min(1),
   // ISO date string (e.g. "2024-01-15" or full timestamp); the front parses it with new Date().
@@ -24,6 +31,11 @@ const blogPostSchema = z.object({
   // front surfaces it as a `lang` attribute so browsers and screen readers
   // handle non-English posts correctly. Omitted for the site-default language.
   lang: z.string().optional(),
+  // Audit timestamps stamped by the editor: createdAt once on first save,
+  // updatedAt on every save. Optional so posts stored before these fields
+  // existed still validate.
+  createdAt: isoDateString.optional(),
+  updatedAt: isoDateString.optional(),
 });
 
 export const blogDataSchema = z.object({

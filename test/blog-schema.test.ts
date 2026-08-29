@@ -56,6 +56,28 @@ test('accepts and preserves a post language', () => {
   expect(result.success && result.data.posts[0].lang).toBe('ja');
 });
 
+test('accepts and preserves audit timestamps', () => {
+  const post = {
+    ...basePost,
+    createdAt: '2024-05-01T09:00:00.000Z',
+    updatedAt: '2024-06-02T12:30:00.000Z',
+  };
+  const result = blogDataSchema.safeParse({ posts: [post] });
+  expect(result.success).toBe(true);
+  // These must survive the parse, or update-blog would strip them on write.
+  expect(result.success && result.data.posts[0].createdAt).toBe(
+    '2024-05-01T09:00:00.000Z',
+  );
+  expect(result.success && result.data.posts[0].updatedAt).toBe(
+    '2024-06-02T12:30:00.000Z',
+  );
+});
+
+test('rejects an unparseable audit timestamp', () => {
+  const post = { ...basePost, updatedAt: 'not-a-date' };
+  expect(blogDataSchema.safeParse({ posts: [post] }).success).toBe(false);
+});
+
 test('visiblePosts drops drafts for the public audience', () => {
   const draft = { ...basePost, url: '/blog/wip', draft: true };
   const posts = [basePost, draft];
