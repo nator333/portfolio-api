@@ -14,6 +14,11 @@ test('accepts an empty motto list as a deliberate clear', () => {
   expect(homeDataSchema.safeParse({ mottoes: [] }).success).toBe(true);
 });
 
+test('accepts the mottoesHidden flag', () => {
+  const data = { mottoes: ['Scream Dependencies'], mottoesHidden: true };
+  expect(homeDataSchema.safeParse(data).success).toBe(true);
+});
+
 test('rejects more mottoes than the layout supports', () => {
   const data = { mottoes: Array.from({ length: MAX_MOTTO_COUNT + 1 }, (_, i) => `Motto ${i + 1}`) };
   expect(homeDataSchema.safeParse(data).success).toBe(false);
