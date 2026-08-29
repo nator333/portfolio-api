@@ -20,6 +20,10 @@ const blogPostSchema = z.object({
   // the Cognito-gated GET /blog/all (so their content never reaches anonymous
   // callers). Omitted rather than false to keep published documents clean.
   draft: z.boolean().optional(),
+  // BCP-47 language of the post's title, summary and content (e.g. "ja"). The
+  // front surfaces it as a `lang` attribute so browsers and screen readers
+  // handle non-English posts correctly. Omitted for the site-default language.
+  lang: z.string().optional(),
 });
 
 export const blogDataSchema = z.object({
