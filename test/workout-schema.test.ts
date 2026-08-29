@@ -88,6 +88,26 @@ describe('parseWorkoutRows', () => {
     expect(sets[0].volume).toBe(552.5);
     expect(sets[1].volume).toBe(0);
   });
+
+  test('parses locale-formatted numbers with a comma decimal separator', () => {
+    // Fitness Point exports in the phone's locale, so weights/distances can
+    // arrive as "27,5" — these must not be dropped as invalid (they once were,
+    // silently losing a whole biceps day from the recovery rollup).
+    const { sets, skipped } = parseWorkoutRows([
+      {
+        Date: '2026-08-28',
+        'Exercise Name': 'オルタネイトハンマーカール',
+        Set: '1',
+        'Weight/Distance': '27,5',
+        'Reps/Time': '10',
+        Notes: '',
+      },
+    ]);
+    expect(skipped).toBe(0);
+    expect(sets[0].weight).toBe(27.5);
+    expect(sets[0].volume).toBe(275);
+    expect(sets[0].muscle).toBe('Biceps');
+  });
 });
 
 describe('weight units', () => {

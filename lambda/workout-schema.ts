@@ -57,6 +57,18 @@ export const SUMMARY_PK = {
 /** Sort key of the single META item under SUMMARY_PK.meta. */
 export const META_SK = 'import';
 
+/**
+ * A numeric column, coerced to a number but tolerant of a comma decimal
+ * separator. Fitness Point exports numbers in the phone's locale, so a weight
+ * or distance can arrive as "27,5" rather than "27.5"; z.coerce.number() turns
+ * that into NaN, which fails validation and silently drops the whole row (this
+ * once lost ~1,600 sets — an entire style of decimal entry — so a biceps day
+ * simply vanished from the rollups). The values carry no thousands separators
+ * (weights are small), so a lone comma is always the decimal point.
+ */
+const localizedNumber = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((v) => (typeof v === 'string' ? v.replace(',', '.') : v), schema);
+
 // Columns of the Fitness Point export. One row per set:
 //   Date,Exercise Name,Set,Weight/Distance,Reps/Time,Notes
 const csvRecordSchema = z.object({
@@ -65,9 +77,9 @@ const csvRecordSchema = z.object({
     .trim()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD'),
   'Exercise Name': z.string().trim().min(1),
-  Set: z.coerce.number().int().min(1),
-  'Weight/Distance': z.coerce.number().min(0),
-  'Reps/Time': z.coerce.number().min(0),
+  Set: localizedNumber(z.coerce.number().int().min(1)),
+  'Weight/Distance': localizedNumber(z.coerce.number().min(0)),
+  'Reps/Time': localizedNumber(z.coerce.number().min(0)),
   Notes: z.string().optional().default(''),
 });
 
