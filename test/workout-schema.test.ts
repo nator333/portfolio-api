@@ -7,6 +7,7 @@ import {
   workoutRecipient,
 } from '../lambda/workout-schema';
 import { muscleFor } from '../lambda/workout-muscles';
+import { exerciseName } from '../lambda/workout-exercises';
 
 describe('workoutRecipient', () => {
   // Every stage adds a rule to the same shared SES rule set and SES runs all
@@ -50,7 +51,7 @@ describe('parseWorkoutRows', () => {
     expect(sets).toEqual([
       {
         date: '2026-07-24',
-        exercise: 'ベンチプレス',
+        exercise: 'Bench Press',
         setNo: 1,
         weight: 100,
         weightKg: 45.36,
@@ -97,7 +98,7 @@ describe('parseWorkoutRows', () => {
       row('2026-08-24', '水泳', 1, 0, 30),
     ]);
     expect(sets).toHaveLength(1);
-    expect(sets[0].exercise).toBe('ベンチプレス');
+    expect(sets[0].exercise).toBe('Bench Press');
     expect(skipped).toBe(0);
     expect(excludedCardio).toBe(3);
   });
@@ -161,7 +162,7 @@ describe('weight units', () => {
 describe('assignSetKeys', () => {
   test('uses the bare exercise#set key when there is no repeat', () => {
     const { sets } = parseWorkoutRows([row('2026-07-24', 'ベンチプレス', 1, 100, 5)]);
-    expect(assignSetKeys(sets).map((s) => s.sk)).toEqual(['ベンチプレス#1']);
+    expect(assignSetKeys(sets).map((s) => s.sk)).toEqual(['Bench Press#1']);
   });
 
   test('suffixes a repeated set number instead of colliding', () => {
@@ -172,7 +173,7 @@ describe('assignSetKeys', () => {
       row('2024-05-02', 'ラットプルダウン', 1, 140, 5),
     ]);
     const keyed = assignSetKeys(sets);
-    expect(keyed.map((s) => s.sk)).toEqual(['ラットプルダウン#1', 'ラットプルダウン#1#2']);
+    expect(keyed.map((s) => s.sk)).toEqual(['Lat Pulldown#1', 'Lat Pulldown#1#2']);
     expect(new Set(keyed.map((s) => s.sk)).size).toBe(2);
   });
 
@@ -181,7 +182,7 @@ describe('assignSetKeys', () => {
       row('2026-07-20', 'ベンチプレス', 1, 100, 5),
       row('2026-07-21', 'ベンチプレス', 1, 100, 5),
     ]);
-    expect(assignSetKeys(sets).map((s) => s.sk)).toEqual(['ベンチプレス#1', 'ベンチプレス#1']);
+    expect(assignSetKeys(sets).map((s) => s.sk)).toEqual(['Bench Press#1', 'Bench Press#1']);
   });
 
   test('produces keys unique per (date, sk) across a whole import', () => {
@@ -223,7 +224,7 @@ describe('summarize', () => {
   });
 
   test('rolls up per-exercise stats including max weight and sessions', () => {
-    const bench = summaries.exercises.find((e) => e.sk === 'ベンチプレス')!;
+    const bench = summaries.exercises.find((e) => e.sk === 'Bench Press')!;
     expect(bench.sets).toBe(3);
     expect(bench.maxWeight).toBe(110);
     expect(bench.sessions).toBe(2);
@@ -248,14 +249,44 @@ describe('summarize', () => {
       row('2026-07-20', 'アブダクター (Outer)', 1, 5000, 10),
     ]);
     const s = summarize(mixed);
-    expect(s.exercises[0].sk).toBe('アブダクター (Outer)'); // volume order
+    expect(s.exercises[0].sk).toBe('Hip Abductor (Outer)'); // volume order
     const bySets = [...s.exercises].sort((a, b) => b.sets - a.sets);
-    expect(bySets[0].sk).toBe('ベンチプレス');
+    expect(bySets[0].sk).toBe('Bench Press');
   });
 
   test('days are returned in ascending date order', () => {
     const order = summaries.days.map((d) => d.sk);
     expect(order).toEqual([...order].sort());
+  });
+});
+
+describe('exerciseName', () => {
+  test.each([
+    ['ベンチプレス', 'Bench Press'],
+    ['ラットプルダウン', 'Lat Pulldown'],
+    ['オルタネイトハンマーカール', 'Alternating Hammer Curl'],
+    // full-width space between words is normalized away
+    ['バイセップスカール　バーベル', 'Barbell Biceps Curl'],
+  ])('translates %s to %s', (raw, english) => {
+    expect(exerciseName(raw)).toBe(english);
+  });
+
+  test('maps a Japanese spelling and its English twin to the same canonical name', () => {
+    expect(exerciseName('ライング レッグカール')).toBe('Lying Leg Curl');
+    expect(exerciseName('Lying Leg Curl')).toBe('Lying Leg Curl');
+    // casing-only English duplicate merges too
+    expect(exerciseName('Dumbbell shrug')).toBe('Dumbbell Shrug');
+    expect(exerciseName('ダンベルシュラッグ')).toBe('Dumbbell Shrug');
+  });
+
+  test('passes an unmapped name through unchanged (trimmed)', () => {
+    expect(exerciseName('  Some Brand New Machine  ')).toBe('Some Brand New Machine');
+  });
+
+  test('parseWorkoutRows stores the canonical English name while classifying on the raw name', () => {
+    const { sets } = parseWorkoutRows([row('2026-08-28', 'オルタネイトハンマーカール', 1, 27.5, 10)]);
+    expect(sets[0].exercise).toBe('Alternating Hammer Curl');
+    expect(sets[0].muscle).toBe('Biceps');
   });
 });
 

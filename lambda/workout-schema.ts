@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { muscleFor, MUSCLE_GROUPS, type MuscleGroup } from './workout-muscles';
+import { exerciseName } from './workout-exercises';
 
 /**
  * Shared shapes and pure transforms for the workout pipeline: parsing a Fitness
@@ -186,12 +187,16 @@ export function parseWorkoutRows(records: readonly unknown[]): {
       continue;
     }
     const r = parsed.data;
-    const exercise = r['Exercise Name'];
-    const muscle = muscleFor(exercise);
+    const rawExercise = r['Exercise Name'];
+    // Classify on the raw name (muscleFor knows both languages); store the
+    // canonical English name so the rollups read in English and duplicate
+    // spellings of the same movement merge into one exercise.
+    const muscle = muscleFor(rawExercise);
     if (muscle === 'Cardio') {
       excludedCardio += 1;
       continue;
     }
+    const exercise = exerciseName(rawExercise);
     const weight = r['Weight/Distance'];
     const reps = r['Reps/Time'];
     const volume = round2(weight * reps);
