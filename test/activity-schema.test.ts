@@ -138,6 +138,22 @@ describe('blogPostsToEntries', () => {
   test('skips posts missing a title or date', () => {
     expect(blogPostsToEntries([{ title: 'No date' }, { date: '2026-05-01' }])).toEqual([]);
   });
+
+  test('withholds draft posts so unpublished content never reaches the feed', () => {
+    const entries = blogPostsToEntries([
+      { title: 'Published', date: '2026-05-01', url: '/blog/published' },
+      { title: 'Work in progress', date: '2026-05-02', url: '/blog/wip', draft: true },
+    ]);
+    expect(entries).toEqual([
+      { date: '2026-05-01', type: 'blog', title: 'Published', url: '/blog/published' },
+    ]);
+  });
+
+  test('keeps posts that mark draft false', () => {
+    expect(
+      blogPostsToEntries([{ title: 'Live', date: '2026-05-01', url: '/blog/live', draft: false }]),
+    ).toEqual([{ date: '2026-05-01', type: 'blog', title: 'Live', url: '/blog/live' }]);
+  });
 });
 
 describe('mergeActivity', () => {
