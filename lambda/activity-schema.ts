@@ -197,11 +197,19 @@ export interface BlogPostLike {
   readonly title?: unknown;
   readonly date?: unknown;
   readonly url?: unknown;
+  /** Draft posts are unpublished; see the note in blogPostsToEntries. */
+  readonly draft?: unknown;
 }
 
+/**
+ * Draft posts are withheld from the public GET /blog so their content never
+ * reaches anonymous callers; the same must hold here, or an unpublished post's
+ * title would leak through the activity feed and its calendar contribution.
+ */
 export function blogPostsToEntries(posts: readonly BlogPostLike[]): ActivityEntry[] {
   const entries: ActivityEntry[] = [];
   for (const post of posts) {
+    if (post.draft === true) continue;
     if (typeof post.date !== 'string' || typeof post.title !== 'string') continue;
     const date = toIsoDate(post.date);
     if (!date) continue;
