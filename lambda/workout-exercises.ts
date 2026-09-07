@@ -96,6 +96,8 @@ const TRANSLATIONS: Record<string, string> = {
   'バーベルアップライトロウ': 'Barbell Upright Row',
   'ダンベル レイズ': 'Dumbbell Raise',
   'フロント ダンベル レイズ': 'Front Dumbbell Raise',
+  // "Delts machine" (a side-delt machine) is deliberately absent: it is already
+  // English and reads as logged, so it passes through untranslated.
 
   // — Biceps —
   'プリーチャー カール': 'Preacher Curl',

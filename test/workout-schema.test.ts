@@ -279,6 +279,10 @@ describe('exerciseName', () => {
     expect(exerciseName('ダンベルシュラッグ')).toBe('Dumbbell Shrug');
   });
 
+  test('leaves the side-delt machine under its logged name', () => {
+    expect(exerciseName('Delts machine')).toBe('Delts machine');
+  });
+
   test('passes an unmapped name through unchanged (trimmed)', () => {
     expect(exerciseName('  Some Brand New Machine  ')).toBe('Some Brand New Machine');
   });
@@ -306,6 +310,7 @@ describe('muscleFor', () => {
     ['サイド ラテラル レイズ', 'Shoulders'],
     ['ダンベル ショルダー プレス', 'Shoulders'],
     ['マシン リバース バタフライ', 'Shoulders'],
+    ['Delts machine', 'Shoulders'],
     ['プリーチャー カール', 'Biceps'],
     ['トライセップス プッシュダウン', 'Triceps'],
     ['ナロー グリップ ベンチプレス', 'Triceps'],
