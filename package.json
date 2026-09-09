@@ -2,8 +2,8 @@
   "name": "portfolio-api",
   "version": "0.1.0",
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc -w",
+    "build": "tsc --noEmit",
+    "watch": "tsc -w --noEmit",
     "test": "jest",
     "cdk": "cdk",
     "deploy:dev": "cdk deploy PortfolioApiStack-dev --context stage=dev --require-approval never",
