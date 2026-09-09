@@ -15,6 +15,28 @@ function synthStack(stage = 'test') {
   return Template.fromStack(stack);
 }
 
+/**
+ * The MCP server is only declared when its options are supplied — production
+ * only, since it needs a custom domain and an in-region certificate. The plain
+ * synthStack() above therefore stands in for a dev deploy, and this one for
+ * prod.
+ */
+function synthStackWithMcp(stage = 'test') {
+  const app = new cdk.App({ context: { 'aws:cdk:bundling-stacks': [] } });
+  const stack = new PortfolioApiStack(app, 'McpTestStack', {
+    stage,
+    githubUser: 'octocat',
+    authCallbackUrls: ['http://localhost:4200/login'],
+    adminEmails: ['admin@example.com'],
+    mcp: {
+      domainName: 'mcp.example.com',
+      certificateArn: 'arn:aws:acm:us-west-1:123456789012:certificate/abc-123',
+      callbackUrls: ['https://claude.ai/api/mcp/auth_callback'],
+    },
+  });
+  return Template.fromStack(stack);
+}
+
 test('CV DynamoDB table created with id partition key', () => {
   const template = synthStack();
 
@@ -39,9 +61,10 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
   // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
   // for media (16); the CDK-managed S3 bucket-notifications handler (17);
-  // list/update/delete-media for the media library (20); the draft-returning
-  // admin blog reader behind /blog/all (21); and the MCP server (22).
-  template.resourceCountIs('AWS::Lambda::Function', 22);
+  // list/update/delete-media for the media library (20); and the draft-returning
+  // admin blog reader behind /blog/all (21). The MCP server's three functions
+  // are not here: they are only declared when MCP options are supplied.
+  template.resourceCountIs('AWS::Lambda::Function', 21);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -139,15 +162,16 @@ test('no content-facing plan uses a monthly quota', () => {
 test('workout has its own key and daily plan so it cannot starve content', () => {
   const template = synthStack();
 
-  // Four keys/plans: content, workout, chat and mcp.
-  template.resourceCountIs('AWS::ApiGateway::ApiKey', 4);
-  template.resourceCountIs('AWS::ApiGateway::UsagePlan', 4);
+  // Three keys/plans: content, workout and chat. The MCP server carries no key
+  // — a client discovering it through OAuth has no way to learn one.
+  template.resourceCountIs('AWS::ApiGateway::ApiKey', 3);
+  template.resourceCountIs('AWS::ApiGateway::UsagePlan', 3);
 
   const daily = Object.values(template.findResources('AWS::ApiGateway::UsagePlan')).filter(
     (p) => p.Properties.Quota?.Period === 'DAY',
   );
-  // Content, workout and mcp are all daily at 350; only chat caps monthly.
-  expect(daily).toHaveLength(3);
+  // Content and workout are daily at 350; only chat caps monthly.
+  expect(daily).toHaveLength(2);
   for (const plan of daily) {
     expect(plan.Properties.Quota.Limit).toBe(350);
   }
@@ -251,8 +275,9 @@ test('GET /activity is public and merges sources server-side', () => {
         (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:Query'),
     ),
   );
-  // get-workout, get-activity and the MCP server each read it with a Query.
-  expect(activityPolicy.length).toBe(3);
+  // get-workout and get-activity each read it with a Query; the MCP server adds
+  // a third reader, but only on a deployment where it is declared.
+  expect(activityPolicy.length).toBe(2);
 });
 
 test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
@@ -288,14 +313,40 @@ test('GET /workout is public (key only, no Cognito)', () => {
   });
 });
 
-test('POST /mcp is public at the gateway (key only, no Cognito authorizer)', () => {
+test('no MCP options means no MCP server at all, so a dev deploy needs no certificate', () => {
   const template = synthStack();
+
+  // Nothing MCP-shaped should exist: no second REST API, no custom domain, and
+  // no extra user-pool client beyond the SPA's.
+  template.resourceCountIs('AWS::ApiGateway::DomainName', 0);
+  template.resourceCountIs('AWS::ApiGateway::RestApi', 1);
+  template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
+  template.resourceCountIs('AWS::Cognito::UserPoolResourceServer', 0);
+});
+
+test('the MCP server gets its own REST API behind a regional custom domain', () => {
+  const template = synthStackWithMcp();
+
+  // Its own API, not a route on the content API: a custom domain maps a whole
+  // stage, so sharing would answer /cv, /media and /agent on the MCP host too.
+  template.resourceCountIs('AWS::ApiGateway::RestApi', 2);
+  template.hasResourceProperties('AWS::ApiGateway::DomainName', {
+    DomainName: 'mcp.example.com',
+    RegionalCertificateArn: 'arn:aws:acm:us-west-1:123456789012:certificate/abc-123',
+    EndpointConfiguration: { Types: ['REGIONAL'] },
+  });
+  // Empty base path, so the stage is absent from the public URL and the
+  // well-known documents land at the domain root.
+  template.hasResourceProperties('AWS::ApiGateway::BasePathMapping', {
+    DomainName: { Ref: Match.anyValue() },
+  });
+});
+
+test('POST /mcp carries no API key and no Cognito authorizer', () => {
+  const template = synthStackWithMcp();
 
   template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'mcp' });
 
-  // Reads must stay anonymous, so the gateway gates only with the key; the write
-  // authorization is the admin-token check inside the Lambda, not a Cognito
-  // authorizer here. So /mcp is a POST with auth NONE, unlike /agent.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const mcpPosts = Object.values(methods).filter(
     (m) =>
@@ -303,58 +354,122 @@ test('POST /mcp is public at the gateway (key only, no Cognito authorizer)', () 
       JSON.stringify(m.Properties.ResourceId ?? '').includes('mcp'),
   );
   expect(mcpPosts.length).toBe(1);
-  expect(mcpPosts[0].Properties.ApiKeyRequired).toBe(true);
+  // No key: a client discovering this server through OAuth cannot learn one.
+  // No gateway authorizer either — the access-token check inside the Lambda is
+  // the boundary, and only it can emit the WWW-Authenticate challenge a client
+  // needs in order to start the OAuth flow.
+  expect(mcpPosts[0].Properties.ApiKeyRequired).toBeFalsy();
   expect(mcpPosts[0].Properties.AuthorizationType).toBe('NONE');
 });
 
-test('the MCP Lambda carries the admin write-gate config and stays off Bedrock', () => {
-  const template = synthStack();
+test('the OAuth discovery documents are served at the domain root', () => {
+  const template = synthStackWithMcp();
 
-  // The write gate verifies Cognito ID tokens and checks the admin allowlist, so
-  // the function must know the pool, its client and the allowlisted emails.
+  // RFC 9728 puts protected-resource metadata at the domain root, which the
+  // default execute-api URL cannot do because its stage is always the first
+  // path segment. This is the whole reason for the custom domain.
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: '.well-known' });
+  template.hasResourceProperties('AWS::ApiGateway::Resource', {
+    PathPart: 'oauth-protected-resource',
+  });
+  template.hasResourceProperties('AWS::ApiGateway::Resource', {
+    PathPart: 'oauth-authorization-server',
+  });
+
+  const methods = Object.values(template.findResources('AWS::ApiGateway::Method'));
+  const wellKnownGets = methods.filter(
+    (m) => m.Properties.HttpMethod === 'GET' && m.Properties.ApiKeyRequired !== true,
+  );
+  // Discovery must be reachable unauthenticated, or the client can never learn
+  // where to authenticate.
+  expect(wellKnownGets.length).toBeGreaterThanOrEqual(2);
+});
+
+test('a dedicated app client is pre-registered for the MCP client', () => {
+  const template = synthStackWithMcp();
+
+  // Cognito has no RFC 7591 dynamic client registration, and this server is
+  // single-user, so the client is provisioned here instead. Two clients now:
+  // the SPA's and the MCP one.
+  template.resourceCountIs('AWS::Cognito::UserPoolClient', 2);
+  template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+    // Public client using authorization-code + PKCE: the Claude apps cannot
+    // hold a secret confidentially.
+    GenerateSecret: false,
+    AllowedOAuthFlows: ['code'],
+    CallbackURLs: ['https://claude.ai/api/mcp/auth_callback'],
+  });
+  // A custom scope is what separates an editing token from a read-only one.
+  template.hasResourceProperties('AWS::Cognito::UserPoolResourceServer', {
+    Identifier: 'mcp',
+    Scopes: [Match.objectLike({ ScopeName: 'admin' })],
+  });
+});
+
+test('the MCP Lambda validates tokens against this resource, and stays off Bedrock', () => {
+  const template = synthStackWithMcp();
+
   const functions = Object.values(template.findResources('AWS::Lambda::Function'));
   const envVars = (f: { Properties?: { Environment?: { Variables?: Record<string, unknown> } } }) =>
     f.Properties?.Environment?.Variables ?? {};
   const mcp = functions.filter((f) => {
     const keys = Object.keys(envVars(f));
-    return (
-      keys.includes('USER_POOL_ID') &&
-      keys.includes('USER_POOL_CLIENT_ID') &&
-      keys.includes('ADMIN_EMAILS') &&
-      keys.includes('MEDIA_TABLE_NAME')
-    );
+    return keys.includes('MCP_CLIENT_IDS') && keys.includes('MEDIA_TABLE_NAME');
   });
   expect(mcp.length).toBe(1);
-  expect(envVars(mcp[0]).ADMIN_EMAILS).toBe('admin@example.com');
+
+  const env = envVars(mcp[0]);
+  // The audience check needs the resource URL; the challenge needs the metadata
+  // URL; the scope check needs the scope name. Missing any one of them silently
+  // weakens the gate rather than failing loudly, so assert all three.
+  expect(env.MCP_RESOURCE_URL).toBe('https://mcp.example.com/mcp');
+  expect(env.MCP_PRM_URL).toBe('https://mcp.example.com/.well-known/oauth-protected-resource');
+  expect(env.MCP_ADMIN_SCOPE).toBe('mcp/admin');
+  expect(env.USER_POOL_ID).toBeDefined();
+  // The private per-set table is what the admin tools exist to reach.
+  expect(env.WORKOUT_SETS_TABLE_NAME).toBe('portfolio-workout-sets-test');
 });
 
-test('the MCP role can write the content/media tables but never invoke Bedrock', () => {
-  const template = synthStack();
+test('the MCP role reads the private sets table but never invokes Bedrock', () => {
+  const template = synthStackWithMcp();
 
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
-
-  // Exactly one role both writes DynamoDB and never touches Bedrock while holding
-  // the cross-region workout read — that combination is unique to the MCP Lambda.
   const mcpPolicies = policies.filter((p) => {
     const statements = p.Properties.PolicyDocument.Statement as Array<{
       Action?: string | string[];
       Resource?: unknown;
     }>;
     const actions = statements.flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
-    const writesTable = actions.includes('dynamodb:PutItem') || actions.includes('dynamodb:UpdateItem');
-    const readsWorkout = statements.some((s) =>
-      JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
+    const readsSets = statements.some((s) =>
+      JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-sets'),
     );
     const invokesBedrock = actions.some((a) => a?.startsWith('bedrock:'));
-    return writesTable && readsWorkout && !invokesBedrock;
+    return readsSets && !invokesBedrock;
   });
   expect(mcpPolicies.length).toBeGreaterThanOrEqual(1);
+
+  // The sets table is the private training log; nothing may ever write it from
+  // here, since ingest owns it.
+  for (const policy of mcpPolicies) {
+    const statements = policy.Properties.PolicyDocument.Statement as Array<{
+      Action?: string | string[];
+      Resource?: unknown;
+    }>;
+    for (const statement of statements) {
+      if (!JSON.stringify(statement.Resource ?? '').includes('table/portfolio-workout-sets')) continue;
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      for (const action of actions) {
+        expect(action).toMatch(/^dynamodb:(GetItem|Query|BatchGetItem)$/);
+      }
+    }
+  }
 });
 
 test('every reader of the workout table is cross-region and read-only', () => {
   // get-workout, get-activity and the MCP server all read it; none may ever
-  // write, since the only writer is the ingest Lambda in us-west-2.
-  const template = synthStack('prod');
+  // write, since the only writer is the ingest Lambda in us-west-2. Synthesised
+  // with MCP enabled so the third reader is actually covered.
+  const template = synthStackWithMcp('prod');
 
   const policies = template.findResources('AWS::IAM::Policy');
   const workoutPolicies = Object.values(policies).filter((p) =>

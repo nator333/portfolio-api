@@ -65,6 +65,28 @@ const authCallbackUrls = authCallbackBases.flatMap((base) =>
   authCallbackPaths.map((p) => `${base}${p}`),
 );
 
+// Public MCP server. Declared only when both values are supplied, which in
+// practice means production: the OAuth discovery documents must sit at a domain
+// root, so the endpoint needs its own custom domain, an in-region ACM
+// certificate and a DNS record. Dev deploys pass neither and simply get no MCP
+// endpoint, the same way the workout stack is skipped without its context.
+//
+//   mcpCertificateArn - ACM cert for mcp.<siteDomain>, issued in `region`
+//
+// The host is derived from siteDomain rather than committed: this repo is
+// public, and the domain is a masked secret for the same reason as the rest.
+// Claude's web, desktop and mobile apps all finish the OAuth flow at the same
+// Anthropic callback, so one callback URL covers iOS.
+const CLAUDE_OAUTH_CALLBACK = 'https://claude.ai/api/mcp/auth_callback';
+const mcpCertificateArn = context('mcpCertificateArn');
+const mcp = mcpCertificateArn
+  ? {
+      domainName: `mcp.${requireContext('siteDomain')}`,
+      certificateArn: mcpCertificateArn,
+      callbackUrls: [CLAUDE_OAUTH_CALLBACK],
+    }
+  : undefined;
+
 new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   env,
   stage,
@@ -74,6 +96,7 @@ new PortfolioApiStack(app, `PortfolioApiStack-${stage}`, {
   // Optional: without it the GitHub snapshot schedule is not created and
   // /activity serves the blog and gym sources only.
   githubUser: context('githubUser'),
+  mcp,
 });
 
 // Workout CSV ingestion lives in us-west-2, where the site domain's SES

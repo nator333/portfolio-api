@@ -77,6 +77,20 @@ const DATE_RANGE_ARGS: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+/**
+ * The sets table is partitioned by date, so a span costs one query per day in
+ * it. The tool advertises the single-day shorthand first for that reason.
+ */
+const SETS_RANGE_ARGS: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    date: { type: 'string', description: 'A single day, ISO YYYY-MM-DD. Simplest and cheapest form.' },
+    from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Use with `to` for a range.' },
+    to: { type: 'string', description: 'Inclusive end date, ISO YYYY-MM-DD. At most 31 days from `from`.' },
+  },
+  additionalProperties: false,
+};
+
 /** A full-document write tool input: the document itself, validated server-side. */
 const documentArgs = (label: string): Record<string, unknown> => ({
   type: 'object',
@@ -146,6 +160,17 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     description: 'List the media asset catalogue (uploaded images and their metadata). Admin only.',
     requiresAuth: true,
     inputSchema: NO_ARGS,
+    annotations: readAnnotations,
+  },
+  {
+    name: 'get_workout_sets',
+    title: 'Get workout sets',
+    description:
+      'The individual logged sets for a day (or a span of at most 31 days): per-set exercise, ' +
+      'weight, reps, volume, muscle group and free-text note. This is the raw training detail ' +
+      'behind the aggregates get_workout returns. Admin only.',
+    requiresAuth: true,
+    inputSchema: SETS_RANGE_ARGS,
     annotations: readAnnotations,
   },
   {
