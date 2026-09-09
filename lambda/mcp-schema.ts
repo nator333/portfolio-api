@@ -91,6 +91,27 @@ const SETS_RANGE_ARGS: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+/**
+ * The plan read is four lookups behind one tool: the arguments are mutually
+ * exclusive, and omitting them all asks for the program in force today.
+ */
+const PLAN_READ_ARGS: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    planId: { type: 'string', description: 'Which program. Optional; defaults to the only one, "upper-lower".' },
+    version: { type: 'integer', description: 'A specific version number. Optional; omit for the current one.' },
+    date: {
+      type: 'string',
+      description: 'ISO YYYY-MM-DD — return the version that was in force that day. Optional.',
+    },
+    history: {
+      type: 'boolean',
+      description: 'True to list every version as metadata only (no session detail). Optional.',
+    },
+  },
+  additionalProperties: false,
+};
+
 /** A full-document write tool input: the document itself, validated server-side. */
 const documentArgs = (label: string): Record<string, unknown> => ({
   type: 'object',
@@ -102,6 +123,9 @@ const documentArgs = (label: string): Record<string, unknown> => ({
 
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const writeAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+// Publishing a plan version appends rather than replaces, so repeating the call
+// is refused rather than absorbed — not idempotent, and not destructive either.
+const appendAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
 export const TOOL_SPECS: readonly McpToolSpec[] = [
   {
@@ -174,6 +198,18 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: readAnnotations,
   },
   {
+    name: 'get_workout_plan',
+    title: 'Get training plan',
+    description:
+      'Read the training program: the prescribed sessions, exercise slots, set/rep/RPE ranges and ' +
+      'weekly set targets. This is the plan, not the log — get_workout_sets returns what was ' +
+      'actually lifted. Returns the current version by default; pass `version` for a specific one, ' +
+      '`date` for whichever was in force that day, or `history: true` to list all versions. Admin only.',
+    requiresAuth: true,
+    inputSchema: PLAN_READ_ARGS,
+    annotations: readAnnotations,
+  },
+  {
     name: 'update_cv',
     title: 'Update CV',
     description: 'Replace the CV document. Admin only. Validated server-side; an invalid document is rejected unchanged.',
@@ -223,6 +259,71 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       additionalProperties: false,
     },
     annotations: writeAnnotations,
+  },
+  {
+    name: 'update_workout_plan',
+    title: 'Publish training plan version',
+    description:
+      'Publish a NEW version of the training program. Versions are immutable: this appends, it ' +
+      'never edits or replaces an existing one, so the plan a past session was run under stays ' +
+      'readable. Call get_workout_plan first, send the whole document back with `version` set to ' +
+      'the next number, and omit `createdAt` (the server stamps it). Re-sending an existing ' +
+      'version is refused with the next free number. Admin only; validated server-side.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      description:
+        'A complete plan-version document, same shape get_workout_plan returns, with `version` ' +
+        'incremented. Partial documents are rejected — this is a whole-version publish.',
+      additionalProperties: true,
+    },
+    annotations: appendAnnotations,
+  },
+  {
+    name: 'revise_workout_plan',
+    title: 'Revise training plan',
+    description:
+      'Change specific exercise slots in the current training program without resending the whole ' +
+      'document. Reads the current version, applies the edits, and publishes the result as the next ' +
+      'version — nothing already stored is modified. Each edit is {op: "patch"|"add"|"remove", ' +
+      'session, order} where `session` is a session id (e.g. "upper-a") and `order` is the slot\'s ' +
+      'position; a patch carries only the fields to change. `changeNote` is required. Pass ' +
+      '`baseVersion` (from get_workout_plan) so the edits are refused if the plan moved underneath ' +
+      'them. Use update_workout_plan instead to publish a whole new program. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        planId: { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' },
+        baseVersion: {
+          type: 'integer',
+          description: 'The version these edits were written against. Optional but recommended: the revision is refused if the current version differs.',
+        },
+        changeNote: { type: 'string', description: 'Required. What changed and why — this is the version history.' },
+        name: { type: 'string', description: 'Rename the program. Optional.' },
+        effectiveFrom: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null. Optional; carried over when omitted.' },
+        effectiveTo: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null. Optional; carried over when omitted.' },
+        edits: {
+          type: 'array',
+          minItems: 1,
+          description: 'Applied in order; any edit that does not resolve rejects the whole revision.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['patch', 'add', 'remove'] },
+              session: { type: 'string', description: 'Session id, e.g. "upper-a".' },
+              order: { type: 'integer', description: 'Slot position. Required for patch and remove.' },
+              changes: { type: 'object', description: 'For patch: only the slot fields to change (sets, reps, rpe, options, muscle, notes).' },
+              exercise: { type: 'object', description: 'For add: the complete new slot, including the order to insert it at. Slots at or after that position shift down.' },
+            },
+            required: ['op', 'session'],
+          },
+        },
+      },
+      required: ['changeNote', 'edits'],
+      additionalProperties: false,
+    },
+    annotations: appendAnnotations,
   },
 ] as const;
 

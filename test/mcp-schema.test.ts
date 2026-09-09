@@ -10,7 +10,7 @@ test('every read tool is public and every write tool requires auth', () => {
   const authTools = TOOL_SPECS.filter((t) => t.requiresAuth).map((t) => t.name).sort();
 
   // The public get_ tools are anonymous; the private-data reads (list_media,
-  // get_workout_sets) and every update_ tool are admin-only.
+  // get_workout_sets, get_workout_plan) and every update_ tool are admin-only.
   expect(publicTools).toEqual([
     'get_activity',
     'get_blog',
@@ -20,19 +20,26 @@ test('every read tool is public and every write tool requires auth', () => {
     'get_workout',
   ]);
   expect(authTools).toEqual([
+    'get_workout_plan',
     'get_workout_sets',
     'list_media',
+    'revise_workout_plan',
     'update_blog',
     'update_cv',
     'update_home',
     'update_media',
     'update_projects',
+    'update_workout_plan',
   ]);
 });
 
 test('read tools are annotated read-only and write tools are not', () => {
+  // The naming convention is the invariant: a tool that reads is get_ or list_,
+  // and anything else writes. Asserting it this way keeps new write verbs
+  // (update_, revise_, …) covered without the rule needing an edit each time.
   for (const tool of TOOL_SPECS) {
-    expect(tool.annotations.readOnlyHint).toBe(!tool.name.startsWith('update_'));
+    const isRead = tool.name.startsWith('get_') || tool.name.startsWith('list_');
+    expect([tool.name, tool.annotations.readOnlyHint]).toEqual([tool.name, isRead]);
   }
 });
 

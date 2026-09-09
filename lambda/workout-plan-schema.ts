@@ -159,7 +159,8 @@ const MAX_SETS = 20;
 const MAX_REPS = 100;
 const MAX_RPE = 10;
 
-const planExerciseSchema = z.object({
+/** Exported so the edit vocabulary can derive a partial of it; see workout-plan-edits.ts. */
+export const planExerciseSchema = z.object({
   order: z.number().int().min(1),
   options: z.array(z.string().trim().min(1)).min(1),
   muscle: muscleGroupSchema,
