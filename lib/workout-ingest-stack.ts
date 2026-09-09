@@ -10,6 +10,7 @@ import { S3EventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as path from 'path';
 import { workoutSetsTableName, workoutSummaryTableName } from '../lambda/workout-schema';
+import { workoutPlanTableName } from '../lambda/workout-plan-schema';
 
 /** Prefix SES writes inbound mail under, so the bucket stays tidy and the event filter is scoped. */
 const INBOX_PREFIX = 'inbox/';
@@ -85,6 +86,27 @@ export class WorkoutIngestStack extends cdk.Stack {
       removalPolicy,
     });
 
+    // The authored program those sets are meant to fulfil: one immutable item per
+    // version, partitioned by plan (see lambda/workout-plan-schema.ts). It sits
+    // with the other workout tables rather than in the us-west-1 API stack so the
+    // whole training dataset lives in one region and one stack, and so a reader
+    // over there reaches it by the same literal name/ARN path already used for
+    // the summary table.
+    //
+    // Nothing in this stack writes it — the ingest pipeline only ever appends
+    // history, while a program is hand-authored — so it is seeded and revised out
+    // of band by scripts/publish-workout-plan.ts.
+    const planTable = new dynamodb.Table(this, 'WorkoutPlanTable', {
+      tableName: workoutPlanTableName(props.stage),
+      partitionKey: { name: 'planId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      // Destroyable outside prod for the same reason as the tables above, and
+      // safe to destroy for a related one: version 1 is committed in source, so a
+      // dev table can be rebuilt by re-running the publish script.
+      removalPolicy,
+    });
+
     const ingestFn = new lambdaNode.NodejsFunction(this, 'WorkoutIngestFunction', {
       entry: path.join(__dirname, '..', 'lambda', 'workout-ingest.ts'),
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -140,5 +162,6 @@ export class WorkoutIngestStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'MailBucketName', { value: mailBucket.bucketName });
     new cdk.CfnOutput(this, 'WorkoutSummaryTableName', { value: summaryTable.tableName });
+    new cdk.CfnOutput(this, 'WorkoutPlanTableName', { value: planTable.tableName });
   }
 }

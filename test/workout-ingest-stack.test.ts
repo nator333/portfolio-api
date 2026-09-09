@@ -17,7 +17,7 @@ function synthStack(stage = 'test') {
 test('creates the raw-sets and summary tables with deterministic names', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::DynamoDB::Table', 2);
+  template.resourceCountIs('AWS::DynamoDB::Table', 3);
   template.hasResourceProperties('AWS::DynamoDB::Table', {
     TableName: 'portfolio-workout-sets-test',
     KeySchema: [
@@ -32,6 +32,14 @@ test('creates the raw-sets and summary tables with deterministic names', () => {
       { AttributeName: 'pk', KeyType: 'HASH' },
       { AttributeName: 'sk', KeyType: 'RANGE' },
     ],
+  });
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    TableName: 'portfolio-workout-plan-test',
+    KeySchema: [
+      { AttributeName: 'planId', KeyType: 'HASH' },
+      { AttributeName: 'sk', KeyType: 'RANGE' },
+    ],
+    BillingMode: 'PAY_PER_REQUEST',
   });
 });
 
