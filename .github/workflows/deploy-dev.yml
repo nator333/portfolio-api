@@ -38,7 +38,10 @@ jobs:
           cache: npm
 
       - run: npm ci
+      # Type-check, then run the suite. `build` emits nothing (see package.json),
+      # so this is a pure gate: neither stage deploys against a red suite.
       - run: npm run build
+      - run: npm test
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
