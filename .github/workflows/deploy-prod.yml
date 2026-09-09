@@ -29,6 +29,11 @@ jobs:
       # GH_USER, not GITHUB_USER: GitHub reserves the GITHUB_ prefix for
       # secret names and refuses to create one using it.
       GH_USER: ${{ secrets.GH_USER }}
+      # ACM certificate for mcp.<SITE_DOMAIN>, issued in AWS_REGION. A secret
+      # rather than a variable because the ARN embeds the account ID, and this
+      # repo's build logs are public. Absent until the certificate exists, in
+      # which case the MCP server is simply not created.
+      MCP_CERTIFICATE_ARN: ${{ secrets.MCP_CERTIFICATE_ARN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +61,7 @@ jobs:
           --context adminEmail="$ADMIN_EMAIL"
           --context siteDomain="$SITE_DOMAIN"
           --context pagesOrigin="$PAGES_ORIGIN"
+          ${MCP_CERTIFICATE_ARN:+--context mcpCertificateArn="$MCP_CERTIFICATE_ARN"}
           --require-approval never
 
       # Workout ingestion lives in us-west-2 and attaches to kotlin-ses-forward's

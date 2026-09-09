@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib/core';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
@@ -15,7 +16,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
-import { workoutSummaryTableName, WORKOUT_REGION } from '../lambda/workout-schema';
+import { workoutSummaryTableName, workoutSetsTableName, WORKOUT_REGION } from '../lambda/workout-schema';
 
 /**
  * Hard **daily** cap on content API calls, enforced at the gateway by the usage
@@ -101,6 +102,38 @@ export interface PortfolioApiStackProps extends cdk.StackProps {
    * blog and gym sources.
    */
   readonly githubUser?: string;
+  /**
+   * Public MCP server configuration. Supplied only when the MCP endpoint should
+   * get its own custom domain and OAuth discovery documents — in practice
+   * production only, mirroring how WorkoutIngestStack is declared solely when
+   * its context is present. Without it the MCP endpoint is not created at all,
+   * so dev deploys need no certificate and no DNS.
+   */
+  readonly mcp?: McpOptions;
+}
+
+/** Custom-domain + certificate inputs for the public MCP server. */
+export interface McpOptions {
+  /**
+   * Host the MCP server answers on, e.g. "mcp.example.com". Supplied at deploy
+   * time rather than committed: this repo is public and the site's domain is
+   * deliberately kept out of it (see bin/portfolio-api.ts).
+   */
+  readonly domainName: string;
+  /**
+   * ARN of an ACM certificate for `domainName`, issued **in this stack's
+   * region** — a REGIONAL API Gateway custom domain cannot use an us-east-1
+   * certificate. Passed in rather than created here because DNS for the site is
+   * not in Route 53, so CDK cannot complete the validation itself; issue the
+   * certificate once by hand and pass its ARN.
+   */
+  readonly certificateArn: string;
+  /**
+   * Exact URLs Cognito may redirect back to after sign-in for the MCP client.
+   * Claude's web, desktop and mobile apps all complete the flow at the same
+   * Anthropic callback, so a single entry covers iOS too.
+   */
+  readonly callbackUrls: string[];
 }
 
 export class PortfolioApiStack extends cdk.Stack {
@@ -325,6 +358,11 @@ export class PortfolioApiStack extends cdk.Stack {
     // constructed ARN rather than a cross-region CloudFormation import.
     const workoutSummaryTable = workoutSummaryTableName(props.stage);
     const workoutSummaryArn = `arn:aws:dynamodb:${WORKOUT_REGION}:${this.account}:table/${workoutSummaryTable}`;
+    // The per-set table lives beside the summary table in us-west-2. Only the
+    // MCP server reads it, and only behind the admin scope: it is the private
+    // training log the public summaries deliberately aggregate away.
+    const workoutSetsTable = workoutSetsTableName(props.stage);
+    const workoutSetsArn = `arn:aws:dynamodb:${WORKOUT_REGION}:${this.account}:table/${workoutSetsTable}`;
     const getWorkoutFn = new lambdaNode.NodejsFunction(this, 'GetWorkoutFunction', {
       entry: path.join(__dirname, '..', 'lambda', 'get-workout.ts'),
       ...lambdaDefaults,
@@ -476,6 +514,177 @@ export class PortfolioApiStack extends cdk.Stack {
         ],
       }),
     );
+
+    // Model Context Protocol server. Created only when MCP options are supplied,
+    // which in practice means production: the server needs a custom domain (the
+    // OAuth discovery documents must sit at a domain root, which the default
+    // execute-api URL cannot offer) and therefore a certificate and a DNS
+    // record, none of which a dev deploy should demand. Same "declare only when
+    // the context is present" shape as WorkoutIngestStack.
+    if (props.mcp) {
+      const mcpDomainName = props.mcp.domainName;
+      const mcpResourceUrl = `https://${mcpDomainName}/mcp`;
+      const mcpPrmUrl = `https://${mcpDomainName}/.well-known/oauth-protected-resource`;
+
+      // A resource server gives the pool a custom scope to mint into access
+      // tokens, which is what separates a token that may edit the site from one
+      // that may only read it.
+      const mcpResourceServer = userPool.addResourceServer('McpResourceServer', {
+        identifier: 'mcp',
+        userPoolResourceServerName: 'Portfolio MCP server',
+        scopes: [
+          new cognito.ResourceServerScope({
+            scopeName: 'admin',
+            scopeDescription: 'Read private training data and edit site content',
+          }),
+        ],
+      });
+      const mcpAdminScope = 'mcp/admin';
+
+      // Pre-registered app client for the MCP client (the Claude apps). Cognito
+      // has no RFC 7591 dynamic client registration, but this server is
+      // single-user: one client provisioned here is all that is ever needed, and
+      // the pool's pre-signup trigger still restricts sign-in to the owner, so a
+      // stolen client ID grants nothing without the owner's own Google login.
+      const mcpUserPoolClient = userPool.addClient('McpUserPoolClient', {
+        // Public client: the Claude apps use authorization-code + PKCE and
+        // cannot hold a secret confidentially.
+        generateSecret: false,
+        supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.GOOGLE],
+        oAuth: {
+          flows: { authorizationCodeGrant: true },
+          scopes: [
+            cognito.OAuthScope.OPENID,
+            cognito.OAuthScope.EMAIL,
+            cognito.OAuthScope.PROFILE,
+            cognito.OAuthScope.resourceServer(mcpResourceServer, {
+              scopeName: 'admin',
+              scopeDescription: 'Read private training data and edit site content',
+            }),
+          ],
+          callbackUrls: props.mcp.callbackUrls,
+          logoutUrls: props.mcp.callbackUrls,
+        },
+      });
+      mcpUserPoolClient.node.addDependency(googleIdp);
+      mcpUserPoolClient.node.addDependency(mcpResourceServer);
+
+      const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`;
+
+      // The MCP tools re-expose the site's own handlers, so this function both
+      // reads and writes the content tables. Unlike /chat and /agent — kept
+      // write-incapable at the IAM layer precisely because they are anonymous —
+      // the boundary here is the access-token check in lambda/mcp.ts, which is
+      // why this role does carry the write grants the admin tools need.
+      const mcpFn = new lambdaNode.NodejsFunction(this, 'McpFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'mcp.ts'),
+        ...lambdaDefaults,
+        // get_workout runs the same five cross-region paginated queries as the
+        // /workout endpoint, so it inherits that function's headroom.
+        timeout: cdk.Duration.seconds(20),
+        memorySize: 256,
+        environment: {
+          ...lambdaDefaults.environment,
+          MEDIA_TABLE_NAME: mediaTable.tableName,
+          WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
+          WORKOUT_SETS_TABLE_NAME: workoutSetsTable,
+          WORKOUT_REGION,
+          USER_POOL_ID: userPool.userPoolId,
+          // Both clients are accepted: the SPA's, so the site's own editor can
+          // drive the same tools, and the MCP client's.
+          MCP_CLIENT_IDS: `${mcpUserPoolClient.userPoolClientId},${userPoolClient.userPoolClientId}`,
+          MCP_RESOURCE_URL: mcpResourceUrl,
+          MCP_PRM_URL: mcpPrmUrl,
+          MCP_ADMIN_SCOPE: mcpAdminScope,
+        },
+      });
+      cvTable.grantReadWriteData(mcpFn);
+      mediaTable.grantReadWriteData(mcpFn);
+      // get_workout / get_activity read the summary table; get_workout_sets
+      // reads the per-set table. Both are cross-region and read-only here.
+      mcpFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:BatchGetItem'],
+          resources: [workoutSummaryArn, workoutSetsArn],
+        }),
+      );
+
+      // Discovery documents. Static apart from the deployment's own URLs, so one
+      // small function serves both well-known paths.
+      const mcpOAuthEnv = {
+        MCP_RESOURCE_URL: mcpResourceUrl,
+        COGNITO_AUTH_DOMAIN: userPoolDomain.baseUrl(),
+        COGNITO_ISSUER: cognitoIssuer,
+        MCP_SCOPES: `openid email profile ${mcpAdminScope}`,
+      };
+      const mcpPrmFn = new lambdaNode.NodejsFunction(this, 'McpProtectedResourceFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'mcp-oauth.ts'),
+        handler: 'protectedResourceHandler',
+        ...lambdaDefaults,
+        environment: { ...lambdaDefaults.environment, ...mcpOAuthEnv },
+      });
+      const mcpAsFn = new lambdaNode.NodejsFunction(this, 'McpAuthServerFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'mcp-oauth.ts'),
+        handler: 'authorizationServerHandler',
+        ...lambdaDefaults,
+        environment: { ...lambdaDefaults.environment, ...mcpOAuthEnv },
+      });
+
+      // Its own REST API, not a route on the content API. The custom domain maps
+      // a whole stage, so mapping the content API here would also answer /cv,
+      // /media and /agent on the MCP host; a separate API keeps this domain to
+      // exactly the MCP server and its discovery documents. There is no fixed
+      // cost to a second REST API, and the MCP Lambda calls the site's handlers
+      // in-process regardless of which gateway fronts it.
+      const mcpApi = new apigateway.RestApi(this, 'McpRestApi', {
+        deployOptions: { stageName: props.stage },
+        endpointTypes: [apigateway.EndpointType.REGIONAL],
+        domainName: {
+          domainName: mcpDomainName,
+          certificate: acm.Certificate.fromCertificateArn(
+            this,
+            'McpCertificate',
+            props.mcp.certificateArn,
+          ),
+          endpointType: apigateway.EndpointType.REGIONAL,
+          // Empty base path: the stage is not part of the public URL, so the
+          // well-known documents land at the domain root as RFC 9728 requires.
+          basePath: '',
+        },
+        defaultCorsPreflightOptions: {
+          allowOrigins: apigateway.Cors.ALL_ORIGINS,
+          allowMethods: ['GET', 'POST', 'OPTIONS'],
+          allowHeaders: ['Content-Type', 'Authorization', 'Mcp-Session-Id', 'MCP-Protocol-Version'],
+        },
+      });
+
+      // No API key: an MCP client discovering this server through OAuth has no
+      // way to learn one, and the access-token check is the real boundary.
+      mcpApi.root
+        .addResource('mcp')
+        .addMethod('POST', new apigateway.LambdaIntegration(mcpFn));
+
+      const wellKnown = mcpApi.root.addResource('.well-known');
+      wellKnown
+        .addResource('oauth-protected-resource')
+        .addMethod('GET', new apigateway.LambdaIntegration(mcpPrmFn));
+      wellKnown
+        .addResource('oauth-authorization-server')
+        .addMethod('GET', new apigateway.LambdaIntegration(mcpAsFn));
+
+      new cdk.CfnOutput(this, 'McpUrl', {
+        value: mcpResourceUrl,
+        description: 'MCP server endpoint; add this as a custom connector',
+      });
+      new cdk.CfnOutput(this, 'McpUserPoolClientId', {
+        value: mcpUserPoolClient.userPoolClientId,
+        description: "OAuth client ID for the MCP connector's advanced settings",
+      });
+      new cdk.CfnOutput(this, 'McpDomainTarget', {
+        value: mcpApi.domainName!.domainNameAliasDomainName,
+        description: `CNAME target for ${mcpDomainName}`,
+      });
+    }
 
     // Daily snapshot of public GitHub activity. Scheduled rather than proxied on
     // request: the feed is on the landing page's critical path, and calling
