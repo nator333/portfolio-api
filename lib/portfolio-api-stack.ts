@@ -17,6 +17,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
 import { workoutSummaryTableName, workoutSetsTableName, WORKOUT_REGION } from '../lambda/workout-schema';
+import { workoutPlanTableName } from '../lambda/workout-plan-schema';
 
 /**
  * Hard **daily** cap on content API calls, enforced at the gateway by the usage
@@ -363,6 +364,12 @@ export class PortfolioApiStack extends cdk.Stack {
     // training log the public summaries deliberately aggregate away.
     const workoutSetsTable = workoutSetsTableName(props.stage);
     const workoutSetsArn = `arn:aws:dynamodb:${WORKOUT_REGION}:${this.account}:table/${workoutSetsTable}`;
+    // The training program, beside them in us-west-2 (WorkoutIngestStack). Also
+    // MCP-only and admin-gated, and the one workout table this API *writes*:
+    // publishing a plan version is an admin tool, so the grant below is split
+    // from the read-only one to keep PutItem scoped to this table alone.
+    const workoutPlanTable = workoutPlanTableName(props.stage);
+    const workoutPlanArn = `arn:aws:dynamodb:${WORKOUT_REGION}:${this.account}:table/${workoutPlanTable}`;
     const getWorkoutFn = new lambdaNode.NodejsFunction(this, 'GetWorkoutFunction', {
       entry: path.join(__dirname, '..', 'lambda', 'get-workout.ts'),
       ...lambdaDefaults,
@@ -588,6 +595,7 @@ export class PortfolioApiStack extends cdk.Stack {
           MEDIA_TABLE_NAME: mediaTable.tableName,
           WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
           WORKOUT_SETS_TABLE_NAME: workoutSetsTable,
+          WORKOUT_PLAN_TABLE_NAME: workoutPlanTable,
           WORKOUT_REGION,
           USER_POOL_ID: userPool.userPoolId,
           // Both clients are accepted: the SPA's, so the site's own editor can
@@ -606,6 +614,17 @@ export class PortfolioApiStack extends cdk.Stack {
         new iam.PolicyStatement({
           actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:BatchGetItem'],
           resources: [workoutSummaryArn, workoutSetsArn],
+        }),
+      );
+
+      // get_workout_plan reads and update_workout_plan appends. PutItem is
+      // granted only here, and only on the plan table: the log itself stays
+      // read-only to this API, since the sole writer of training history is the
+      // ingest Lambda in us-west-2.
+      mcpFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:PutItem'],
+          resources: [workoutPlanArn],
         }),
       );
 

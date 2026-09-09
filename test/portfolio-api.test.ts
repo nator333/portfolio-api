@@ -505,3 +505,25 @@ test('prod stack alerts on Bedrock spend at a $5 monthly budget; other stages do
   const test = synthStack();
   test.resourceCountIs('AWS::Budgets::Budget', 0);
 });
+
+test('the MCP role may write the plan table and only read the training log', () => {
+  const template = synthStackWithMcp();
+
+  // The plan is the one workout table this API writes. The sets and summary
+  // tables must stay read-only here: their sole writer is the ingest Lambda in
+  // us-west-2, so a PutItem reaching them would be a second, unaudited path
+  // into the training history.
+  const statements = Object.values(template.findResources('AWS::IAM::Policy')).flatMap(
+    (policy) => policy.Properties.PolicyDocument.Statement as Array<Record<string, unknown>>,
+  );
+
+  const dynamoWrites = statements.filter((s) => {
+    const actions = [s.Action].flat().filter((a): a is string => typeof a === 'string');
+    return actions.includes('dynamodb:PutItem');
+  });
+
+  const writable = JSON.stringify(dynamoWrites.map((s) => s.Resource));
+  expect(writable).toContain('portfolio-workout-plan-test');
+  expect(writable).not.toContain('portfolio-workout-sets-test');
+  expect(writable).not.toContain('portfolio-workout-summary-test');
+});

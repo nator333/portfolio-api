@@ -9,11 +9,14 @@ import { handler as getWorkout } from './get-workout';
 import { handler as getActivity } from './get-activity';
 import { handler as listMedia } from './list-media';
 import { handler as getWorkoutSets } from './get-workout-sets';
+import { handler as getWorkoutPlan } from './get-workout-plan';
 import { handler as updateCv } from './update-cv';
 import { handler as updateProjects } from './update-projects';
 import { handler as updateBlog } from './update-blog';
 import { handler as updateHome } from './update-home';
 import { handler as updateMedia } from './update-media';
+import { handler as updateWorkoutPlan } from './update-workout-plan';
+import { handler as reviseWorkoutPlan } from './revise-workout-plan';
 
 import {
   JSON_RPC,
@@ -83,15 +86,31 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   get_activity: (args) => getActivity(proxyEvent({ query: dateRange(args) })),
   list_media: () => listMedia(proxyEvent({})),
   get_workout_sets: (args) => getWorkoutSets(proxyEvent({ query: setsRange(args) })),
+  get_workout_plan: (args) => getWorkoutPlan(proxyEvent({ query: planQuery(args) })),
   update_cv: (args) => updateCv(proxyEvent({ body: args })),
   update_projects: (args) => updateProjects(proxyEvent({ body: args })),
   update_blog: (args) => updateBlog(proxyEvent({ body: args })),
   update_home: (args) => updateHome(proxyEvent({ body: args })),
+  update_workout_plan: (args) => updateWorkoutPlan(proxyEvent({ body: args })),
+  revise_workout_plan: (args) => reviseWorkoutPlan(proxyEvent({ body: args })),
   update_media: (args) => {
     const { assetId, ...rest } = args as { assetId?: string } & Record<string, unknown>;
     return updateMedia(proxyEvent({ path: { id: String(assetId ?? '') }, body: rest }));
   },
 };
+
+/**
+ * The plan read takes numbers and booleans, but a delegated handler only ever
+ * sees query strings, so they are stringified here exactly as a URL would.
+ */
+function planQuery(args: Record<string, unknown>): Record<string, string | undefined> {
+  const query: Record<string, string | undefined> = {};
+  if (typeof args.planId === 'string') query.planId = args.planId;
+  if (typeof args.version === 'number') query.version = String(args.version);
+  if (typeof args.date === 'string') query.date = args.date;
+  if (args.history === true) query.history = 'true';
+  return query;
+}
 
 function setsRange(args: Record<string, unknown>): Record<string, string | undefined> {
   const query: Record<string, string | undefined> = {};
