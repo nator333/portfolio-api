@@ -19,9 +19,37 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
 * **Public read tools** — `get_cv`, `get_projects`, `get_blog`, `get_home`,
   `get_workout`, `get_activity`: the same data the site already serves.
 * **Admin tools** — `get_workout_sets` (the private per-set training log),
-  `list_media`, and every `update_` tool. Each is refused with `401` and a
+  `get_exercise_history`, `list_exercises`, `get_workout_plan`, `list_media`,
+  and every `update_`/`revise_` tool. Each is refused with `401` and a
   `WWW-Authenticate` challenge unless the request carries an access token issued
   by this user pool, for this resource, bearing the `mcp/admin` scope.
+
+### Reading the training log by exercise
+
+The sets table is partitioned by date, which makes a day cheap and a single
+lift expensive: `get_workout_sets` caps at 31 days and returns every exercise
+trained on each of them. A progression question about one movement ("how has my
+bench moved this year") therefore cost a dozen calls whose results were ~95%
+discarded — paid for in the model's context, which is the scarce resource here,
+not in read units.
+
+`get_exercise_history` answers it in one query instead, over an
+`exercise`-`date` global secondary index on the sets table. Both key attributes
+were already written on every set, so the index needed no change to the ingest
+path and DynamoDB backfilled the existing history on creation — no re-import.
+
+An agent cannot be expected to guess the log's canonical names (a decade of
+mixed Japanese/English spellings is folded onto one English label each at
+ingest, see `lambda/workout-exercises.ts`), so two things bridge that gap:
+`list_exercises` publishes the whole vocabulary, and a name that resolves to
+nothing comes back as `404` with candidates rather than as an empty history an
+agent would report as "you have never trained this".
+
+There is deliberately **no separate exercise master table**. The summary
+table's `EXERCISE` partition already is one — the import rebuilds it from
+scratch every ingest and prunes rows the new rollup no longer produces, so it
+cannot drift from the sets it summarises. A second table would duplicate that,
+and an alias column would duplicate `workout-exercises.ts` into data.
 
 ### Why there is no dynamic client registration
 

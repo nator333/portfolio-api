@@ -73,7 +73,7 @@ test('the initialized notification is acknowledged with 202 and no body', async 
 
 test('tools/list advertises all sixteen tools', async () => {
   const { json } = await call({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-  expect(json.result.tools).toHaveLength(16);
+  expect(json.result.tools).toHaveLength(18);
   expect(json.result.tools.map((t: { name: string }) => t.name)).toContain('get_cv');
 });
 

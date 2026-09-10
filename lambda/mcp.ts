@@ -9,6 +9,8 @@ import { handler as getWorkout } from './get-workout';
 import { handler as getActivity } from './get-activity';
 import { handler as listMedia } from './list-media';
 import { handler as getWorkoutSets } from './get-workout-sets';
+import { handler as getExerciseHistory } from './get-exercise-history';
+import { handler as listExercises } from './list-exercises';
 import { handler as getWorkoutPlan } from './get-workout-plan';
 import { handler as updateCv } from './update-cv';
 import { handler as updateProjects } from './update-projects';
@@ -86,6 +88,8 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   get_activity: (args) => getActivity(proxyEvent({ query: dateRange(args) })),
   list_media: () => listMedia(proxyEvent({})),
   get_workout_sets: (args) => getWorkoutSets(proxyEvent({ query: setsRange(args) })),
+  list_exercises: (args) => listExercises(proxyEvent({ query: exerciseFilter(args) })),
+  get_exercise_history: (args) => getExerciseHistory(proxyEvent({ query: exerciseHistory(args) })),
   get_workout_plan: (args) => getWorkoutPlan(proxyEvent({ query: planQuery(args) })),
   update_cv: (args) => updateCv(proxyEvent({ body: args })),
   update_projects: (args) => updateProjects(proxyEvent({ body: args })),
@@ -109,6 +113,20 @@ function planQuery(args: Record<string, unknown>): Record<string, string | undef
   if (typeof args.version === 'number') query.version = String(args.version);
   if (typeof args.date === 'string') query.date = args.date;
   if (args.history === true) query.history = 'true';
+  return query;
+}
+
+function exerciseHistory(args: Record<string, unknown>): Record<string, string | undefined> {
+  const query: Record<string, string | undefined> = {};
+  if (typeof args.exercise === 'string') query.exercise = args.exercise;
+  if (typeof args.from === 'string') query.from = args.from;
+  if (typeof args.to === 'string') query.to = args.to;
+  return query;
+}
+
+function exerciseFilter(args: Record<string, unknown>): Record<string, string | undefined> {
+  const query: Record<string, string | undefined> = {};
+  if (typeof args.muscle === 'string') query.muscle = args.muscle;
   return query;
 }
 

@@ -9,7 +9,7 @@ import * as lambdaNode from 'aws-cdk-lib/aws-lambda-nodejs';
 import { S3EventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as path from 'path';
-import { workoutSetsTableName, workoutSummaryTableName } from '../lambda/workout-schema';
+import { SETS_BY_EXERCISE_INDEX, workoutSetsTableName, workoutSummaryTableName } from '../lambda/workout-schema';
 import { workoutPlanTableName } from '../lambda/workout-plan-schema';
 
 /** Prefix SES writes inbound mail under, so the bucket stays tidy and the event filter is scoped. */
@@ -76,6 +76,21 @@ export class WorkoutIngestStack extends cdk.Stack {
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+    });
+
+    // Every set of one exercise, in date order — see SETS_BY_EXERCISE_INDEX.
+    // Both key attributes already exist on each item, so this costs nothing at
+    // write time beyond the index's own write units and needs no re-import to
+    // populate: DynamoDB backfills it from the table.
+    //
+    // Projected in full because the reader wants the whole set (weight, reps,
+    // volume, muscle, note) — an INCLUDE list would name every non-key
+    // attribute anyway, and the history is a few megabytes.
+    setsTable.addGlobalSecondaryIndex({
+      indexName: SETS_BY_EXERCISE_INDEX,
+      partitionKey: { name: 'exercise', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'date', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     const summaryTable = new dynamodb.Table(this, 'WorkoutSummaryTable', {

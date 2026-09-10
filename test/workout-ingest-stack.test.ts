@@ -14,6 +14,24 @@ function synthStack(stage = 'test') {
   return Template.fromStack(stack);
 }
 
+test('indexes the sets table by exercise so one lift is a single query', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    TableName: 'portfolio-workout-sets-test',
+    GlobalSecondaryIndexes: [
+      {
+        IndexName: 'exercise-date-index',
+        KeySchema: [
+          { AttributeName: 'exercise', KeyType: 'HASH' },
+          { AttributeName: 'date', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      },
+    ],
+  });
+});
+
 test('creates the raw-sets and summary tables with deterministic names', () => {
   const template = synthStack();
 

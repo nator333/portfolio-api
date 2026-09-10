@@ -92,6 +92,40 @@ const SETS_RANGE_ARGS: Record<string, unknown> = {
 };
 
 /**
+ * The lift-scoped counterpart to SETS_RANGE_ARGS. There is no span cap here:
+ * the exercise-date index makes one lift's history a single query however wide
+ * the window, so the only ceiling is on how much comes back at once.
+ */
+const EXERCISE_HISTORY_ARGS: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    exercise: {
+      type: 'string',
+      description:
+        'The exercise, e.g. "Bench Press". Matched leniently — a partial or ' +
+        'Japanese name resolves to the canonical one, and an unrecognised name ' +
+        'comes back with candidates rather than an empty history. Call ' +
+        'list_exercises for the exact vocabulary.',
+    },
+    from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Optional.' },
+    to: { type: 'string', description: 'Inclusive end date, ISO YYYY-MM-DD. Optional.' },
+  },
+  required: ['exercise'],
+  additionalProperties: false,
+};
+
+const EXERCISE_LIST_ARGS: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    muscle: {
+      type: 'string',
+      description: 'Restrict to one muscle group, e.g. "Chest". Optional; omit for every exercise.',
+    },
+  },
+  additionalProperties: false,
+};
+
+/**
  * The plan read is four lookups behind one tool: the arguments are mutually
  * exclusive, and omitting them all asks for the program in force today.
  */
@@ -195,6 +229,29 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'behind the aggregates get_workout returns. Admin only.',
     requiresAuth: true,
     inputSchema: SETS_RANGE_ARGS,
+    annotations: readAnnotations,
+  },
+  {
+    name: 'list_exercises',
+    title: 'List exercises',
+    description:
+      'The training log\'s exercise vocabulary: every movement ever logged, with its muscle group, ' +
+      'set and session counts, date range and all-time bests, most-trained first. Call this to ' +
+      'learn the exact names get_exercise_history expects. Admin only.',
+    requiresAuth: true,
+    inputSchema: EXERCISE_LIST_ARGS,
+    annotations: readAnnotations,
+  },
+  {
+    name: 'get_exercise_history',
+    title: 'Get exercise history',
+    description:
+      'Every logged set of a single exercise, in date order, with that lift\'s all-time bests. ' +
+      'This is the tool for progression questions about one movement ("how has my bench moved ' +
+      'this year") — get_workout_sets answers the same question only by returning every ' +
+      'exercise on every day in the span. Admin only.',
+    requiresAuth: true,
+    inputSchema: EXERCISE_HISTORY_ARGS,
     annotations: readAnnotations,
   },
   {
