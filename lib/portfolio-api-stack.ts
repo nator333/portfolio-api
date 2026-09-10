@@ -16,7 +16,12 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
-import { workoutSummaryTableName, workoutSetsTableName, WORKOUT_REGION } from '../lambda/workout-schema';
+import {
+  workoutSummaryTableName,
+  workoutSetsTableName,
+  SETS_BY_EXERCISE_INDEX,
+  WORKOUT_REGION,
+} from '../lambda/workout-schema';
 import { workoutPlanTableName } from '../lambda/workout-plan-schema';
 
 /**
@@ -608,12 +613,20 @@ export class PortfolioApiStack extends cdk.Stack {
       });
       cvTable.grantReadWriteData(mcpFn);
       mediaTable.grantReadWriteData(mcpFn);
-      // get_workout / get_activity read the summary table; get_workout_sets
-      // reads the per-set table. Both are cross-region and read-only here.
+      // get_workout / get_activity / list_exercises read the summary table;
+      // get_workout_sets reads the per-set table by date and
+      // get_exercise_history reads it by exercise, which is a separate resource:
+      // a Query against a secondary index is authorized on the index ARN, not
+      // the table's, so granting the table alone would fail at runtime.
+      // All cross-region and read-only here.
       mcpFn.addToRolePolicy(
         new iam.PolicyStatement({
           actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:BatchGetItem'],
-          resources: [workoutSummaryArn, workoutSetsArn],
+          resources: [
+            workoutSummaryArn,
+            workoutSetsArn,
+            `${workoutSetsArn}/index/${SETS_BY_EXERCISE_INDEX}`,
+          ],
         }),
       );
 

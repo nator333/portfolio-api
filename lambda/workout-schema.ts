@@ -42,6 +42,28 @@ export const WORKOUT_REGION = 'us-west-2';
 export const workoutSetsTableName = (stage: string): string => `portfolio-workout-sets-${stage}`;
 export const workoutSummaryTableName = (stage: string): string => `portfolio-workout-summary-${stage}`;
 
+/**
+ * Index on the sets table giving the one access pattern its own key schema
+ * cannot: every set of a single exercise, in date order.
+ *
+ * The table is partitioned by date, which makes a day cheap and a lift
+ * expensive — "every Bench Press I have logged" would otherwise mean querying
+ * every training day and discarding ~95% of what came back. Reading one lift's
+ * history is exactly the question an agent asks of a training log, so it gets
+ * an index rather than a fan-out.
+ *
+ * Both key attributes (`exercise`, `date`) are already written on every set, so
+ * this index needs no change to the ingest path and DynamoDB backfills the
+ * existing history on creation — no re-import required.
+ *
+ * `date` is deliberately not unique within a partition (a lift has several sets
+ * a day). DynamoDB allows that — it appends the base table key internally, so
+ * ordering stays deterministic and pagination stable — and readers re-sort the
+ * sets of one day by `setNo`, the same thing get-workout-sets.ts already does
+ * because "Bench#10" sorts before "Bench#2".
+ */
+export const SETS_BY_EXERCISE_INDEX = 'exercise-date-index';
+
 /** Partition-key discriminators for the single summary table. */
 export const SUMMARY_PK = {
   day: 'DAY',

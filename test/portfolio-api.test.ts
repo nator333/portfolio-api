@@ -465,6 +465,30 @@ test('the MCP role reads the private sets table but never invokes Bedrock', () =
   }
 });
 
+test('the MCP role may query the exercise index, not just the sets table', () => {
+  // A Query against a secondary index is authorized on the index ARN. Granting
+  // only the table's would leave get_exercise_history failing at runtime with
+  // AccessDenied, which no synth-time check would otherwise catch.
+  const template = synthStackWithMcp();
+
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const grantsIndex = policies.some((p) => {
+    const statements = p.Properties.PolicyDocument.Statement as Array<{
+      Action?: string | string[];
+      Resource?: unknown;
+    }>;
+    return statements.some((s) => {
+      const resource = JSON.stringify(s.Resource ?? '');
+      const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+      return (
+        resource.includes('table/portfolio-workout-sets-test/index/exercise-date-index') &&
+        actions.includes('dynamodb:Query')
+      );
+    });
+  });
+  expect(grantsIndex).toBe(true);
+});
+
 test('every reader of the workout table is cross-region and read-only', () => {
   // get-workout, get-activity and the MCP server all read it; none may ever
   // write, since the only writer is the ingest Lambda in us-west-2. Synthesised

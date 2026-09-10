@@ -10,7 +10,8 @@ test('every read tool is public and every write tool requires auth', () => {
   const authTools = TOOL_SPECS.filter((t) => t.requiresAuth).map((t) => t.name).sort();
 
   // The public get_ tools are anonymous; the private-data reads (list_media,
-  // get_workout_sets, get_workout_plan) and every update_ tool are admin-only.
+  // get_workout_sets, get_exercise_history, list_exercises, get_workout_plan)
+  // and every update_ tool are admin-only.
   expect(publicTools).toEqual([
     'get_activity',
     'get_blog',
@@ -20,8 +21,10 @@ test('every read tool is public and every write tool requires auth', () => {
     'get_workout',
   ]);
   expect(authTools).toEqual([
+    'get_exercise_history',
     'get_workout_plan',
     'get_workout_sets',
+    'list_exercises',
     'list_media',
     'revise_workout_plan',
     'update_blog',
