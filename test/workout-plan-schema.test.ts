@@ -92,6 +92,51 @@ describe('plannedWeeklySets', () => {
   it('should omit groups the week never trains', () => {
     expect(plannedWeeklySets(UPPER_LOWER_V1).Abs).toBeUndefined();
   });
+
+  /**
+   * The targets and the sessions are deliberately independent — see
+   * WeeklySetTarget — but independent is not the same as free to contradict.
+   * Running the rotation exactly as written must never be reported as *too much*
+   * volume, because the program is the thing asking for it.
+   *
+   * This is a real regression: Shoulders, Biceps and Triceps were once declared
+   * at 9-11, 5-6 and 6-8 against a rotation prescribing 11-14, 6-7 and 6-9, so a
+   * perfectly-executed week came back "over" on /muscle-volume-status.
+   */
+  it('should never declare a target below what the rotation prescribes', () => {
+    const prescribed = plannedWeeklySets(UPPER_LOWER_V1);
+
+    for (const target of UPPER_LOWER_V1.weeklySetTargets) {
+      // A target may span several muscles, so compare against their combined
+      // prescription — the same total the status endpoint judges it on.
+      const combinedMax = target.muscles.reduce(
+        (total, muscle) => total + (prescribed[muscle]?.max ?? 0),
+        0,
+      );
+      if (combinedMax === 0) continue; // No slot prescribes it; nothing to contradict.
+
+      expect([target.muscles.join('+'), combinedMax <= target.sets.max]).toEqual([
+        target.muscles.join('+'),
+        true,
+      ]);
+    }
+  });
+
+  /**
+   * The reverse direction is deliberately NOT asserted. A target above the
+   * prescription is the whole point of stating one: the glutes/hamstrings target
+   * of 9-11 sits above the 6 the rotation directly assigns because it folds in
+   * indirect work the session list cannot express.
+   */
+  it('should allow a target above the prescription, which is the point of stating one', () => {
+    const prescribed = plannedWeeklySets(UPPER_LOWER_V1);
+    const legs = UPPER_LOWER_V1.weeklySetTargets.find((t) => t.muscles.includes('Glutes'));
+
+    const directlyPrescribed =
+      (prescribed.Glutes?.max ?? 0) + (prescribed.Hamstrings?.max ?? 0);
+    expect(directlyPrescribed).toBe(6);
+    expect(legs?.sets.min).toBeGreaterThan(directlyPrescribed);
+  });
 });
 
 describe('selecting a version', () => {
