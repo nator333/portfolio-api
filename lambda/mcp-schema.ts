@@ -146,6 +146,20 @@ const PLAN_READ_ARGS: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+const MUSCLE_VOLUME_ARGS: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    window: {
+      type: 'integer',
+      description:
+        'Length of the trailing window in days, ending now. Optional; defaults to 7. The weekly ' +
+        'targets are scaled to it, so a 14-day window is judged against a fortnight\'s worth.',
+    },
+    planId: { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' },
+  },
+  additionalProperties: false,
+};
+
 /** A full-document write tool input: the document itself, validated server-side. */
 const documentArgs = (label: string): Record<string, unknown> => ({
   type: 'object',
@@ -267,6 +281,22 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: readAnnotations,
   },
   {
+    name: 'get_muscle_volume_status',
+    title: 'Get muscle volume status',
+    description:
+      'Whether each muscle is under, in range or over its target training volume right now. This ' +
+      'is the one place that judgement is computed: it rolls the logged sets up over a trailing ' +
+      'window (7 days by default, ending at the moment of the call) and compares them against the ' +
+      'CURRENT plan version\'s weekly set targets, read fresh on every call. Prefer it to working ' +
+      'the answer out from get_workout and get_workout_plan — done by hand those two disagree ' +
+      'about the window and, historically, about the targets themselves. The response carries ' +
+      '`asOf` because a trailing window moves: two calls an hour apart legitimately differ, and ' +
+      '`asOf` is how they are reconciled. Admin only.',
+    requiresAuth: true,
+    inputSchema: MUSCLE_VOLUME_ARGS,
+    annotations: readAnnotations,
+  },
+  {
     name: 'update_cv',
     title: 'Update CV',
     description: 'Replace the CV document. Admin only. Validated server-side; an invalid document is rejected unchanged.',
@@ -327,11 +357,42 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'the next number, and omit `createdAt` (the server stamps it). Re-sending an existing ' +
       'version is refused with the next free number. Admin only; validated server-side.',
     requiresAuth: true,
+    /**
+     * Unlike the other document writes, this one names its fields and their
+     * types. Those writes take free-form documents whose shape only the server
+     * knows, so a loose schema costs nothing. A plan version does not: it is
+     * strongly typed server-side, and a client that has only been told "an
+     * object" has no way to know `version` is a number and `sessions` an array.
+     * A client that guessed strings had its publish rejected field by field with
+     * nothing written — a round trip wasted on a shape we could simply state.
+     */
     inputSchema: {
       type: 'object',
       description:
         'A complete plan-version document, same shape get_workout_plan returns, with `version` ' +
         'incremented. Partial documents are rejected — this is a whole-version publish.',
+      properties: {
+        planId: { type: 'string', description: 'Lower-kebab slug, e.g. "upper-lower".' },
+        version: { type: 'integer', description: 'The next version number; publishing an existing one is refused.' },
+        name: { type: 'string' },
+        sessionsPerWeek: { type: 'integer', description: 'Sessions the rotation assumes per week, excluding bonus sessions.' },
+        rotation: { type: 'array', items: { type: 'string' }, description: 'Session ids in performed order.' },
+        bonusSessions: { type: 'array', items: { type: 'string' }, description: 'Session ids added only on weeks allowing an extra visit.' },
+        sessions: { type: 'array', items: { type: 'object' }, description: 'The prescribed sessions, each with its exercise slots.' },
+        weeklySetTargets: {
+          type: 'array',
+          description:
+            'Declared sets per muscle per week: [{muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null}]. ' +
+            'These are what get_muscle_volume_status judges actual volume against, so they are the ' +
+            'canonical target ranges — no consumer should keep its own copy.',
+          items: { type: 'object' },
+        },
+        effectiveFrom: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null for open-ended.' },
+        effectiveTo: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null while current.' },
+        notes: { type: 'string' },
+        changeNote: { type: 'string', description: 'Why this version differs from the one before it.' },
+      },
+      required: ['planId', 'version', 'name', 'sessionsPerWeek', 'rotation', 'bonusSessions', 'sessions', 'weeklySetTargets'],
       additionalProperties: true,
     },
     annotations: appendAnnotations,
@@ -340,11 +401,14 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'revise_workout_plan',
     title: 'Revise training plan',
     description:
-      'Change specific exercise slots in the current training program without resending the whole ' +
+      'Change specific exercise slots, or the weekly set targets, in the current training program without resending the whole ' +
       'document. Reads the current version, applies the edits, and publishes the result as the next ' +
       'version — nothing already stored is modified. Each edit is {op: "patch"|"add"|"remove", ' +
       'session, order} where `session` is a session id (e.g. "upper-a") and `order` is the slot\'s ' +
-      'position; a patch carries only the fields to change. `changeNote` is required. Pass ' +
+      'position; a patch carries only the fields to change. Use {op: "set-target", target: {...}} to ' +
+      'set a weekly set target and {op: "remove-target", muscles: [...]} to drop one — the targets are ' +
+      'what get_muscle_volume_status judges against, so changing one here is how that judgement changes ' +
+      'everywhere at once. `changeNote` is required. Pass ' +
       '`baseVersion` (from get_workout_plan) so the edits are refused if the plan moved underneath ' +
       'them. Use update_workout_plan instead to publish a whole new program. Admin only.',
     requiresAuth: true,
@@ -367,13 +431,32 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
           items: {
             type: 'object',
             properties: {
-              op: { type: 'string', enum: ['patch', 'add', 'remove'] },
-              session: { type: 'string', description: 'Session id, e.g. "upper-a".' },
+              op: { type: 'string', enum: ['patch', 'add', 'remove', 'set-target', 'remove-target'] },
+              session: { type: 'string', description: 'Session id, e.g. "upper-a". Required for patch, add and remove; not used by the target ops.' },
               order: { type: 'integer', description: 'Slot position. Required for patch and remove.' },
               changes: { type: 'object', description: 'For patch: only the slot fields to change (sets, reps, rpe, options, muscle, notes).' },
               exercise: { type: 'object', description: 'For add: the complete new slot, including the order to insert it at. Slots at or after that position shift down.' },
+              target: {
+                type: 'object',
+                description:
+                  'For set-target: a weekly set target, {muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null}. ' +
+                  'Replaces the entry covering exactly those muscles, or adds one. `bonusWeekSets` may be omitted for null. ' +
+                  'An entry spanning several muscles (e.g. glutes + hamstrings) is addressed by naming all of them.',
+                properties: {
+                  muscles: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                  sets: { type: 'object', properties: { min: { type: 'number' }, max: { type: 'number' } }, required: ['min', 'max'] },
+                  bonusWeekSets: { type: ['object', 'null'], properties: { min: { type: 'number' }, max: { type: 'number' } } },
+                },
+                required: ['muscles', 'sets'],
+              },
+              muscles: {
+                type: 'array',
+                items: { type: 'string' },
+                minItems: 1,
+                description: 'For remove-target: the exact muscle set of the entry to drop.',
+              },
             },
-            required: ['op', 'session'],
+            required: ['op'],
           },
         },
       },

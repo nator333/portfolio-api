@@ -397,6 +397,38 @@ export class PortfolioApiStack extends cdk.Stack {
       }),
     );
 
+    // Planned-versus-actual training volume. The only endpoint that reads the
+    // plan table *and* the summary table, because deciding whether a muscle is
+    // under or over needs both — which is exactly why every consumer that tried
+    // to answer it alone drifted. Reads only; the plan is written by the MCP
+    // tools above.
+    const muscleVolumeStatusFn = new lambdaNode.NodejsFunction(
+      this,
+      'GetMuscleVolumeStatusFunction',
+      {
+        entry: path.join(__dirname, '..', 'lambda', 'get-muscle-volume-status.ts'),
+        ...lambdaDefaults,
+        // Two small cross-region queries rather than get-workout's five paginated
+        // ones, but the round trips are the same distance, so it takes the same
+        // headroom rather than the 3s default.
+        timeout: cdk.Duration.seconds(15),
+        environment: {
+          ...lambdaDefaults.environment,
+          WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
+          WORKOUT_PLAN_TABLE_NAME: workoutPlanTable,
+          WORKOUT_REGION,
+        },
+      },
+    );
+    muscleVolumeStatusFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        // Read-only on both, and no PutItem on the plan table: publishing a plan
+        // version is an admin write, and this function never does one.
+        resources: [workoutSummaryArn, workoutPlanArn],
+      }),
+    );
+
     // Unified activity feed: blog and the GitHub snapshot locally, gym sessions
     // cross-region. Merged here so the landing page makes one call rather than
     // three against a quota every visitor shares.
@@ -851,6 +883,19 @@ export class PortfolioApiStack extends cdk.Stack {
     workoutResource.addMethod('GET', new apigateway.LambdaIntegration(getWorkoutFn), {
       apiKeyRequired: true,
     });
+
+    // Muscle-volume status: key only, on the same public posture as /workout.
+    // It reads the otherwise admin-only plan table, but returns only that plan's
+    // weekly set targets and the rolled-up counts already visible in /workout —
+    // not the session and exercise detail that makes the plan document admin
+    // only. The progress page has always shown these ranges; what changes is
+    // that it now shows the plan's rather than its own copy of them.
+    const muscleVolumeResource = api.root.addResource('muscle-volume-status');
+    muscleVolumeResource.addMethod(
+      'GET',
+      new apigateway.LambdaIntegration(muscleVolumeStatusFn),
+      { apiKeyRequired: true },
+    );
 
     // Public activity feed for the home calendar; same posture as the other
     // public GETs, and drawing on the content quota since the landing page is

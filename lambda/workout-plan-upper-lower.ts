@@ -329,5 +329,18 @@ export const UPPER_LOWER_V1: PlanVersion = {
     { muscles: ['Quads'], sets: { min: 8, max: 10 }, bonusWeekSets: null },
     { muscles: ['Glutes', 'Hamstrings'], sets: { min: 9, max: 11 }, bonusWeekSets: null },
     { muscles: ['Calves'], sets: { min: 11, max: 11 }, bonusWeekSets: { min: 15, max: 15 } },
+    // Trunk, traps and grip. The rotation prescribes no direct slot for any of
+    // the three, so unlike the entries above these are not a restatement of the
+    // sessions — they are the standing minimum the author works to outside the
+    // program, and they are stated here because a target that lives only in the
+    // consumer is a target that drifts. These three did exactly that: they were
+    // hard-coded in the progress page and absent from the plan, so the page and
+    // the plan disagreed about whether the muscle had a target at all. The
+    // ranges are the MEV-MRV landmarks the page carried, kept deliberately low
+    // because the set counts are direct-only — a row counts as Lats, never as
+    // Lats plus Biceps — so indirect trap and forearm volume is not in them.
+    { muscles: ['Traps'], sets: { min: 6, max: 20 }, bonusWeekSets: null },
+    { muscles: ['Abs'], sets: { min: 6, max: 16 }, bonusWeekSets: null },
+    { muscles: ['Forearms'], sets: { min: 4, max: 12 }, bonusWeekSets: null },
   ],
 };

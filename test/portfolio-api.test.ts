@@ -62,9 +62,11 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
   // for media (16); the CDK-managed S3 bucket-notifications handler (17);
   // list/update/delete-media for the media library (20); and the draft-returning
-  // admin blog reader behind /blog/all (21). The MCP server's three functions
-  // are not here: they are only declared when MCP options are supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 21);
+  // admin blog reader behind /blog/all (21); and get-muscle-volume-status, the
+  // only function that reads the plan and the log together (22). The MCP
+  // server's three functions are not here: they are only declared when MCP
+  // options are supplied.
+  template.resourceCountIs('AWS::Lambda::Function', 22);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -109,14 +111,15 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   for (const pathPart of ['cv', 'projects', 'blog', 'home']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Six public GETs (key only): cv, projects, blog, home, workout and activity;
-  // and four Cognito-guarded PUTs across the content resources.
+  // Seven public GETs (key only): cv, projects, blog, home, workout, activity
+  // and muscle-volume-status; and four Cognito-guarded PUTs across the content
+  // resources.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(6);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(7);
   expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(4);
 });
 
@@ -275,9 +278,10 @@ test('GET /activity is public and merges sources server-side', () => {
         (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:Query'),
     ),
   );
-  // get-workout and get-activity each read it with a Query; the MCP server adds
-  // a third reader, but only on a deployment where it is declared.
-  expect(activityPolicy.length).toBe(2);
+  // get-workout, get-activity and get-muscle-volume-status each read it with a
+  // Query; the MCP server adds a fourth reader, but only on a deployment where
+  // it is declared.
+  expect(activityPolicy.length).toBe(3);
 });
 
 test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
@@ -490,9 +494,9 @@ test('the MCP role may query the exercise index, not just the sets table', () =>
 });
 
 test('every reader of the workout table is cross-region and read-only', () => {
-  // get-workout, get-activity and the MCP server all read it; none may ever
-  // write, since the only writer is the ingest Lambda in us-west-2. Synthesised
-  // with MCP enabled so the third reader is actually covered.
+  // get-workout, get-activity, get-muscle-volume-status and the MCP server all
+  // read it; none may ever write, since the only writer is the ingest Lambda in
+  // us-west-2. Synthesised with MCP enabled so every reader is covered.
   const template = synthStackWithMcp('prod');
 
   const policies = template.findResources('AWS::IAM::Policy');
@@ -501,7 +505,7 @@ test('every reader of the workout table is cross-region and read-only', () => {
       JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
     ),
   );
-  expect(workoutPolicies.length).toBe(3);
+  expect(workoutPolicies.length).toBe(4);
 
   for (const policy of workoutPolicies) {
     const crossRegion = policy.Properties.PolicyDocument.Statement.filter(
@@ -528,6 +532,34 @@ test('prod stack alerts on Bedrock spend at a $5 monthly budget; other stages do
 
   const test = synthStack();
   test.resourceCountIs('AWS::Budgets::Budget', 0);
+});
+
+test('GET /muscle-volume-status reads the plan and the log, and writes neither', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', {
+    PathPart: 'muscle-volume-status',
+  });
+
+  // The only function pointed at both tables. It needs the plan to know the
+  // targets and the summaries to know what was lifted, and nothing more: the
+  // status is a read, and the plan's sole writer stays the admin publish path.
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const statusPolicy = policies.filter((p) => {
+    const resources = JSON.stringify(p.Properties.PolicyDocument.Statement.map(
+      (s: { Resource?: unknown }) => s.Resource,
+    ));
+    return (
+      resources.includes('table/portfolio-workout-plan') &&
+      resources.includes('table/portfolio-workout-summary')
+    );
+  });
+  expect(statusPolicy).toHaveLength(1);
+
+  const actions = statusPolicy[0].Properties.PolicyDocument.Statement.flatMap(
+    (s: { Action?: string | string[] }) => (Array.isArray(s.Action) ? s.Action : [s.Action]),
+  );
+  expect(actions).toEqual(['dynamodb:Query']);
 });
 
 test('the MCP role may write the plan table and only read the training log', () => {
