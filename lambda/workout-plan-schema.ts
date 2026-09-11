@@ -146,7 +146,7 @@ export const planVersionItem = (version: PlanVersion): PlanVersionItem => ({
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-const muscleGroupSchema = z.enum([...MUSCLE_GROUPS] as [MuscleGroup, ...MuscleGroup[]]);
+export const muscleGroupSchema = z.enum([...MUSCLE_GROUPS] as [MuscleGroup, ...MuscleGroup[]]);
 const isoDateSchema = z.string().regex(DATE_RE, 'must be YYYY-MM-DD');
 
 const rangeSchema = (max: number) =>
@@ -184,7 +184,12 @@ const planSessionSchema = z.object({
     }),
 });
 
-const weeklySetTargetSchema = z.object({
+/**
+ * Exported so the revision vocabulary can accept a target without restating its
+ * shape — the targets are the one part of a program two different consumers read
+ * to answer the same question, so there must be exactly one definition of them.
+ */
+export const weeklySetTargetSchema = z.object({
   muscles: z.array(muscleGroupSchema).min(1),
   sets: rangeSchema(MAX_SETS * 10),
   bonusWeekSets: rangeSchema(MAX_SETS * 10).nullable(),

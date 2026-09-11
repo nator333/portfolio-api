@@ -1,9 +1,18 @@
 import { z } from 'zod';
-import { planExerciseSchema, type PlanExercise, type PlanVersion } from './workout-plan-schema';
+import {
+  muscleGroupSchema,
+  planExerciseSchema,
+  weeklySetTargetSchema,
+  type PlanExercise,
+  type PlanVersion,
+  type WeeklySetTarget,
+} from './workout-plan-schema';
+import type { MuscleGroup } from './workout-muscles';
 
 /**
  * The edit vocabulary for revising a training program in place — "change the
- * sets on Upper A's second slot", rather than resending the whole document.
+ * sets on Upper A's second slot", or "chest is 8-10 a week now", rather than
+ * resending the whole document.
  *
  * Applying edits still *publishes a new version*: this module only computes the
  * next document, it never mutates the stored one. Versions stay immutable, so
@@ -35,6 +44,25 @@ export const planEditSchema = z.discriminatedUnion('op', [
     op: z.literal('add'),
     session: z.string(),
     exercise: planExerciseSchema,
+  }),
+  /**
+   * Set (or replace) a weekly set target. Unlike the three above this touches no
+   * session: a target is declared guidance, not a slot, and the two deliberately
+   * do not have to agree — see WeeklySetTarget.
+   *
+   * The targets were editable only by republishing the whole document, which is
+   * why they drifted: a consumer that wanted a range the plan did not state kept
+   * its own copy instead, and the plan and the progress page ended up disagreeing
+   * about chest, lats, and whether traps had a target at all. Making the field
+   * as cheap to revise as a set count is what keeps it the single source.
+   */
+  z.object({
+    op: z.literal('set-target'),
+    target: weeklySetTargetSchema.partial({ bonusWeekSets: true }),
+  }),
+  z.object({
+    op: z.literal('remove-target'),
+    muscles: z.array(muscleGroupSchema).min(1),
   }),
 ]);
 
@@ -75,8 +103,18 @@ export function applyPlanEdits(
   }
 
   let sessions = base.sessions;
+  let weeklySetTargets = base.weeklySetTargets;
 
   for (const edit of edits) {
+    // The target ops address a muscle, not a session, so they branch before the
+    // session lookup below rather than carrying a session id they have no use for.
+    if (edit.op === 'set-target' || edit.op === 'remove-target') {
+      const applied = applyToTargets(weeklySetTargets, edit);
+      if (!applied.ok) return applied;
+      weeklySetTargets = applied.targets;
+      continue;
+    }
+
     const index = sessions.findIndex((s) => s.id === edit.session);
     if (index === -1) {
       const known = sessions.map((s) => s.id).join(', ');
@@ -96,6 +134,7 @@ export function applyPlanEdits(
       ...base,
       version: base.version + 1,
       sessions,
+      weeklySetTargets,
       changeNote: meta.changeNote,
       name: meta.name ?? base.name,
       effectiveFrom: meta.effectiveFrom === undefined ? base.effectiveFrom : meta.effectiveFrom,
@@ -110,7 +149,7 @@ type SessionEditResult =
 
 function applyToSession(
   exercises: readonly PlanExercise[],
-  edit: PlanEdit,
+  edit: Extract<PlanEdit, { op: 'patch' | 'remove' | 'add' }>,
 ): SessionEditResult {
   if (edit.op === 'add') {
     // Insert, don't just append: "add this as the second exercise" means the
@@ -146,4 +185,66 @@ function applyToSession(
       .map((e, i) => (i === target ? merged : e))
       .sort((a, b) => a.order - b.order),
   };
+}
+
+type TargetEditResult =
+  | { readonly ok: true; readonly targets: readonly WeeklySetTarget[] }
+  | { readonly ok: false; readonly error: string };
+
+/** The muscles an entry covers, order-independent, for matching one entry to another. */
+const muscleKey = (muscles: readonly MuscleGroup[]): string => [...muscles].sort().join('+');
+
+/**
+ * Sets or removes one weekly set target.
+ *
+ * An entry is identified by the exact set of muscles it covers, so revising the
+ * combined glutes+hamstrings target means naming both — the same way it is
+ * stated. A partial overlap is refused rather than resolved: if one entry
+ * already covers glutes and hamstrings together, "glutes is 6-8" leaves two
+ * entries claiming glutes with no single answer for the group's status, and
+ * guessing which one a reader meant is how these numbers drift in the first
+ * place. The caller is told to remove the combined entry first.
+ */
+function applyToTargets(
+  targets: readonly WeeklySetTarget[],
+  edit: Extract<PlanEdit, { op: 'set-target' | 'remove-target' }>,
+): TargetEditResult {
+  const muscles = edit.op === 'set-target' ? edit.target.muscles : edit.muscles;
+  const key = muscleKey(muscles);
+  const at = targets.findIndex((t) => muscleKey(t.muscles) === key);
+
+  if (edit.op === 'remove-target') {
+    if (at === -1) {
+      const known = targets.map((t) => muscleKey(t.muscles)).join(', ') || 'none';
+      return {
+        ok: false,
+        error: `No weekly set target covers exactly ${key}; this plan targets: ${known}`,
+      };
+    }
+    return { ok: true, targets: targets.filter((_, i) => i !== at) };
+  }
+
+  // `bonusWeekSets` is optional on the wire but stored explicitly, so a target
+  // set without one reads as "unchanged on a bonus week" rather than absent.
+  const next: WeeklySetTarget = {
+    muscles: edit.target.muscles,
+    sets: edit.target.sets,
+    bonusWeekSets: edit.target.bonusWeekSets ?? null,
+  };
+
+  if (at !== -1) {
+    return { ok: true, targets: targets.map((t, i) => (i === at ? next : t)) };
+  }
+
+  const overlapping = targets.find((t) => t.muscles.some((m) => muscles.includes(m)));
+  if (overlapping) {
+    return {
+      ok: false,
+      error:
+        `A weekly set target already covers ${muscleKey(overlapping.muscles)}, which overlaps ` +
+        `${key}; remove that entry before adding this one`,
+    };
+  }
+
+  return { ok: true, targets: [...targets, next] };
 }

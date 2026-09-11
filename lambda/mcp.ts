@@ -12,6 +12,7 @@ import { handler as getWorkoutSets } from './get-workout-sets';
 import { handler as getExerciseHistory } from './get-exercise-history';
 import { handler as listExercises } from './list-exercises';
 import { handler as getWorkoutPlan } from './get-workout-plan';
+import { handler as getMuscleVolumeStatus } from './get-muscle-volume-status';
 import { handler as updateCv } from './update-cv';
 import { handler as updateProjects } from './update-projects';
 import { handler as updateBlog } from './update-blog';
@@ -91,6 +92,8 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   list_exercises: (args) => listExercises(proxyEvent({ query: exerciseFilter(args) })),
   get_exercise_history: (args) => getExerciseHistory(proxyEvent({ query: exerciseHistory(args) })),
   get_workout_plan: (args) => getWorkoutPlan(proxyEvent({ query: planQuery(args) })),
+  get_muscle_volume_status: (args) =>
+    getMuscleVolumeStatus(proxyEvent({ query: muscleVolumeQuery(args) })),
   update_cv: (args) => updateCv(proxyEvent({ body: args })),
   update_projects: (args) => updateProjects(proxyEvent({ body: args })),
   update_blog: (args) => updateBlog(proxyEvent({ body: args })),
@@ -113,6 +116,19 @@ function planQuery(args: Record<string, unknown>): Record<string, string | undef
   if (typeof args.version === 'number') query.version = String(args.version);
   if (typeof args.date === 'string') query.date = args.date;
   if (args.history === true) query.history = 'true';
+  return query;
+}
+
+/**
+ * The status read is the one tool whose answer depends on *when* it is asked, so
+ * nothing here is defaulted client-side: an omitted `window` is left absent and
+ * the handler applies the documented default, rather than two layers each having
+ * an opinion about what seven days means.
+ */
+function muscleVolumeQuery(args: Record<string, unknown>): Record<string, string | undefined> {
+  const query: Record<string, string | undefined> = {};
+  if (typeof args.window === 'number') query.window = String(args.window);
+  if (typeof args.planId === 'string') query.planId = args.planId;
   return query;
 }
 
