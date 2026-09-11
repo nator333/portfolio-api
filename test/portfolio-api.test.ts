@@ -62,11 +62,12 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
   // for media (16); the CDK-managed S3 bucket-notifications handler (17);
   // list/update/delete-media for the media library (20); and the draft-returning
-  // admin blog reader behind /blog/all (21); and get-muscle-volume-status, the
-  // only function that reads the plan and the log together (22). The MCP
-  // server's three functions are not here: they are only declared when MCP
-  // options are supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 22);
+  // admin blog reader behind /blog/all (21); get-muscle-volume-status, the
+  // only function that reads the plan and the log together (22); and the
+  // get/update pair behind the weekly-set-target editor (24). The MCP server's
+  // three functions are not here: they are only declared when MCP options are
+  // supplied.
+  template.resourceCountIs('AWS::Lambda::Function', 24);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -113,14 +114,14 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   }
   // Seven public GETs (key only): cv, projects, blog, home, workout, activity
   // and muscle-volume-status; and four Cognito-guarded PUTs across the content
-  // resources.
+  // resources, plus the weekly set targets, which are Cognito-gated both ways.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
   expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(7);
-  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(4);
+  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(5);
 });
 
 test('GET /blog/all returns drafts and is Cognito-gated with no API key', () => {
@@ -532,6 +533,54 @@ test('prod stack alerts on Bedrock spend at a $5 monthly budget; other stages do
 
   const test = synthStack();
   test.resourceCountIs('AWS::Budgets::Budget', 0);
+});
+
+test('the weekly set targets are Cognito-gated both ways and touch only the plan table', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'workout-plan' });
+  template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'targets' });
+
+  // No API key anywhere on this resource: an editor is admin-only, and the ID
+  // token is the authority. A key-gated read would expose the training intent
+  // to anything holding the site key.
+  const targetsResourceId = Object.entries(
+    template.findResources('AWS::ApiGateway::Resource'),
+  ).find(([, r]) => r.Properties.PathPart === 'targets')?.[0];
+  expect(targetsResourceId).toBeDefined();
+
+  const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).filter(
+    (m) => (m.Properties.ResourceId as { Ref?: string } | undefined)?.Ref === targetsResourceId,
+  );
+  // OPTIONS is the CORS preflight and is deliberately open — a browser sends it
+  // without credentials, so gating it would break the very requests it clears.
+  expect(methods.map((m) => m.Properties.HttpMethod).sort()).toEqual(['GET', 'OPTIONS', 'PUT']);
+  for (const method of methods) {
+    if (method.Properties.HttpMethod === 'OPTIONS') {
+      expect(method.Properties.AuthorizationType).toBe('NONE');
+      continue;
+    }
+    expect(method.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+    expect(method.Properties.ApiKeyRequired).toBeUndefined();
+  }
+
+  // The writer may append to the plan table and nothing else; the log stays
+  // unreachable from here, as from every other function in this stack.
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const targetWriters = policies.filter((p) =>
+    p.Properties.PolicyDocument.Statement.some(
+      (s: { Resource?: unknown; Action?: string | string[] }) =>
+        JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-plan') &&
+        (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:PutItem'),
+    ),
+  );
+  for (const policy of targetWriters) {
+    const resources = JSON.stringify(
+      policy.Properties.PolicyDocument.Statement.map((s: { Resource?: unknown }) => s.Resource),
+    );
+    expect(resources).not.toContain('table/portfolio-workout-sets');
+    expect(resources).not.toContain('table/portfolio-workout-summary');
+  }
 });
 
 test('GET /muscle-volume-status reads the plan and the log, and writes neither', () => {
