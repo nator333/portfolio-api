@@ -33,6 +33,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => {
 import { handler } from '../lambda/revise-workout-plan';
 import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
 import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
+import { checkMenuAgainstTargets } from '../lambda/workout-plan-compliance';
 
 const TABLE = 'portfolio-workout-plan-test';
 
@@ -338,7 +339,19 @@ describe('keeping the menu inside its targets', () => {
 
   it('should warn about a bonus-week overshoot without refusing it', async () => {
     mockSend.mockResolvedValueOnce({ Items: [stored(3)] });
-    mockTargetItems = [storedTargets(1)];
+    // Built here rather than taken from the seed: this asserts the behaviour,
+    // not whichever muscle happens to overshoot in the committed program today.
+    // It previously relied on quads doing so, and went green the moment quads
+    // was given a bonus range — a test that stops testing is worse than none.
+    mockTargetItems = [
+      targetSetItem({
+        ...UPPER_LOWER_TARGETS_V1,
+        version: 1,
+        weeklySetTargets: UPPER_LOWER_TARGETS_V1.weeklySetTargets.map((t) =>
+          t.muscles.includes('Quads') ? { ...t, bonusWeekSets: null } : t,
+        ),
+      }),
+    ];
     mockSend.mockResolvedValueOnce({});
 
     const { statusCode, body } = await call(PATCH);
@@ -348,5 +361,15 @@ describe('keeping the menu inside its targets', () => {
     expect(body.warnings).toEqual([
       'On a bonus week, Quads is prescribed 15 sets a week but its target allows at most 10.',
     ]);
+  });
+
+  it('should not warn once the overshooting muscle declares a bonus range', () => {
+    // The committed program, which now does. Paired with the case above so the
+    // two directions are asserted against the same scenario.
+    const { bonusWarnings } = checkMenuAgainstTargets(
+      UPPER_LOWER_V1,
+      UPPER_LOWER_TARGETS_V1.weeklySetTargets,
+    );
+    expect(bonusWarnings).toEqual([]);
   });
 });

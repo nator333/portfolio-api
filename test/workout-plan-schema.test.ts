@@ -116,22 +116,50 @@ describe('plannedWeeklySets', () => {
   });
 
   /**
-   * Pinned rather than fixed. The bonus session pushes quads to 13-15 against a
-   * target of 8-10, and quads declares no bonus-week range — so a four-visit
-   * week does overshoot. That is a training decision, not a code one, and the
-   * write paths report it instead of refusing. This test exists so the day
-   * someone resolves it, the failure says why the expectation changed.
+   * The stronger property, now that quads carries a bonus range: the program is
+   * consistent on a *bonus* week too, not only on the ordinary rotation.
+   *
+   * This replaces a test that pinned the opposite. Quads was prescribed 13-15
+   * with the bonus session against an 8-10 target and no bonus range, so every
+   * four-visit week reported it as over — the last place the menu and the intent
+   * still contradicted each other. It was reported rather than refused precisely
+   * because resolving it was a training decision; that decision has been made.
    */
-  it('should report the known bonus-week quads overshoot as a warning, not a breach', () => {
+  it('should ship a menu that respects its targets on a bonus week too', () => {
     const { breaches, bonusWarnings } = checkMenuAgainstTargets(
       UPPER_LOWER_V1,
       UPPER_LOWER_TARGETS_V1.weeklySetTargets,
     );
 
-    expect(breaches).toEqual([]);
-    expect(bonusWarnings).toEqual([
-      { muscles: ['Quads'], prescribed: 15, allowed: 10 },
-    ]);
+    expect(breaches.map(describeBreach)).toEqual([]);
+    expect(bonusWarnings.map(describeBreach)).toEqual([]);
+  });
+
+  /**
+   * The two entries that declare a bonus range are the two the bonus session
+   * actually loads. Asserted by name so that adding bonus work for a third
+   * muscle without giving it a range fails here rather than in a warning nobody
+   * reads.
+   */
+  it('should declare a bonus range for exactly the muscles the bonus session loads', () => {
+    const rotation = plannedWeeklySets(UPPER_LOWER_V1);
+    const withBonus = plannedWeeklySets(UPPER_LOWER_V1, { includeBonus: true });
+
+    const maxFor = (
+      totals: Partial<Record<string, { min: number; max: number }>>,
+      muscle: string,
+    ) => totals[muscle]?.max ?? 0;
+    const loadedByBonus = Object.keys(withBonus).filter(
+      (m) => maxFor(withBonus, m) > maxFor(rotation, m),
+    );
+    const declareBonus = UPPER_LOWER_TARGETS_V1.weeklySetTargets
+      .filter((t) => t.bonusWeekSets !== null)
+      .flatMap((t) => [...t.muscles]);
+
+    expect(loadedByBonus.sort()).toEqual(['Calves', 'Hamstrings', 'Quads']);
+    // Hamstrings is the exception: the bonus session adds 3 sets, and the pair's
+    // combined target of 9-11 already covers the result, so it needs no range.
+    expect(declareBonus.sort()).toEqual(['Calves', 'Quads']);
   });
 
   /**

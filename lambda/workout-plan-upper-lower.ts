@@ -361,7 +361,12 @@ export const UPPER_LOWER_TARGETS_V1: TargetSetVersion = {
     { muscles: ['Lats'], sets: { min: 6, max: 6 }, bonusWeekSets: null },
     { muscles: ['Triceps'], sets: { min: 6, max: 18 }, bonusWeekSets: null },
     { muscles: ['Biceps'], sets: { min: 8, max: 18 }, bonusWeekSets: null },
-    { muscles: ['Quads'], sets: { min: 8, max: 10 }, bonusWeekSets: null },
+    // Quads carries a bonus-week range because the bonus session is quad-heavy:
+    // the rotation alone prescribes 5-6, well inside 8-10, but adding Lower B
+    // takes it to 13-15. Without a bonus range every four-visit week reported
+    // quads as over on a week that simply ran the program. The ceiling sits
+    // above the 15 and 16 sets actually logged on this block's bonus weeks.
+    { muscles: ['Quads'], sets: { min: 8, max: 10 }, bonusWeekSets: { min: 13, max: 18 } },
     { muscles: ['Glutes', 'Hamstrings'], sets: { min: 9, max: 11 }, bonusWeekSets: null },
     { muscles: ['Calves'], sets: { min: 11, max: 11 }, bonusWeekSets: { min: 15, max: 15 } },
     // Trunk, traps and grip. The rotation prescribes no direct slot for any of
