@@ -321,11 +321,19 @@ export const UPPER_LOWER_V1: PlanVersion = {
   // As stated by the author. These fold in bonus-week and indirect volume, so
   // they do not equal plannedWeeklySets(); see WeeklySetTarget for why both exist.
   weeklySetTargets: [
-    { muscles: ['Shoulders'], sets: { min: 9, max: 11 }, bonusWeekSets: null },
+    // Shoulders, biceps and triceps are stated as MEV-MRV landmarks rather than
+    // as anything derived from the sessions above. They previously read 9-11,
+    // 5-6 and 6-8 — below what this very rotation prescribes (plannedWeeklySets
+    // gives 11-14, 6-7 and 6-9) — so completing the program as written reported
+    // all three as "over". Note the fix is deliberately *not* "set them to what
+    // the rotation prescribes": a target computed from the session list is a
+    // redundant copy of plannedWeeklySets and states no intent of its own. See
+    // WeeklySetTarget on why the two are kept apart.
+    { muscles: ['Shoulders'], sets: { min: 8, max: 22 }, bonusWeekSets: null },
     { muscles: ['Chest'], sets: { min: 8, max: 9 }, bonusWeekSets: null },
     { muscles: ['Lats'], sets: { min: 6, max: 6 }, bonusWeekSets: null },
-    { muscles: ['Triceps'], sets: { min: 6, max: 8 }, bonusWeekSets: null },
-    { muscles: ['Biceps'], sets: { min: 5, max: 6 }, bonusWeekSets: null },
+    { muscles: ['Triceps'], sets: { min: 6, max: 18 }, bonusWeekSets: null },
+    { muscles: ['Biceps'], sets: { min: 8, max: 18 }, bonusWeekSets: null },
     { muscles: ['Quads'], sets: { min: 8, max: 10 }, bonusWeekSets: null },
     { muscles: ['Glutes', 'Hamstrings'], sets: { min: 9, max: 11 }, bonusWeekSets: null },
     { muscles: ['Calves'], sets: { min: 11, max: 11 }, bonusWeekSets: { min: 15, max: 15 } },
