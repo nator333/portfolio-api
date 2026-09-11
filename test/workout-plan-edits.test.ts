@@ -1,11 +1,12 @@
 import {
   applyPlanEdits,
+  applyTargetEdits,
   planEditSchema,
   type PlanEdit,
   type RevisionMeta,
 } from '../lambda/workout-plan-edits';
-import { plannedWeeklySets } from '../lambda/workout-plan-schema';
-import { UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
+import { plannedWeeklySets, type WeeklySetTarget } from '../lambda/workout-plan-schema';
+import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
 
 const META: RevisionMeta = { changeNote: 'more lateral raise volume' };
 
@@ -200,47 +201,46 @@ describe('the edit schema', () => {
   });
 });
 
-/** The weekly set targets of the produced plan, keyed by their muscle set. */
-const targets = (plan: {
-  readonly weeklySetTargets: readonly { muscles: readonly string[]; sets: { min: number; max: number }; bonusWeekSets: unknown }[];
-}) => new Map(plan.weeklySetTargets.map((t) => [[...t.muscles].sort().join('+'), t]));
+/** Target entries keyed by their muscle set, for asserting one entry moved. */
+const byMuscles = (targets: readonly WeeklySetTarget[]) =>
+  new Map(targets.map((t) => [[...t.muscles].sort().join('+'), t]));
+
+const BASE_TARGETS = UPPER_LOWER_TARGETS_V1.weeklySetTargets;
+
+const editTargets = (edits: Parameters<typeof applyTargetEdits>[1]) =>
+  applyTargetEdits(BASE_TARGETS, edits);
 
 describe('editing the weekly set targets', () => {
   it('should replace the entry covering exactly those muscles', () => {
-    const result = apply([
+    const result = editTargets([
       { op: 'set-target', target: { muscles: ['Chest'], sets: { min: 10, max: 12 } } },
     ]);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(targets(result.plan).get('Chest')).toEqual({
+    expect(byMuscles(result.targets).get('Chest')).toEqual({
       muscles: ['Chest'],
       sets: { min: 10, max: 12 },
       bonusWeekSets: null,
     });
     // And only that entry moved.
-    expect(result.plan.weeklySetTargets).toHaveLength(UPPER_LOWER_V1.weeklySetTargets.length);
-    expect(targets(result.plan).get('Lats')).toEqual(targets(UPPER_LOWER_V1).get('Lats'));
+    expect(result.targets).toHaveLength(BASE_TARGETS.length);
+    expect(byMuscles(result.targets).get('Lats')).toEqual(byMuscles(BASE_TARGETS).get('Lats'));
   });
 
-  it('should add a target for a muscle the plan did not cover', () => {
-    const base = {
-      ...UPPER_LOWER_V1,
-      weeklySetTargets: UPPER_LOWER_V1.weeklySetTargets.filter((t) => !t.muscles.includes('Abs')),
-    };
-    const result = applyPlanEdits(
-      base,
-      [{ op: 'set-target', target: { muscles: ['Abs'], sets: { min: 6, max: 16 } } }],
-      META,
-    );
+  it('should add a target for a muscle nothing covered', () => {
+    const withoutAbs = BASE_TARGETS.filter((t) => !t.muscles.includes('Abs'));
+    const result = applyTargetEdits(withoutAbs, [
+      { op: 'set-target', target: { muscles: ['Abs'], sets: { min: 6, max: 16 } } },
+    ]);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(targets(result.plan).get('Abs')?.sets).toEqual({ min: 6, max: 16 });
+    expect(byMuscles(result.targets).get('Abs')?.sets).toEqual({ min: 6, max: 16 });
   });
 
   it('should address a combined entry by naming every muscle it covers', () => {
-    const result = apply([
+    const result = editTargets([
       {
         op: 'set-target',
         target: { muscles: ['Hamstrings', 'Glutes'], sets: { min: 12, max: 14 } },
@@ -250,12 +250,12 @@ describe('editing the weekly set targets', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // Named in the other order, but it is the same entry — not a second one.
-    expect(result.plan.weeklySetTargets).toHaveLength(UPPER_LOWER_V1.weeklySetTargets.length);
-    expect(targets(result.plan).get('Glutes+Hamstrings')?.sets).toEqual({ min: 12, max: 14 });
+    expect(result.targets).toHaveLength(BASE_TARGETS.length);
+    expect(byMuscles(result.targets).get('Glutes+Hamstrings')?.sets).toEqual({ min: 12, max: 14 });
   });
 
   it('should carry a bonus-week range when one is given, and null it when not', () => {
-    const withBonus = apply([
+    const withBonus = editTargets([
       {
         op: 'set-target',
         target: { muscles: ['Calves'], sets: { min: 11, max: 11 }, bonusWeekSets: { min: 16, max: 16 } },
@@ -263,21 +263,21 @@ describe('editing the weekly set targets', () => {
     ]);
     expect(withBonus.ok).toBe(true);
     if (!withBonus.ok) return;
-    expect(targets(withBonus.plan).get('Calves')?.bonusWeekSets).toEqual({ min: 16, max: 16 });
+    expect(byMuscles(withBonus.targets).get('Calves')?.bonusWeekSets).toEqual({ min: 16, max: 16 });
 
     // Omitted means "unchanged on a bonus week", stored explicitly as null.
-    const without = apply([
+    const without = editTargets([
       { op: 'set-target', target: { muscles: ['Calves'], sets: { min: 11, max: 11 } } },
     ]);
     expect(without.ok).toBe(true);
     if (!without.ok) return;
-    expect(targets(without.plan).get('Calves')?.bonusWeekSets).toBeNull();
+    expect(byMuscles(without.targets).get('Calves')?.bonusWeekSets).toBeNull();
   });
 
   it('should refuse a target that half-overlaps an existing one', () => {
     // Glutes is already covered jointly with hamstrings; adding a glutes-only
-    // entry would leave two ranges over one count with no single answer.
-    const result = apply([
+    // entry would leave two ranges over one count with no way to choose.
+    const result = editTargets([
       { op: 'set-target', target: { muscles: ['Glutes'], sets: { min: 6, max: 8 } } },
     ]);
 
@@ -287,42 +287,42 @@ describe('editing the weekly set targets', () => {
   });
 
   it('should remove a target by its exact muscle set', () => {
-    const result = apply([{ op: 'remove-target', muscles: ['Chest'] }]);
+    const result = editTargets([{ op: 'remove-target', muscles: ['Chest'] }]);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(targets(result.plan).has('Chest')).toBe(false);
-    expect(result.plan.weeklySetTargets).toHaveLength(UPPER_LOWER_V1.weeklySetTargets.length - 1);
+    expect(byMuscles(result.targets).has('Chest')).toBe(false);
+    expect(result.targets).toHaveLength(BASE_TARGETS.length - 1);
   });
 
   it('should refuse to remove a target that does not exist', () => {
-    const result = apply([{ op: 'remove-target', muscles: ['Glutes'] }]);
+    const result = editTargets([{ op: 'remove-target', muscles: ['Glutes'] }]);
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/No weekly set target covers exactly Glutes/);
   });
 
-  it('should leave the sessions untouched', () => {
-    const result = apply([
-      { op: 'set-target', target: { muscles: ['Chest'], sets: { min: 10, max: 12 } } },
+  it('should apply edits in order, so a later one sees the earlier result', () => {
+    const result = editTargets([
+      { op: 'remove-target', muscles: ['Glutes', 'Hamstrings'] },
+      { op: 'set-target', target: { muscles: ['Glutes'], sets: { min: 6, max: 8 } } },
     ]);
 
+    // The removal clears the overlap the addition would otherwise have hit.
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.plan.sessions).toEqual(UPPER_LOWER_V1.sessions);
+    expect(byMuscles(result.targets).get('Glutes')?.sets).toEqual({ min: 6, max: 8 });
+    expect(byMuscles(result.targets).has('Glutes+Hamstrings')).toBe(false);
   });
 
-  it('should apply a target edit alongside a slot edit in one revision', () => {
-    const result = apply([
-      { op: 'patch', session: 'upper-a', order: 1, changes: { sets: { min: 4, max: 4 } } },
-      { op: 'set-target', target: { muscles: ['Chest'], sets: { min: 10, max: 11 } } },
+  it('should reject the whole revision when one edit does not resolve', () => {
+    const result = editTargets([
+      { op: 'set-target', target: { muscles: ['Chest'], sets: { min: 10, max: 12 } } },
+      { op: 'remove-target', muscles: ['Glutes'] },
     ]);
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(slots(result.plan, 'upper-a')[0].sets).toEqual({ min: 4, max: 4 });
-    expect(targets(result.plan).get('Chest')?.sets).toEqual({ min: 10, max: 11 });
+    expect(result.ok).toBe(false);
   });
 
   it('should accept the target ops in the edit schema and reject an unknown muscle', () => {
@@ -346,5 +346,17 @@ describe('editing the weekly set targets', () => {
         target: { muscles: ['Chest'], sets: { min: 9, max: 8 } },
       }).success,
     ).toBe(false);
+  });
+
+  it('should refuse a target op handed to the menu transform', () => {
+    // The two halves are separate documents; applyPlanEdits must not silently
+    // drop an edit it is not responsible for.
+    const result = apply([
+      { op: 'set-target', target: { muscles: ['Chest'], sets: { min: 10, max: 12 } } },
+    ]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/edits the targets, not the menu/);
   });
 });

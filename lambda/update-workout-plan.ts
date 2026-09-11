@@ -1,7 +1,14 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { PLAN_VERSION_PREFIX, planVersionItem, planVersionSchema } from './workout-plan-schema';
+import {
+  PLAN_TARGET_PREFIX,
+  PLAN_VERSION_PREFIX,
+  planVersionItem,
+  planVersionSchema,
+  type TargetSetItem,
+} from './workout-plan-schema';
+import { checkMenuAgainstTargets, describeBreach } from './workout-plan-compliance';
 import { corsHeaders } from './cors';
 
 /**
@@ -18,6 +25,13 @@ import { corsHeaders } from './cors';
  * `createdAt` is stamped here rather than taken from the caller: when a version
  * was published is a fact about the server, and letting a client assert it would
  * let a mistaken clock reorder the history.
+ *
+ * A published document is the *menu* only. Weekly set targets are their own
+ * versioned item (see PLAN_TARGET_PREFIX) and are dropped from anything sent
+ * here rather than silently stored, so the two halves cannot diverge through
+ * this path. The menu is checked against the targets in force before it is
+ * written: a rotation prescribing more volume than the intent allows is refused,
+ * since the sessions exist to serve the targets and not the other way round.
  */
 
 const region = process.env.WORKOUT_REGION;
@@ -71,7 +85,44 @@ export const handler = async (
     };
   }
 
-  const item = planVersionItem(parsed.data);
+  // Dropped, not stored: the round trip from get_workout_plan carries the
+  // composed targets, so a caller sending the document straight back is not
+  // making a mistake — it just must not be able to set them from here.
+  const { weeklySetTargets: sentTargets, ...menu } = parsed.data;
+  const item = planVersionItem(menu);
+
+  // Surfaced on the 201 rather than swallowed: a caller that sent targets here
+  // needs to know they did not land, or it will believe it published them.
+  const warnings: string[] = [];
+  if (sentTargets) {
+    warnings.push(
+      'weeklySetTargets was ignored: targets are versioned separately. ' +
+        'Use revise_workout_plan with a set-target edit to change them.',
+    );
+  }
+
+  const targets = await currentTargets(tableName, item.planId);
+  if (targets) {
+    const { breaches, bonusWarnings } = checkMenuAgainstTargets(item, targets.weeklySetTargets);
+    if (breaches.length > 0) {
+      return {
+        statusCode: 409,
+        headers,
+        body: JSON.stringify({
+          message:
+            'This menu prescribes more volume than the current targets allow; nothing was written. ' +
+            'Raise the target if the extra volume is intended, or cut slots from the sessions.',
+          breaches: breaches.map(describeBreach),
+          targetsVersion: targets.version,
+        }),
+      };
+    }
+    if (bonusWarnings.length > 0) {
+      warnings.push(
+        ...bonusWarnings.map((b) => `On a bonus week, ${describeBreach(b)}.`),
+      );
+    }
+  }
 
   try {
     await ddb.send(
@@ -104,9 +155,33 @@ export const handler = async (
       planId: item.planId,
       version: item.version,
       createdAt: item.createdAt,
+      ...(warnings.length > 0 ? { warnings } : {}),
     }),
   };
 };
+
+/**
+ * The target set in force, or null when the plan has none yet.
+ *
+ * Null is the ordinary state for a brand-new plan and during the window between
+ * this code deploying and the first target set being published, so the caller
+ * treats it as "nothing to check against" rather than an error.
+ */
+async function currentTargets(
+  tableName: string,
+  planId: string,
+): Promise<TargetSetItem | null> {
+  const result = await ddb.send(
+    new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'planId = :p AND begins_with(sk, :prefix)',
+      ExpressionAttributeValues: { ':p': planId, ':prefix': PLAN_TARGET_PREFIX },
+      ScanIndexForward: false,
+      Limit: 1,
+    }),
+  );
+  return (result.Items?.[0] as TargetSetItem | undefined) ?? null;
+}
 
 async function latestVersionNumber(tableName: string, planId: string): Promise<number | null> {
   const result = await ddb.send(

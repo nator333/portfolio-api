@@ -275,7 +275,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'Read the training program: the prescribed sessions, exercise slots, set/rep/RPE ranges and ' +
       'weekly set targets. This is the plan, not the log — get_workout_sets returns what was ' +
       'actually lifted. Returns the current version by default; pass `version` for a specific one, ' +
-      '`date` for whichever was in force that day, or `history: true` to list all versions. Admin only.',
+      '`date` for whichever was in force that day, or `history: true` to list all versions. ' +
+      'The menu and the weekly set targets are versioned separately and composed here into one ' +
+      'document; `targetsVersion` says which target set was used. Admin only.',
     requiresAuth: true,
     inputSchema: PLAN_READ_ARGS,
     annotations: readAnnotations,
@@ -370,7 +372,11 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       type: 'object',
       description:
         'A complete plan-version document, same shape get_workout_plan returns, with `version` ' +
-        'incremented. Partial documents are rejected — this is a whole-version publish.',
+        'incremented. Partial documents are rejected — this is a whole-version publish. This ' +
+        'publishes the MENU only: any `weeklySetTargets` sent is ignored (the response says so), ' +
+        'because targets are versioned separately — use revise_workout_plan with a set-target ' +
+        'edit. The menu is refused if its sessions would prescribe more weekly volume than the ' +
+        'current targets allow.',
       properties: {
         planId: { type: 'string', description: 'Lower-kebab slug, e.g. "upper-lower".' },
         version: { type: 'integer', description: 'The next version number; publishing an existing one is refused.' },
@@ -384,7 +390,8 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
           description:
             'Declared sets per muscle per week: [{muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null}]. ' +
             'These are what get_muscle_volume_status judges actual volume against, so they are the ' +
-            'canonical target ranges — no consumer should keep its own copy.',
+            'canonical target ranges — no consumer should keep its own copy. IGNORED on this ' +
+            'tool: change them with revise_workout_plan instead.',
           items: { type: 'object' },
         },
         effectiveFrom: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null for open-ended.' },
@@ -392,7 +399,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
         notes: { type: 'string' },
         changeNote: { type: 'string', description: 'Why this version differs from the one before it.' },
       },
-      required: ['planId', 'version', 'name', 'sessionsPerWeek', 'rotation', 'bonusSessions', 'sessions', 'weeklySetTargets'],
+      required: ['planId', 'version', 'name', 'sessionsPerWeek', 'rotation', 'bonusSessions', 'sessions'],
       additionalProperties: true,
     },
     annotations: appendAnnotations,
@@ -408,7 +415,10 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'position; a patch carries only the fields to change. Use {op: "set-target", target: {...}} to ' +
       'set a weekly set target and {op: "remove-target", muscles: [...]} to drop one — the targets are ' +
       'what get_muscle_volume_status judges against, so changing one here is how that judgement changes ' +
-      'everywhere at once. `changeNote` is required. Pass ' +
+      'everywhere at once. The two op families write two separately-versioned documents (the menu and ' +
+      'the targets) and a revision carrying both is applied as one transaction; the response reports ' +
+      '`version` and `targetsVersion` for whichever halves changed. A revision is refused if it would ' +
+      'leave the menu prescribing more volume than the targets allow. `changeNote` is required. Pass ' +
       '`baseVersion` (from get_workout_plan) so the edits are refused if the plan moved underneath ' +
       'them. Use update_workout_plan instead to publish a whole new program. Admin only.',
     requiresAuth: true,
@@ -418,7 +428,11 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
         planId: { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' },
         baseVersion: {
           type: 'integer',
-          description: 'The version these edits were written against. Optional but recommended: the revision is refused if the current version differs.',
+          description: 'The menu version these edits were written against. Optional but recommended: the revision is refused if the current version differs.',
+        },
+        baseTargetsVersion: {
+          type: 'integer',
+          description: 'The targets version these edits were written against, from get_workout_plan\'s `targetsVersion`. Optional; 0 means "no target set published yet". Same guard as baseVersion, on the targets\' own sequence.',
         },
         changeNote: { type: 'string', description: 'Required. What changed and why — this is the version history.' },
         name: { type: 'string', description: 'Rename the program. Optional.' },

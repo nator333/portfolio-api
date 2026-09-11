@@ -2,10 +2,12 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import {
+  PLAN_TARGET_PREFIX,
   PLAN_VERSION_PREFIX,
   planVersionSk,
   versionInEffect,
   type PlanVersionItem,
+  type TargetSetItem,
 } from './workout-plan-schema';
 import { corsHeaders } from './cors';
 
@@ -24,6 +26,14 @@ import { corsHeaders } from './cors';
  * A program accumulates a handful of versions per year, so the partition scans
  * are small by construction; if that ever stops being true, the date lookup is
  * the one to reach for a secondary index.
+ *
+ * A program is stored as two item types on two timelines — the menu and the
+ * weekly set targets — but is *served* as one document, with the targets in
+ * force composed onto the version being returned. Splitting the storage was
+ * about letting the halves move independently, not about making every caller
+ * assemble a program for itself. `targetsVersion` says which set was composed
+ * in; for a date lookup it is the set in force on that date, so the answer to
+ * "what was my program that day" stays a single call.
  */
 
 const region = process.env.WORKOUT_REGION;
@@ -75,8 +85,11 @@ export const handler = async (
         body: JSON.stringify({ message: '`version` must be a positive integer' }),
       };
     }
-    const plan = await getVersion(tableName, planId, version);
-    return respond(plan, headers, `No version ${version} of plan "${planId}"`);
+    const [plan, targets] = await Promise.all([
+      getVersion(tableName, planId, version),
+      currentTargets(tableName, planId),
+    ]);
+    return respond(plan, headers, `No version ${version} of plan "${planId}"`, targets);
   }
 
   if (params.date !== undefined) {
@@ -87,13 +100,28 @@ export const handler = async (
         body: JSON.stringify({ message: '`date` must be YYYY-MM-DD' }),
       };
     }
-    const all = await allVersions(tableName, planId);
+    const [all, targetSets] = await Promise.all([
+      allVersions(tableName, planId),
+      allTargetSets(tableName, planId),
+    ]);
     const plan = versionInEffect(all, params.date);
-    return respond(plan, headers, `No version of plan "${planId}" was in effect on ${params.date}`);
+    // The targets in force *that day*, not today's — the whole point of asking
+    // by date is what the program said at the time, and both halves have their
+    // own effective windows.
+    const targets = versionInEffect(targetSets, params.date) ?? latestOf(targetSets);
+    return respond(
+      plan,
+      headers,
+      `No version of plan "${planId}" was in effect on ${params.date}`,
+      targets,
+    );
   }
 
-  const plan = await latestStoredVersion(tableName, planId);
-  return respond(plan, headers, `No plan "${planId}" has been published`);
+  const [plan, targets] = await Promise.all([
+    latestStoredVersion(tableName, planId),
+    currentTargets(tableName, planId),
+  ]);
+  return respond(plan, headers, `No plan "${planId}" has been published`, targets);
 };
 
 /**
@@ -105,12 +133,23 @@ function respond(
   plan: PlanVersionItem | null,
   headers: Record<string, string>,
   notFound: string,
+  targets: TargetSetItem | null = null,
 ): APIGatewayProxyResult {
   if (!plan) {
     return { statusCode: 404, headers, body: JSON.stringify({ message: notFound }) };
   }
-  const { sk, ...document } = plan;
-  return { statusCode: 200, headers, body: JSON.stringify(document) };
+  const { sk, weeklySetTargets: embedded, ...document } = plan;
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({
+      ...document,
+      // The composed targets win; a legacy version's embedded copy is the
+      // fallback until every such version has aged out.
+      weeklySetTargets: targets?.weeklySetTargets ?? embedded ?? [],
+      targetsVersion: targets?.version ?? null,
+    }),
+  };
 }
 
 /** The newest version: one descending Query, which is what the padded sk buys. */
@@ -191,3 +230,47 @@ async function queryPartition<T>(
 
   return items;
 }
+
+/** The target set in force; null before the first one is published. */
+async function currentTargets(
+  tableName: string,
+  planId: string,
+): Promise<TargetSetItem | null> {
+  const result = await ddb.send(
+    new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'planId = :p AND begins_with(sk, :prefix)',
+      ExpressionAttributeValues: { ':p': planId, ':prefix': PLAN_TARGET_PREFIX },
+      ScanIndexForward: false,
+      Limit: 1,
+    }),
+  );
+  return (result.Items?.[0] as TargetSetItem | undefined) ?? null;
+}
+
+/** Every target set, for the date lookup, which needs all the windows. */
+async function allTargetSets(tableName: string, planId: string): Promise<TargetSetItem[]> {
+  const items: TargetSetItem[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: 'planId = :p AND begins_with(sk, :prefix)',
+        ExpressionAttributeValues: { ':p': planId, ':prefix': PLAN_TARGET_PREFIX },
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+    items.push(...((result.Items ?? []) as TargetSetItem[]));
+    exclusiveStartKey = result.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return items;
+}
+
+/**
+ * Newest set, used when no window covers the requested date. Target sets are
+ * typically open-ended on both ends, so this is the common path rather than an
+ * edge case: falling back to "the ones we have" beats reporting none.
+ */
+const latestOf = (sets: readonly TargetSetItem[]): TargetSetItem | null =>
+  sets.reduce<TargetSetItem | null>((best, s) => (!best || s.version > best.version ? s : best), null);

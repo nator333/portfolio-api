@@ -53,6 +53,35 @@ export const parsePlanVersionSk = (sk: string): number | null => {
   return Number(digits);
 };
 
+/**
+ * Sort-key prefix for a target-set item — the second item type this partition
+ * holds, and the reason the prefixes exist.
+ *
+ * Weekly set targets used to live on the version document beside the sessions.
+ * They are a different kind of statement: the sessions are the menu, the targets
+ * are the intent the menu is supposed to serve, and the dependency runs one way
+ * — a menu should respect the targets, never define them. Stored together they
+ * could not move at their own pace, and they drifted: shoulders, biceps and
+ * triceps ended up declared *below* what the very same document prescribed, so
+ * running the program as written reported as too much volume.
+ *
+ * Split, each half is versioned on its own timeline. Revising an exercise slot
+ * no longer rewrites the targets, a target can outlive the block whose menu it
+ * was written beside, and the one-way dependency has somewhere to be checked.
+ */
+export const PLAN_TARGET_PREFIX = 'T#';
+
+export const planTargetSk = (version: number): string =>
+  `${PLAN_TARGET_PREFIX}${String(version).padStart(VERSION_DIGITS, '0')}`;
+
+/** Inverse of `planTargetSk`; null for any sort key that is not a target set. */
+export const parsePlanTargetSk = (sk: string): number | null => {
+  if (!sk.startsWith(PLAN_TARGET_PREFIX)) return null;
+  const digits = sk.slice(PLAN_TARGET_PREFIX.length);
+  if (!/^\d+$/.test(digits)) return null;
+  return Number(digits);
+};
+
 /** An inclusive min-max, used for set, rep and RPE prescriptions alike. */
 export interface Range {
   readonly min: number;
@@ -123,7 +152,14 @@ export interface PlanVersion {
   /** Session ids added only on weeks that allow an extra visit. */
   readonly bonusSessions: readonly string[];
   readonly sessions: readonly PlanSession[];
-  readonly weeklySetTargets: readonly WeeklySetTarget[];
+  /**
+   * Only on versions published before the targets moved to their own item type
+   * (see PLAN_TARGET_PREFIX). Kept readable because those versions are immutable
+   * and this is genuinely what they said at the time; never written by new
+   * publishes, and never the source a reader should prefer — ask for the
+   * current target set instead.
+   */
+  readonly weeklySetTargets?: readonly WeeklySetTarget[];
   /** YYYY-MM-DD; null when the block's start was never recorded. */
   readonly effectiveFrom: string | null;
   /** YYYY-MM-DD; null while the block is open-ended. */
@@ -142,6 +178,38 @@ export const planVersionItem = (version: PlanVersion): PlanVersionItem => ({
   ...version,
   sk: planVersionSk(version.version),
 });
+
+/**
+ * One immutable revision of the weekly set targets — the intent half of a
+ * program, versioned independently of the menu that serves it.
+ *
+ * Deliberately carries no sessions and no rotation. A target set is a statement
+ * about how much of each muscle should be trained in a week, and it stays true
+ * across whatever exercise slots happen to be in force; tying it to a menu
+ * version is what let the two contradict each other.
+ */
+export interface TargetSetVersion {
+  readonly planId: string;
+  /** 1-based, monotonically increasing per plan, on its own sequence. */
+  readonly version: number;
+  readonly weeklySetTargets: readonly WeeklySetTarget[];
+  /** YYYY-MM-DD; null when the set's start was never recorded. */
+  readonly effectiveFrom: string | null;
+  /** YYYY-MM-DD; null while the set is current. */
+  readonly effectiveTo: string | null;
+  /** Why these targets differ from the set before them; empty for the first. */
+  readonly changeNote: string;
+  /** ISO-8601 instant the set was written. */
+  readonly createdAt: string;
+}
+
+export type TargetSetItem = TargetSetVersion & { readonly sk: string };
+
+export const targetSetItem = (set: TargetSetVersion): TargetSetItem => ({
+  ...set,
+  sk: planTargetSk(set.version),
+});
+
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -204,7 +272,9 @@ export const planVersionSchema = z
     rotation: z.array(z.string()).min(1),
     bonusSessions: z.array(z.string()),
     sessions: z.array(planSessionSchema).min(1),
-    weeklySetTargets: z.array(weeklySetTargetSchema),
+    // Optional, and stripped by the publish path rather than stored: a menu
+    // document no longer states targets. See PLAN_TARGET_PREFIX.
+    weeklySetTargets: z.array(weeklySetTargetSchema).optional(),
     effectiveFrom: isoDateSchema.nullable(),
     effectiveTo: isoDateSchema.nullable(),
     notes: z.string(),
@@ -229,6 +299,37 @@ export const planVersionSchema = z
   .refine((v) => !v.effectiveFrom || !v.effectiveTo || v.effectiveFrom <= v.effectiveTo, {
     message: 'effectiveFrom must not be after effectiveTo',
   });
+
+export const targetSetSchema = z.object({
+  planId: z.string().regex(SLUG_RE, 'must be a lower-kebab slug'),
+  version: z.number().int().min(1),
+  weeklySetTargets: z
+    .array(weeklySetTargetSchema)
+    .min(1)
+    // Two entries naming the same muscle leave its status with two answers and
+    // no way to choose; the status rollup would silently take the first.
+    .refine(
+      (list) => {
+        const seen = new Set<string>();
+        for (const target of list) {
+          for (const muscle of target.muscles) {
+            if (seen.has(muscle)) return false;
+            seen.add(muscle);
+          }
+        }
+        return true;
+      },
+      { message: 'a muscle may appear in only one weekly set target' },
+    ),
+  effectiveFrom: isoDateSchema.nullable(),
+  effectiveTo: isoDateSchema.nullable(),
+  changeNote: z.string(),
+  createdAt: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, 'must be a UTC ISO-8601 instant'),
+}).refine((v) => !v.effectiveFrom || !v.effectiveTo || v.effectiveFrom <= v.effectiveTo, {
+  message: 'effectiveFrom must not be after effectiveTo',
+});
 
 /** The highest-numbered version, or null when the plan has none. */
 export function latestVersion<T extends { readonly version: number }>(

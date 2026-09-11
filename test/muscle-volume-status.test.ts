@@ -21,9 +21,10 @@ import {
   statusFor,
   windowBounds,
 } from '../lambda/muscle-volume-status';
-import { UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
-import { planVersionItem } from '../lambda/workout-plan-schema';
+import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
+import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
 import { SUMMARY_PK } from '../lambda/workout-schema';
+import { PLAN_TARGET_PREFIX, PLAN_VERSION_PREFIX } from '../lambda/workout-plan-schema';
 
 const SUMMARY_TABLE = 'portfolio-workout-summary-test';
 const PLAN_TABLE = 'portfolio-workout-plan-test';
@@ -38,9 +39,17 @@ const day = (sk: string, muscles: Record<string, number>) => ({ pk: SUMMARY_PK.d
  * The handler fires the plan read and the day read together, so the mock is
  * keyed on the command rather than on call order.
  */
-const answerWith = (opts: { plan?: unknown[]; days?: unknown[] }) => {
+const answerWith = (opts: { plan?: unknown[]; targets?: unknown[]; days?: unknown[] }) => {
   mockSend.mockImplementation((command: { input: Record<string, unknown> }) => {
     if (command.input.TableName === PLAN_TABLE) {
+      // The menu and the target set are two item types in one partition, told
+      // apart by the sort-key prefix the query asks for.
+      const prefix = (command.input.ExpressionAttributeValues as Record<string, string>)[':prefix'];
+      if (prefix === PLAN_TARGET_PREFIX) {
+        return Promise.resolve({
+          Items: opts.targets ?? [targetSetItem({ ...UPPER_LOWER_TARGETS_V1, version: 2 })],
+        });
+      }
       return Promise.resolve({ Items: opts.plan ?? [planVersionItem({ ...UPPER_LOWER_V1, version: 7 })] });
     }
     return Promise.resolve({ Items: opts.days ?? [] });
@@ -67,6 +76,12 @@ const rowFor = (body: { muscles: StatusRow[] }, muscle: string): StatusRow | und
 
 const inputsFor = (table: string) =>
   mockSend.mock.calls.map((c) => c[0].input).filter((i) => i.TableName === table);
+
+/** Plan-table reads narrowed to one item type, since both share the partition. */
+const readsWithPrefix = (prefix: string) =>
+  inputsFor(PLAN_TABLE).filter(
+    (i) => (i.ExpressionAttributeValues as Record<string, string>)[':prefix'] === prefix,
+  );
 
 beforeAll(() => {
   process.env.WORKOUT_SUMMARY_TABLE_NAME = SUMMARY_TABLE;
@@ -164,15 +179,17 @@ describe('rolling up logged sets', () => {
 });
 
 describe('the status rollup', () => {
+  const TARGETS = UPPER_LOWER_TARGETS_V1.weeklySetTargets;
   const counts = (entries: Record<string, number>) =>
     new Map(Object.entries(entries)) as Map<never, number>;
 
   it('should judge a shared target on the shared total, not on each half', () => {
     // The plan states glutes and hamstrings together at 9-11. Six sets of each
     // is twelve — over — even though neither muscle alone reaches the minimum.
-    const { muscles } = muscleVolumeStatus(UPPER_LOWER_V1, counts({ Glutes: 6, Hamstrings: 6 }), {
+    const { muscles } = muscleVolumeStatus(TARGETS, counts({ Glutes: 6, Hamstrings: 6 }), {
       days: 7,
       sessions: 3,
+      sessionsPerWeek: 3,
     });
     const glutes = muscles.find((m) => m.muscle === 'Glutes');
     expect(glutes?.sets).toBe(6);
@@ -183,9 +200,10 @@ describe('the status rollup', () => {
   });
 
   it('should leave sharedWith empty for a target covering one muscle', () => {
-    const { muscles } = muscleVolumeStatus(UPPER_LOWER_V1, counts({ Chest: 8 }), {
+    const { muscles } = muscleVolumeStatus(TARGETS, counts({ Chest: 8 }), {
       days: 7,
       sessions: 3,
+      sessionsPerWeek: 3,
     });
     const chest = muscles.find((m) => m.muscle === 'Chest');
     expect(chest?.sharedWith).toEqual([]);
@@ -195,16 +213,18 @@ describe('the status rollup', () => {
   it('should switch to the bonus-week range when the window holds an extra session', () => {
     // Calves are 11 a week, 15 on a bonus week. Fifteen sets is exactly on
     // target after the fourth visit; against the base range it would read "over".
-    const base = muscleVolumeStatus(UPPER_LOWER_V1, counts({ Calves: 15 }), {
+    const base = muscleVolumeStatus(TARGETS, counts({ Calves: 15 }), {
       days: 7,
       sessions: 3,
+      sessionsPerWeek: 3,
     });
     expect(base.bonusWindow).toBe(false);
     expect(base.muscles.find((m) => m.muscle === 'Calves')?.status).toBe('over');
 
-    const bonus = muscleVolumeStatus(UPPER_LOWER_V1, counts({ Calves: 15 }), {
+    const bonus = muscleVolumeStatus(TARGETS, counts({ Calves: 15 }), {
       days: 7,
       sessions: 4,
+      sessionsPerWeek: 3,
     });
     expect(bonus.bonusWindow).toBe(true);
     expect(bonus.muscles.find((m) => m.muscle === 'Calves')?.weeklyTarget).toEqual({ min: 15, max: 15 });
@@ -212,21 +232,22 @@ describe('the status rollup', () => {
   });
 
   it('should report a trained muscle the plan sets no target for', () => {
-    const { untargeted, muscles } = muscleVolumeStatus(UPPER_LOWER_V1, counts({ Other: 4 }), {
+    const { untargeted, muscles } = muscleVolumeStatus(TARGETS, counts({ Other: 4 }), {
       days: 7,
       sessions: 3,
+      sessionsPerWeek: 3,
     });
     expect(untargeted).toEqual([{ muscle: 'Other', sets: 4 }]);
     expect(muscles.find((m) => m.muscle === 'Other')).toBeUndefined();
   });
 
   it('should not list an untargeted muscle that was not trained', () => {
-    const { untargeted } = muscleVolumeStatus(UPPER_LOWER_V1, counts({}), { days: 7, sessions: 0 });
+    const { untargeted } = muscleVolumeStatus(TARGETS, counts({}), { days: 7, sessions: 0, sessionsPerWeek: 3 });
     expect(untargeted).toEqual([]);
   });
 
   it('should emit rows in the shared muscle-group order', () => {
-    const { muscles } = muscleVolumeStatus(UPPER_LOWER_V1, counts({}), { days: 7, sessions: 0 });
+    const { muscles } = muscleVolumeStatus(TARGETS, counts({}), { days: 7, sessions: 0, sessionsPerWeek: 3 });
     expect(muscles.map((m) => m.muscle).slice(0, 4)).toEqual([
       'Chest',
       'Lats',
@@ -236,16 +257,17 @@ describe('the status rollup', () => {
   });
 
   it('should ignore a second entry claiming a muscle rather than guess between them', () => {
-    const contradictory = {
-      sessionsPerWeek: 3,
-      weeklySetTargets: [
-        { muscles: ['Chest' as const], sets: { min: 8, max: 9 }, bonusWeekSets: null },
-        { muscles: ['Chest' as const], sets: { min: 20, max: 30 }, bonusWeekSets: null },
-      ],
-    };
+    // targetSetSchema now refuses this on the way in, so it should never reach
+    // storage — but the rollup stays defensive, because legacy versions carry
+    // embedded targets that were written before that rule existed.
+    const contradictory = [
+      { muscles: ['Chest' as const], sets: { min: 8, max: 9 }, bonusWeekSets: null },
+      { muscles: ['Chest' as const], sets: { min: 20, max: 30 }, bonusWeekSets: null },
+    ];
     const { muscles } = muscleVolumeStatus(contradictory, counts({ Chest: 9 }), {
       days: 7,
       sessions: 3,
+      sessionsPerWeek: 3,
     });
     expect(muscles.filter((m) => m.muscle === 'Chest')).toHaveLength(1);
     expect(muscles[0].weeklyTarget).toEqual({ min: 8, max: 9 });
@@ -279,9 +301,11 @@ describe('the endpoint', () => {
     answerWith({ plan: [planVersionItem({ ...UPPER_LOWER_V1, version: 5 })] });
     expect((await call()).body.plan.version).toBe(5);
 
-    // And it is the cheap descending Limit-1 read, not a partition scan.
-    const planReads = inputsFor(PLAN_TABLE);
-    expect(planReads).toHaveLength(2);
+    // And it is the cheap descending Limit-1 read, not a partition scan — for
+    // the target set as much as for the menu.
+    const planReads = [...readsWithPrefix(PLAN_VERSION_PREFIX), ...readsWithPrefix(PLAN_TARGET_PREFIX)];
+    expect(readsWithPrefix(PLAN_VERSION_PREFIX)).toHaveLength(2);
+    expect(readsWithPrefix(PLAN_TARGET_PREFIX)).toHaveLength(2);
     for (const read of planReads) {
       expect(read.ScanIndexForward).toBe(false);
       expect(read.Limit).toBe(1);
@@ -333,7 +357,14 @@ describe('the endpoint', () => {
   it('should paginate a window whose days span a page', async () => {
     mockSend.mockImplementation((command: { input: Record<string, unknown> }) => {
       if (command.input.TableName === PLAN_TABLE) {
-        return Promise.resolve({ Items: [planVersionItem({ ...UPPER_LOWER_V1, version: 1 })] });
+        const prefix = (command.input.ExpressionAttributeValues as Record<string, string>)[':prefix'];
+        return Promise.resolve({
+          Items: [
+            prefix === PLAN_TARGET_PREFIX
+              ? targetSetItem({ ...UPPER_LOWER_TARGETS_V1, version: 1 })
+              : planVersionItem({ ...UPPER_LOWER_V1, version: 1 }),
+          ],
+        });
       }
       if (!command.input.ExclusiveStartKey) {
         return Promise.resolve({
@@ -420,5 +451,65 @@ describe('the discrepancies that motivated the endpoint', () => {
       'Biceps', 'Triceps', 'Traps', 'Calves', 'Abs', 'Forearms',
     ];
     expect(body.muscles.map((m: { muscle: string }) => m.muscle).sort()).toEqual(charted.sort());
+  });
+});
+
+describe('reading targets across the storage split', () => {
+  it('should report which target set produced the verdicts', async () => {
+    answerWith({ targets: [targetSetItem({ ...UPPER_LOWER_TARGETS_V1, version: 5 })] });
+    const { body } = await call();
+    expect(body.plan.targetsVersion).toBe(5);
+  });
+
+  it('should fall back to a legacy version embedded targets when no set exists', async () => {
+    // The bridge that makes deploying before the migration safe: a version
+    // published while targets still lived on it keeps answering correctly.
+    answerWith({
+      plan: [
+        planVersionItem({
+          ...UPPER_LOWER_V1,
+          version: 7,
+          weeklySetTargets: [{ muscles: ['Chest'], sets: { min: 8, max: 9 }, bonusWeekSets: null }],
+        }),
+      ],
+      targets: [],
+      days: [day('2026-09-09', { Chest: 8 })],
+    });
+
+    const { statusCode, body } = await call();
+
+    expect(statusCode).toBe(200);
+    expect(rowFor(body, 'Chest')).toMatchObject({ target: { min: 8, max: 9 }, status: 'in_range' });
+    // Null, not absent: "answered from a legacy copy" is worth being able to see.
+    expect(body.plan.targetsVersion).toBeNull();
+  });
+
+  it('should prefer the target set over an embedded copy when both exist', async () => {
+    answerWith({
+      plan: [
+        planVersionItem({
+          ...UPPER_LOWER_V1,
+          version: 7,
+          weeklySetTargets: [{ muscles: ['Chest'], sets: { min: 1, max: 2 }, bonusWeekSets: null }],
+        }),
+      ],
+      targets: [targetSetItem({ ...UPPER_LOWER_TARGETS_V1, version: 3 })],
+      days: [day('2026-09-09', { Chest: 8 })],
+    });
+
+    const { body } = await call();
+
+    expect(rowFor(body, 'Chest')?.target).toEqual({ min: 8, max: 9 });
+    expect(body.plan.targetsVersion).toBe(3);
+  });
+
+  it('should 404 when neither a target set nor an embedded copy exists', async () => {
+    const { weeklySetTargets: _none, ...menuOnly } = UPPER_LOWER_V1;
+    answerWith({ plan: [planVersionItem({ ...menuOnly, version: 7 })], targets: [] });
+
+    const { statusCode, body } = await call();
+
+    expect(statusCode).toBe(404);
+    expect(body.message).toMatch(/no weekly set targets/);
   });
 });
