@@ -9,7 +9,12 @@ import {
   versionInEffect,
   workoutPlanTableName,
 } from '../lambda/workout-plan-schema';
-import { UPPER_LOWER_PLAN_ID, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
+import {
+  UPPER_LOWER_PLAN_ID,
+  UPPER_LOWER_TARGETS_V1,
+  UPPER_LOWER_V1,
+} from '../lambda/workout-plan-upper-lower';
+import { checkMenuAgainstTargets, describeBreach } from '../lambda/workout-plan-compliance';
 
 /** A mutable deep copy of the seed program, for building invalid variants. */
 const variant = (): any => JSON.parse(JSON.stringify(UPPER_LOWER_V1));
@@ -94,48 +99,60 @@ describe('plannedWeeklySets', () => {
   });
 
   /**
-   * The targets and the sessions are deliberately independent — see
-   * WeeklySetTarget — but independent is not the same as free to contradict.
-   * Running the rotation exactly as written must never be reported as *too much*
-   * volume, because the program is the thing asking for it.
+   * The seed's two halves must not contradict each other. This is the same
+   * check the write paths run, applied to the committed program, so a seed that
+   * could not be published never lands in the repo either.
    *
-   * This is a real regression: Shoulders, Biceps and Triceps were once declared
-   * at 9-11, 5-6 and 6-8 against a rotation prescribing 11-14, 6-7 and 6-9, so a
+   * It is a real regression: shoulders, biceps and triceps were once declared at
+   * 9-11, 5-6 and 6-8 against a rotation prescribing 11-14, 6-7 and 6-9, so a
    * perfectly-executed week came back "over" on /muscle-volume-status.
    */
-  it('should never declare a target below what the rotation prescribes', () => {
-    const prescribed = plannedWeeklySets(UPPER_LOWER_V1);
-
-    for (const target of UPPER_LOWER_V1.weeklySetTargets) {
-      // A target may span several muscles, so compare against their combined
-      // prescription — the same total the status endpoint judges it on.
-      const combinedMax = target.muscles.reduce(
-        (total, muscle) => total + (prescribed[muscle]?.max ?? 0),
-        0,
-      );
-      if (combinedMax === 0) continue; // No slot prescribes it; nothing to contradict.
-
-      expect([target.muscles.join('+'), combinedMax <= target.sets.max]).toEqual([
-        target.muscles.join('+'),
-        true,
-      ]);
-    }
+  it('should ship a menu that respects its targets', () => {
+    const { breaches } = checkMenuAgainstTargets(
+      UPPER_LOWER_V1,
+      UPPER_LOWER_TARGETS_V1.weeklySetTargets,
+    );
+    expect(breaches.map(describeBreach)).toEqual([]);
   });
 
   /**
-   * The reverse direction is deliberately NOT asserted. A target above the
+   * Pinned rather than fixed. The bonus session pushes quads to 13-15 against a
+   * target of 8-10, and quads declares no bonus-week range — so a four-visit
+   * week does overshoot. That is a training decision, not a code one, and the
+   * write paths report it instead of refusing. This test exists so the day
+   * someone resolves it, the failure says why the expectation changed.
+   */
+  it('should report the known bonus-week quads overshoot as a warning, not a breach', () => {
+    const { breaches, bonusWarnings } = checkMenuAgainstTargets(
+      UPPER_LOWER_V1,
+      UPPER_LOWER_TARGETS_V1.weeklySetTargets,
+    );
+
+    expect(breaches).toEqual([]);
+    expect(bonusWarnings).toEqual([
+      { muscles: ['Quads'], prescribed: 15, allowed: 10 },
+    ]);
+  });
+
+  /**
+   * The reverse direction is deliberately NOT a breach. A target above the
    * prescription is the whole point of stating one: the glutes/hamstrings target
    * of 9-11 sits above the 6 the rotation directly assigns because it folds in
    * indirect work the session list cannot express.
    */
   it('should allow a target above the prescription, which is the point of stating one', () => {
     const prescribed = plannedWeeklySets(UPPER_LOWER_V1);
-    const legs = UPPER_LOWER_V1.weeklySetTargets.find((t) => t.muscles.includes('Glutes'));
+    const legs = UPPER_LOWER_TARGETS_V1.weeklySetTargets.find((t) => t.muscles.includes('Glutes'));
 
     const directlyPrescribed =
       (prescribed.Glutes?.max ?? 0) + (prescribed.Hamstrings?.max ?? 0);
     expect(directlyPrescribed).toBe(6);
     expect(legs?.sets.min).toBeGreaterThan(directlyPrescribed);
+
+    // And the check agrees that this is not a problem.
+    expect(
+      checkMenuAgainstTargets(UPPER_LOWER_V1, UPPER_LOWER_TARGETS_V1.weeklySetTargets).breaches,
+    ).toEqual([]);
   });
 });
 

@@ -103,16 +103,12 @@ export function applyPlanEdits(
   }
 
   let sessions = base.sessions;
-  let weeklySetTargets = base.weeklySetTargets;
 
   for (const edit of edits) {
-    // The target ops address a muscle, not a session, so they branch before the
-    // session lookup below rather than carrying a session id they have no use for.
+    // Target ops never reach here: they address a different document entirely
+    // and are routed to applyTargetEdits by the handler.
     if (edit.op === 'set-target' || edit.op === 'remove-target') {
-      const applied = applyToTargets(weeklySetTargets, edit);
-      if (!applied.ok) return applied;
-      weeklySetTargets = applied.targets;
-      continue;
+      return { ok: false, error: `"${edit.op}" edits the targets, not the menu` };
     }
 
     const index = sessions.findIndex((s) => s.id === edit.session);
@@ -134,7 +130,6 @@ export function applyPlanEdits(
       ...base,
       version: base.version + 1,
       sessions,
-      weeklySetTargets,
       changeNote: meta.changeNote,
       name: meta.name ?? base.name,
       effectiveFrom: meta.effectiveFrom === undefined ? base.effectiveFrom : meta.effectiveFrom,
@@ -187,7 +182,7 @@ function applyToSession(
   };
 }
 
-type TargetEditResult =
+export type TargetEditResult =
   | { readonly ok: true; readonly targets: readonly WeeklySetTarget[] }
   | { readonly ok: false; readonly error: string };
 
@@ -205,7 +200,28 @@ const muscleKey = (muscles: readonly MuscleGroup[]): string => [...muscles].sort
  * guessing which one a reader meant is how these numbers drift in the first
  * place. The caller is told to remove the combined entry first.
  */
-function applyToTargets(
+/**
+ * Applies target edits to a target set, returning the next set's entries.
+ *
+ * The counterpart to applyPlanEdits on the other half of a program. Edits apply
+ * in order, and any that does not resolve fails the whole revision rather than
+ * being skipped — a half-applied set of targets is worse than a rejected one,
+ * since the caller cannot tell which half landed.
+ */
+export function applyTargetEdits(
+  targets: readonly WeeklySetTarget[],
+  edits: readonly Extract<PlanEdit, { op: 'set-target' | 'remove-target' }>[],
+): TargetEditResult {
+  let next = targets;
+  for (const edit of edits) {
+    const applied = applyOneTarget(next, edit);
+    if (!applied.ok) return applied;
+    next = applied.targets;
+  }
+  return { ok: true, targets: next };
+}
+
+function applyOneTarget(
   targets: readonly WeeklySetTarget[],
   edit: Extract<PlanEdit, { op: 'set-target' | 'remove-target' }>,
 ): TargetEditResult {

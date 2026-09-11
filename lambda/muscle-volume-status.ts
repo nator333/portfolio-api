@@ -1,5 +1,5 @@
 import { MUSCLE_GROUPS, type MuscleGroup } from './workout-muscles';
-import type { PlanVersion, Range, WeeklySetTarget } from './workout-plan-schema';
+import type { Range, WeeklySetTarget } from './workout-plan-schema';
 
 /**
  * The one place "am I under, in range, or over on this muscle?" is decided.
@@ -174,6 +174,12 @@ export interface StatusOptions {
   readonly days: number;
   /** Distinct days trained within the window. */
   readonly sessions: number;
+  /**
+   * From the *menu* version, not the target set — the only thing the rollup
+   * still needs from the sessions half, and only to tell a bonus week from an
+   * ordinary one.
+   */
+  readonly sessionsPerWeek: number;
 }
 
 export interface MuscleVolumeStatus {
@@ -184,22 +190,26 @@ export interface MuscleVolumeStatus {
 
 /**
  * Judges every targeted muscle, and reports the trained-but-untargeted ones
- * beside them rather than dropping them — a muscle the program never mentions
- * is a gap in the *plan*, and silently omitting it is how Abs, Traps and
- * Forearms came to exist on the progress page but nowhere in the plan document.
+ * beside them rather than dropping them — a muscle no target mentions is a gap
+ * in the intent, and silently omitting it is how Abs, Traps and Forearms came to
+ * exist on the progress page but nowhere in the plan.
+ *
+ * Takes the target list itself rather than a plan version: targets are their own
+ * versioned document now (see PLAN_TARGET_PREFIX), and this is the half of the
+ * program the verdict actually depends on.
  */
 export function muscleVolumeStatus(
-  version: Pick<PlanVersion, 'weeklySetTargets' | 'sessionsPerWeek'>,
+  targets: readonly WeeklySetTarget[],
   counts: ReadonlyMap<MuscleGroup, number>,
   options: StatusOptions,
 ): MuscleVolumeStatus {
-  const bonusWindow = isBonusWindow(options.sessions, version.sessionsPerWeek, options.days);
+  const bonusWindow = isBonusWindow(options.sessions, options.sessionsPerWeek, options.days);
 
   // First entry naming a muscle wins. A muscle listed twice is a contradiction
   // in the plan, not a merge to attempt: two ranges over one count have no
   // single answer, so the later entry is ignored rather than guessed at.
   const entryFor = new Map<MuscleGroup, WeeklySetTarget>();
-  for (const target of version.weeklySetTargets) {
+  for (const target of targets) {
     for (const muscle of target.muscles) {
       if (!entryFor.has(muscle)) entryFor.set(muscle, target);
     }

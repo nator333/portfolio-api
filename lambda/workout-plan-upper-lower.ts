@@ -1,10 +1,12 @@
-import type { PlanVersion } from './workout-plan-schema';
+import type { PlanVersion, TargetSetVersion } from './workout-plan-schema';
 
 /**
  * The upper/lower program currently being run, as authored by the lifter.
  *
  * This is the seed content for the plan table (see scripts/publish-workout-plan.ts)
- * and the reference copy of version 1. It is kept in source rather than only in
+ * and the reference copy of version 1. It comes in two halves, stored as two
+ * item types and versioned independently: the menu below, and the weekly set
+ * targets at the foot of this file. It is kept in source rather than only in
  * DynamoDB so a version is reviewable in a diff — a training block changing is
  * exactly the kind of thing worth seeing in git history — and so the table can be
  * rebuilt from scratch after a non-prod teardown.
@@ -320,9 +322,34 @@ export const UPPER_LOWER_V1: PlanVersion = {
   ],
   // As stated by the author. These fold in bonus-week and indirect volume, so
   // they do not equal plannedWeeklySets(); see WeeklySetTarget for why both exist.
+};
+
+/**
+ * The weekly set targets, as the author states them — the *intent* half of the
+ * program, published as its own versioned item beside the menu above.
+ *
+ * Separate from the sessions on purpose. These are not a restatement of what the
+ * slot list adds up to; computing them from it would make them a redundant copy
+ * of plannedWeeklySets and state no intent at all. They fold in judgment the
+ * sessions cannot express — indirect work (a row's contribution to biceps, a
+ * squat's to glutes) and volume carried outside the program entirely — which is
+ * why several sit above what the rotation directly assigns, and why abs, traps
+ * and forearms appear here with no slot prescribing them anywhere.
+ *
+ * The one direction that IS a contradiction is a target *below* what the menu
+ * prescribes: the program would then be asking for more than the intent allows.
+ * workout-plan-compliance.ts refuses that on the way in.
+ */
+export const UPPER_LOWER_TARGETS_V1: TargetSetVersion = {
+  planId: UPPER_LOWER_PLAN_ID,
+  version: 1,
+  effectiveFrom: null,
+  effectiveTo: null,
+  changeNote: '',
+  createdAt: '2026-09-09T00:00:00.000Z',
   weeklySetTargets: [
     // Shoulders, biceps and triceps are stated as MEV-MRV landmarks rather than
-    // as anything derived from the sessions above. They previously read 9-11,
+    // as anything derived from the menu. They previously read 9-11,
     // 5-6 and 6-8 — below what this very rotation prescribes (plannedWeeklySets
     // gives 11-14, 6-7 and 6-9) — so completing the program as written reported
     // all three as "over". Note the fix is deliberately *not* "set them to what

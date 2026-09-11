@@ -1,18 +1,39 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 
 const mockSend = jest.fn();
+
+/**
+ * Target-set items the handler should see. The menu and the targets share a
+ * partition and are told apart by sort-key prefix, so that query is answered
+ * here rather than through mockSend — the tests below queue answers in call
+ * order, and a second parallel read would silently consume them.
+ */
+let mockTargetItems: unknown[] = [];
+
 jest.mock('@aws-sdk/lib-dynamodb', () => {
   const actual = jest.requireActual('@aws-sdk/lib-dynamodb');
   return {
     ...actual,
-    DynamoDBDocumentClient: { from: () => ({ send: mockSend }) },
+    DynamoDBDocumentClient: {
+      from: () => ({
+        send: (command: { input?: Record<string, unknown> }) => {
+          const values = command?.input?.ExpressionAttributeValues as
+            | Record<string, string>
+            | undefined;
+          if (values?.[':prefix'] === 'T#') {
+            return Promise.resolve({ Items: mockTargetItems });
+          }
+          return mockSend(command);
+        },
+      }),
+    },
   };
 });
 
 import { handler as getPlan, DEFAULT_PLAN_ID } from '../lambda/get-workout-plan';
 import { handler as updatePlan } from '../lambda/update-workout-plan';
-import { UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
-import { planVersionItem } from '../lambda/workout-plan-schema';
+import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
+import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
 
 const TABLE = 'portfolio-workout-plan-test';
 
@@ -48,6 +69,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   mockSend.mockReset();
+  // No target set published, unless a test says otherwise.
+  mockTargetItems = [];
 });
 
 describe('reading the plan', () => {
@@ -215,5 +238,94 @@ describe('publishing a plan version', () => {
     expect(statusCode).toBe(409);
     expect(body.latestVersion).toBe(4);
     expect(body.nextVersion).toBe(5);
+  });
+});
+
+describe('composing the two halves on read', () => {
+  const storedTargets = (version: number, over: Record<string, unknown> = {}) =>
+    targetSetItem({ ...UPPER_LOWER_TARGETS_V1, version, ...over });
+
+  it('should serve the current targets alongside the menu', async () => {
+    mockSend.mockResolvedValueOnce({ Items: [stored(3)] });
+    mockTargetItems = [storedTargets(2)];
+
+    const { statusCode, body } = await read();
+
+    expect(statusCode).toBe(200);
+    expect(body.version).toBe(3);
+    // Split in storage, but a caller still gets one coherent program.
+    expect(body.targetsVersion).toBe(2);
+    expect(body.weeklySetTargets).toEqual(UPPER_LOWER_TARGETS_V1.weeklySetTargets);
+  });
+
+  it('should prefer the target set over a legacy version embedded copy', async () => {
+    const legacy = { min: 1, max: 2 };
+    mockSend.mockResolvedValueOnce({
+      Items: [{ ...stored(3), weeklySetTargets: [{ muscles: ['Chest'], sets: legacy, bonusWeekSets: null }] }],
+    });
+    mockTargetItems = [storedTargets(2)];
+
+    const { body } = await read();
+
+    expect(body.weeklySetTargets).toEqual(UPPER_LOWER_TARGETS_V1.weeklySetTargets);
+    expect(body.targetsVersion).toBe(2);
+  });
+
+  it('should fall back to a legacy version embedded targets when no set exists', async () => {
+    // The bridge across the split: versions published before targets moved out
+    // still answer correctly, and say so by reporting a null targetsVersion.
+    const embedded = [{ muscles: ['Chest'], sets: { min: 8, max: 9 }, bonusWeekSets: null }];
+    mockSend.mockResolvedValueOnce({ Items: [{ ...stored(3), weeklySetTargets: embedded }] });
+    mockTargetItems = [];
+
+    const { body } = await read();
+
+    expect(body.weeklySetTargets).toEqual(embedded);
+    expect(body.targetsVersion).toBeNull();
+  });
+});
+
+describe('publishing a menu beside separate targets', () => {
+  it('should ignore weeklySetTargets sent with a menu, and say so', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const { statusCode, body } = await write({
+      ...UPPER_LOWER_V1,
+      version: 9,
+      weeklySetTargets: [{ muscles: ['Chest'], sets: { min: 1, max: 2 }, bonusWeekSets: null }],
+    });
+
+    expect(statusCode).toBe(201);
+    expect(body.warnings?.[0]).toMatch(/weeklySetTargets was ignored/);
+    // Ignored means not stored, not stored-quietly.
+    expect(lastInput().Item.weeklySetTargets).toBeUndefined();
+  });
+
+  it('should publish a menu that carries no targets at all', async () => {
+    mockSend.mockResolvedValueOnce({});
+    const { weeklySetTargets: _dropped, ...menuOnly } = UPPER_LOWER_V1;
+
+    const { statusCode, body } = await write({ ...menuOnly, version: 9 });
+
+    expect(statusCode).toBe(201);
+    expect(body.warnings).toBeUndefined();
+  });
+
+  it('should refuse a menu prescribing more than the current targets allow', async () => {
+    mockTargetItems = [
+      targetSetItem({
+        ...UPPER_LOWER_TARGETS_V1,
+        version: 1,
+        weeklySetTargets: [{ muscles: ['Chest'], sets: { min: 2, max: 3 }, bonusWeekSets: null }],
+      }),
+    ];
+
+    const { statusCode, body } = await write({ ...UPPER_LOWER_V1, version: 9 });
+
+    expect(statusCode).toBe(409);
+    expect(body.breaches[0]).toMatch(/Chest is prescribed 9 sets a week but its target allows at most 3/);
+    expect(body.targetsVersion).toBe(1);
+    // Refused before the write, not rolled back after it.
+    expect(mockSend.mock.calls.some((c) => c[0].input.Item !== undefined)).toBe(false);
   });
 });
