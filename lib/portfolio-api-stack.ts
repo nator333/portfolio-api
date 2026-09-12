@@ -429,6 +429,47 @@ export class PortfolioApiStack extends cdk.Stack {
       }),
     );
 
+    // The weekly set targets, read and written by the admin editor page. These
+    // are the only functions outside the MCP server that touch the plan table's
+    // target items, and the only REST surface the plan has at all — the menu
+    // stays MCP-only, since editing sessions is not something the site does.
+    const targetsEnv = {
+      ...lambdaDefaults.environment,
+      WORKOUT_PLAN_TABLE_NAME: workoutPlanTable,
+      WORKOUT_REGION,
+    };
+    const getWorkoutTargetsFn = new lambdaNode.NodejsFunction(this, 'GetWorkoutTargetsFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-workout-targets.ts'),
+      ...lambdaDefaults,
+      // Two small cross-region queries; same headroom as the other readers of
+      // this table rather than the 3s default.
+      timeout: cdk.Duration.seconds(15),
+      environment: targetsEnv,
+    });
+    getWorkoutTargetsFn.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ['dynamodb:Query'], resources: [workoutPlanArn] }),
+    );
+
+    const updateWorkoutTargetsFn = new lambdaNode.NodejsFunction(
+      this,
+      'UpdateWorkoutTargetsFunction',
+      {
+        entry: path.join(__dirname, '..', 'lambda', 'update-workout-targets.ts'),
+        ...lambdaDefaults,
+        timeout: cdk.Duration.seconds(15),
+        environment: targetsEnv,
+      },
+    );
+    updateWorkoutTargetsFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        // Query to read the current menu and target set, PutItem to append the
+        // next one. Scoped to the plan table alone: the training log stays
+        // untouchable from here, as it is from every reader in this stack.
+        actions: ['dynamodb:Query', 'dynamodb:PutItem'],
+        resources: [workoutPlanArn],
+      }),
+    );
+
     // Unified activity feed: blog and the GitHub snapshot locally, gym sessions
     // cross-region. Merged here so the landing page makes one call rather than
     // three against a quota every visitor shares.
@@ -904,6 +945,22 @@ export class PortfolioApiStack extends cdk.Stack {
     activityResource.addMethod('GET', new apigateway.LambdaIntegration(getActivityFn), {
       apiKeyRequired: true,
     });
+
+    // The weekly set targets: Cognito-gated both ways, like the other admin
+    // surfaces. No API key — the ID token is the authority, same posture as
+    // /media and /uploads.
+    const workoutPlanResource = api.root.addResource('workout-plan');
+    const workoutTargetsResource = workoutPlanResource.addResource('targets');
+    workoutTargetsResource.addMethod(
+      'GET',
+      new apigateway.LambdaIntegration(getWorkoutTargetsFn),
+      { authorizer, authorizationType: apigateway.AuthorizationType.COGNITO },
+    );
+    workoutTargetsResource.addMethod(
+      'PUT',
+      new apigateway.LambdaIntegration(updateWorkoutTargetsFn),
+      { authorizer, authorizationType: apigateway.AuthorizationType.COGNITO },
+    );
 
     // Note on what a separate plan does and does not buy: a usage plan is bound
     // to the whole stage, not to individual methods, so any valid key can call
