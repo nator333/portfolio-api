@@ -265,3 +265,62 @@ test('rejects a missing exercise and a malformed or inverted range', async () =>
   ).toBe(400);
   expect(mockSend).not.toHaveBeenCalled();
 });
+
+/**
+ * DynamoDB rejects a request that declares an expression-attribute name it does
+ * not use ("Value provided in ExpressionAttributeNames unused in expressions").
+ * That is a ValidationException, so the handler 500s rather than returning a
+ * bad answer — and no amount of asserting the *response* would catch it here,
+ * because the mocked client never validates anything. The request shape has to
+ * be asserted directly.
+ *
+ * This is a real regression: `from` and `to` are both optional, but `#d` was
+ * declared unconditionally, so the plain "show me this lift's history" call —
+ * the common one — failed every time while every ranged call worked.
+ */
+const unusedNames = (input: {
+  KeyConditionExpression?: string;
+  FilterExpression?: string;
+  ExpressionAttributeNames?: Record<string, string>;
+}): string[] => {
+  const expressions = [input.KeyConditionExpression, input.FilterExpression]
+    .filter(Boolean)
+    .join(' ');
+  return Object.keys(input.ExpressionAttributeNames ?? {}).filter(
+    (name) => !expressions.includes(name),
+  );
+};
+
+test('queries the whole history when no range is given', async () => {
+  respond([catalogRow()], [storedSet()]);
+
+  const { statusCode } = await call({ exercise: 'Bench Press' });
+
+  expect(statusCode).toBe(200);
+  const setsQuery = mockSend.mock.calls[1][0] as QueryCommand;
+  expect(setsQuery.input.KeyConditionExpression).toBe('#e = :ex');
+  expect(setsQuery.input.IndexName).toBe(SETS_BY_EXERCISE_INDEX);
+  expect(unusedNames(setsQuery.input)).toEqual([]);
+});
+
+test('declares no expression name it does not use, on every range shape', async () => {
+  const shapes: Record<string, string>[] = [
+    {},
+    { from: '2026-01-01' },
+    { to: '2026-09-01' },
+    { from: '2026-01-01', to: '2026-09-01' },
+  ];
+
+  for (const shape of shapes) {
+    mockSend.mockReset();
+    respond([catalogRow()], [storedSet()]);
+
+    await call({ exercise: 'Bench Press', ...shape });
+
+    const setsQuery = mockSend.mock.calls[1][0] as QueryCommand;
+    expect([JSON.stringify(shape), unusedNames(setsQuery.input)]).toEqual([
+      JSON.stringify(shape),
+      [],
+    ]);
+  }
+});
