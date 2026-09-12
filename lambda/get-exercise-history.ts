@@ -240,7 +240,16 @@ async function querySets(
   to?: string,
 ): Promise<HistorySet[]> {
   const values: Record<string, unknown> = { ':ex': exercise };
+  // `exercise` and `date` are both DynamoDB reserved words, so they are aliased
+  // — but only where they are actually referenced. DynamoDB rejects a request
+  // declaring a name it does not use, so carrying `#d` unconditionally made the
+  // no-range call (the common one) fail with a ValidationException while every
+  // ranged call worked.
+  const names: Record<string, string> = { '#e': 'exercise' };
   let condition = '#e = :ex';
+  if (from || to) {
+    names['#d'] = 'date';
+  }
   if (from && to) {
     condition += ' AND #d BETWEEN :from AND :to';
     values[':from'] = from;
@@ -261,7 +270,7 @@ async function querySets(
         TableName: setsTable,
         IndexName: SETS_BY_EXERCISE_INDEX,
         KeyConditionExpression: condition,
-        ExpressionAttributeNames: { '#e': 'exercise', '#d': 'date' },
+        ExpressionAttributeNames: names,
         ExpressionAttributeValues: values,
         ExclusiveStartKey: lastKey,
       }),
