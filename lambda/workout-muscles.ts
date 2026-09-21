@@ -13,6 +13,11 @@
  * Biceps. Rear-delt work sits above the generic Shoulders/Chest rules so
  * "reverse butterfly" is a shoulder movement, not a chest one.
  *
+ * A rule may also require a second keyword (`and`), for movements whose group is
+ * decided by a pair of words rather than one: a reverse-grip curl is forearm work
+ * while a reverse-grip row or pushdown is not, so the Forearms rule for it asks
+ * for "reverse" and "curl" together instead of enumerating every spelling.
+ *
  * These are training-convention judgment calls, not anatomy. The lower body is
  * split into Quads (knee-extension dominant: squats, presses, extensions,
  * lunges), Hamstrings (hip-hinge / knee-flexion: deadlift variants, leg curls,
@@ -59,6 +64,12 @@ export const MUSCLE_GROUPS: readonly MuscleGroup[] = [
 interface MuscleRule {
   readonly muscle: MuscleGroup;
   readonly keywords: readonly string[];
+  /**
+   * Optional second keyword list. When present the name must hit `keywords` *and*
+   * `and` for the rule to match, which lets a two-word movement claim its group
+   * without listing every spelling of the words in between.
+   */
+  readonly and?: readonly string[];
 }
 
 // First matching rule wins; see the file header for why the order is what it is.
@@ -135,6 +146,19 @@ const RULES: readonly MuscleRule[] = [
     keywords: ['グルート', 'glute', 'hip thrust', 'アブダクター', 'abductor'],
   },
   {
+    // Reverse-grip (pronated) curls load the brachioradialis and forearm
+    // extensors rather than the biceps, so they resolve here and not under the
+    // generic "curl"→Biceps rule just below. Pairing "reverse" with "curl"
+    // covers every bar/grip/bench variant — "Reverse Grip Cable Curl", "EZ Bar
+    // Reverse Grip Preacher Curl", リバース スタンディング バーベルカール — while leaving
+    // reverse-grip work that isn't a curl (pushdowns, bent-over rows, reverse
+    // butterfly) to its own rule. Kept below Hamstrings so a reverse-grip *leg*
+    // curl would still read as a leg curl.
+    muscle: 'Forearms',
+    keywords: ['リバース', 'reverse'],
+    and: ['カール', 'curl'],
+  },
+  {
     // "hammer" is deliberately absent — it also names Hammer Strength machines
     // and hammer-grip pulls; the actual hammer *curls* all carry カール / "curl".
     muscle: 'Biceps',
@@ -171,30 +195,44 @@ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\
 // substrings. ASCII keywords instead match only at the *start* of a word — this
 // keeps plurals working ("dips", "chins", "rows") while preventing mid-word hits
 // like "chin" inside "machine" or "row" inside "crossover". Compiled once at
-// load so muscleFor does at most one regex test plus a few includes per rule.
-interface CompiledRule {
-  readonly muscle: MuscleGroup;
+// load so muscleFor does at most one regex test plus a few includes per keyword
+// list, and a rule has one list unless it declares an `and` clause.
+interface CompiledKeywords {
   readonly asciiRegex: RegExp | null;
   readonly substrings: readonly string[];
 }
 
-const COMPILED: readonly CompiledRule[] = RULES.map((rule) => {
-  const lowered = rule.keywords.map((k) => k.toLowerCase());
+interface CompiledRule {
+  readonly muscle: MuscleGroup;
+  /** Every matcher must hit; one per keyword list the rule declares. */
+  readonly matchers: readonly CompiledKeywords[];
+}
+
+function compileKeywords(keywords: readonly string[]): CompiledKeywords {
+  const lowered = keywords.map((k) => k.toLowerCase());
   const ascii = lowered.filter(isAscii).map(escapeRegExp);
-  const substrings = lowered.filter((k) => !isAscii(k));
   return {
-    muscle: rule.muscle,
     asciiRegex: ascii.length ? new RegExp(`(^|[^a-z])(?:${ascii.join('|')})`) : null,
-    substrings,
+    substrings: lowered.filter((k) => !isAscii(k)),
   };
-});
+}
+
+const COMPILED: readonly CompiledRule[] = RULES.map((rule) => ({
+  muscle: rule.muscle,
+  matchers: rule.and
+    ? [compileKeywords(rule.keywords), compileKeywords(rule.and)]
+    : [compileKeywords(rule.keywords)],
+}));
+
+const matches = (matcher: CompiledKeywords, name: string): boolean =>
+  matcher.asciiRegex?.test(name) === true ||
+  matcher.substrings.some((keyword) => name.includes(keyword));
 
 /** Resolves an exercise name to its major muscle group, defaulting to "Other". */
 export function muscleFor(exerciseName: string): MuscleGroup {
   const name = exerciseName.trim().toLowerCase();
   for (const rule of COMPILED) {
-    if (rule.asciiRegex?.test(name)) return rule.muscle;
-    if (rule.substrings.some((keyword) => name.includes(keyword))) return rule.muscle;
+    if (rule.matchers.every((matcher) => matches(matcher, name))) return rule.muscle;
   }
   return 'Other';
 }

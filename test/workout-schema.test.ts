@@ -312,6 +312,15 @@ describe('muscleFor', () => {
     ['マシン リバース バタフライ', 'Shoulders'],
     ['Delts machine', 'Shoulders'],
     ['プリーチャー カール', 'Biceps'],
+    // Reverse-grip curls are forearm work, whatever bar or bench they use, and
+    // whichever language they were logged in.
+    ['リバース スタンディング バーベルカール', 'Forearms'],
+    ['Reverse Grip Standing Barbell Curl', 'Forearms'],
+    ['Reverse Grip Cable Curl', 'Forearms'],
+    ['EZ Bar Reverse Grip Preacher Curl', 'Forearms'],
+    // ...but reverse-grip work that isn't a curl keeps the group it always had.
+    ['リバースグリップベント-オーバーロウズ', 'Lats'],
+    ['リバース グリップ トライセップス プッシュダウン', 'Triceps'],
     ['トライセップス プッシュダウン', 'Triceps'],
     ['ナロー グリップ ベンチプレス', 'Triceps'],
     ['シーテッド カーフ レイズ', 'Calves'],
