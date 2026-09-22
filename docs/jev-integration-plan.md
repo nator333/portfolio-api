@@ -148,12 +148,17 @@ names should send zero questions, not thousands.
 | 3 | `lambda/jev.ts`, secret wiring in `WorkoutIngestStack`, dev-only, **shadow mode**: call, log, cache nothing | not started |
 | 4 | Enforce: write through to cache, re-parse with overrides | not started |
 
-Steps 1 and 2 landed without the `MUSCLE_SEEDS` table being populated. The live
-vocabulary has exactly one unplaced name — `High low`, 8 sets over 3 sessions
-between 2025-04-21 and 2026-01-23 — and what it targets cannot be read off the
-name, which is the whole reason the report lists names rather than the code
-guessing at them. It will appear under "Unclassified exercises" on the next
-import until a rule or a seed places it.
+Steps 1 and 2 are in. The live vocabulary had exactly one unplaced name —
+`High low`, 8 sets over 3 sessions between 2025-04-21 and 2026-01-23 — which the
+lifter classifies as rhomboid-major, trapezius-secondary. There is no Rhomboids
+group, so it is seeded to `Traps`; see the note in `MUSCLE_SEEDS`.
+
+That one name is also the honest measure of what steps 3 and 4 are worth right
+now. The rules cover the vocabulary well enough that a model would have had a
+single name to place, and a seed placed it in one line. The case for the Jev
+steps is about the names not logged yet, so it should be judged on how often the
+import actually reports one — which, as of step 2, is something this system
+finally measures.
 
 Step 2 has standalone value. A hand-seeded override table plus the report lines
 fixes the silent-`Other` problem on its own; Jev then removes the hand-seeding.

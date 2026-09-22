@@ -37,11 +37,22 @@ import { SUMMARY_PK } from './workout-schema';
 
 /** Hand-classified names, raw spelling → group. Seeds win over stored entries. */
 export const MUSCLE_SEEDS: Readonly<Record<string, AssignableMuscle>> = {
-  // Empty by design. Every name in the current vocabulary is placed by a rule,
-  // apart from the ones the import now reports; add them here once their target
-  // has actually been decided, rather than guessing at a lift's intent from its
-  // name. An entry of 'Other' is a real answer — "reviewed, genuinely none of
-  // the groups" — and stops that name being reported on every future import.
+  /**
+   * Classified by the lifter as rhomboid-major, trapezius-secondary.
+   *
+   * There is no Rhomboids group to assign, and adding one is not a rename: the
+   * groups are also the vocabulary the weekly targets are written in, so a new
+   * one arrives untargeted and reports as such in get-muscle-volume-status until
+   * the published plan is revised to cover it. Traps is the lifter's own
+   * secondary and the only group of the two that exists, so the sets count
+   * there.
+   *
+   * Worth knowing if this is ever revisited: rhomboid work that is *named* like
+   * a row ("ロウ", "row") is placed by the Lats rule instead, since that rule owns
+   * the pulling group. This name reaches no rule at all — "High low" describes a
+   * cable path — which is why it needs a seed while those do not.
+   */
+  'High low': 'Traps',
 };
 
 /** How a stored group was arrived at, kept so a decision can be re-examined. */

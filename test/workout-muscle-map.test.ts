@@ -4,7 +4,8 @@ import {
   muscleOverrideItem,
   putMuscleOverrides,
 } from '../lambda/workout-muscle-map';
-import { MUSCLE_CRITERIA, MUSCLE_GROUPS, isAssignableMuscle } from '../lambda/workout-muscles';
+import { MUSCLE_CRITERIA, MUSCLE_GROUPS, isAssignableMuscle, muscleFor } from '../lambda/workout-muscles';
+import { parseWorkoutRows } from '../lambda/workout-schema';
 import { SUMMARY_PK } from '../lambda/workout-schema';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 
@@ -60,6 +61,41 @@ describe('MUSCLE_SEEDS', () => {
       expect({ name, ok: isAssignableMuscle(muscle) }).toEqual({ name, ok: true });
     }
   });
+
+  // A seed is only reachable for a name no rule places; one that a rule already
+  // claims is dead weight, and means the two layers disagree about the name.
+  test('seeds only names the rules leave unplaced', () => {
+    for (const name of Object.keys(MUSCLE_SEEDS)) {
+      expect({ name, ruled: muscleFor(name) }).toEqual({ name, ruled: 'Other' });
+    }
+  });
+
+  test('reach parseWorkoutRows through loadMuscleOverrides', async () => {
+    const { client } = fakeDdb();
+    const overrides = await loadMuscleOverrides(client, TABLE);
+    const { sets, unresolved } = parseWorkoutRows(
+      [
+        {
+          Date: '2026-01-23',
+          'Exercise Name': 'High low',
+          Set: '1',
+          'Weight/Distance': '51.6',
+          'Reps/Time': '10',
+          Notes: '',
+        },
+      ],
+      overrides,
+    );
+    expect(sets[0].muscle).toBe('Traps');
+    expect(unresolved).toEqual([]);
+  });
+
+  // A seed is a decision that has been made; a stored row must not undo it.
+  test('win over a stored row for the same name', async () => {
+    const { client } = fakeDdb({ Items: [storedRow('high low', 'Biceps')] });
+    const overrides = await loadMuscleOverrides(client, TABLE);
+    expect(overrides.get('high low')).toBe('Traps');
+  });
 });
 
 describe('muscleOverrideItem', () => {
@@ -96,9 +132,9 @@ describe('muscleOverrideItem', () => {
 
 describe('loadMuscleOverrides', () => {
   test('reads stored rows keyed by normalized name', async () => {
-    const { client, sent } = fakeDdb({ Items: [storedRow('high low', 'Chest')] });
+    const { client, sent } = fakeDdb({ Items: [storedRow('mystery lift', 'Chest')] });
     const overrides = await loadMuscleOverrides(client, TABLE);
-    expect(overrides.get('high low')).toBe('Chest');
+    expect(overrides.get('mystery lift')).toBe('Chest');
     expect(sent[0].input).toMatchObject({
       TableName: TABLE,
       ExpressionAttributeValues: { ':pk': SUMMARY_PK.muscleMap },
@@ -111,10 +147,8 @@ describe('loadMuscleOverrides', () => {
       { Items: [storedRow('b', 'Lats')] },
     );
     const overrides = await loadMuscleOverrides(client, TABLE);
-    expect([...overrides.entries()]).toEqual([
-      ['a', 'Chest'],
-      ['b', 'Lats'],
-    ]);
+    expect(overrides.get('a')).toBe('Chest');
+    expect(overrides.get('b')).toBe('Lats');
   });
 
   // The whole point of validating on read: a stored 'Cardio' would delete the
@@ -123,7 +157,7 @@ describe('loadMuscleOverrides', () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const { client } = fakeDdb({ Items: [storedRow('treadmill sprints', 'Cardio')] });
     const overrides = await loadMuscleOverrides(client, TABLE);
-    expect(overrides.size).toBe(0);
+    expect(overrides.has('treadmill sprints')).toBe(false);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -131,8 +165,15 @@ describe('loadMuscleOverrides', () => {
   test('drops a stored row whose muscle is not a group', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const { client } = fakeDdb({ Items: [storedRow('mystery lift', 'Legs')] });
-    expect((await loadMuscleOverrides(client, TABLE)).size).toBe(0);
+    const overrides = await loadMuscleOverrides(client, TABLE);
+    expect(overrides.has('mystery lift')).toBe(false);
     warn.mockRestore();
+  });
+
+  test('returns the seeds when the table is empty', async () => {
+    const { client } = fakeDdb();
+    const overrides = await loadMuscleOverrides(client, TABLE);
+    expect(overrides.size).toBe(Object.keys(MUSCLE_SEEDS).length);
   });
 });
 
