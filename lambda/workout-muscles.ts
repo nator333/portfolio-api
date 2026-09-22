@@ -61,6 +61,55 @@ export const MUSCLE_GROUPS: readonly MuscleGroup[] = [
   'Other',
 ] as const;
 
+/**
+ * A group an unclassified name may be *assigned* to, and what that group means.
+ *
+ * These restate the judgement calls the rules below already encode, so that
+ * anything resolving a name the rules could not — a person reading the import
+ * report today, a model later — works from the same definitions rather than a
+ * second, drifting copy of them.
+ *
+ * `Cardio` is deliberately absent, and the absence is load-bearing: cardio rows
+ * are *dropped* at ingest (see parseWorkoutRows), so assigning a name to Cardio
+ * deletes its sets instead of relabelling them. The Cardio rule runs first and
+ * catches conditioning work deterministically; nothing downstream may put a name
+ * back into it.
+ *
+ * `Other` is present on purpose. "Reviewed, and genuinely none of the above" is
+ * a real answer — the log contains real lifts that belong to no single group —
+ * and being able to record it is what stops such a lift being reported as
+ * unresolved on every future import.
+ */
+export type AssignableMuscle = Exclude<MuscleGroup, 'Cardio'>;
+
+export const MUSCLE_CRITERIA: Readonly<Record<AssignableMuscle, string>> = {
+  Chest: 'Horizontal pressing and adduction: bench presses at any angle, chest presses, flyes, crossovers, dips, push-ups, pec deck.',
+  Lats: 'Vertical and horizontal pulling: pulldowns, pull-ups and chin-ups, rows of every kind, pullovers, straight-arm pulldowns, back extensions.',
+  Quads: 'Knee-extension dominant lower body: squats of any bar position, leg presses, leg extensions, lunges, hack and Zercher variants.',
+  Hamstrings: 'Hip-hinge and knee-flexion posterior chain: leg curls, conventional and Romanian deadlifts, rack and block pulls.',
+  Glutes: 'Direct hip-extension and abduction work: hip thrusts, glute-ham raises, hip abductor machines.',
+  Shoulders: 'Deltoid work in any head: overhead and military presses, lateral and front raises, rear-delt flyes and reverse pec deck, face pulls, upright rows.',
+  Biceps: 'Elbow flexion with a supinated or neutral grip: barbell, dumbbell, cable, preacher, spider, drag and hammer curls.',
+  Triceps: 'Elbow extension: pushdowns, skull crushers, kickbacks, overhead extensions, close- and narrow-grip bench press.',
+  Traps: 'Scapular elevation: shrugs of every implement.',
+  Calves: 'Plantarflexion: standing, seated and leg-press calf raises.',
+  Abs: 'Trunk flexion and rotation: crunches, leg and knee raises, hip raises, side bends, oblique twists, planks.',
+  Forearms: 'Wrist flexion and extension, grip work, and reverse-grip (pronated) curls, which load the brachioradialis rather than the biceps.',
+  Other: 'A real resistance movement that belongs to none of the groups above, or one whose target cannot be told from its name alone.',
+};
+
+/**
+ * Whether a value names a group something may be assigned to.
+ *
+ * This is the enforcement point for the Cardio exclusion above: it is applied
+ * wherever a muscle group arrives from outside this module, so a stored or
+ * inferred `'Cardio'` is rejected rather than quietly deleting a lift's sets.
+ */
+export const isAssignableMuscle = (value: unknown): value is AssignableMuscle =>
+  typeof value === 'string' &&
+  value !== 'Cardio' &&
+  (MUSCLE_GROUPS as readonly string[]).includes(value);
+
 interface MuscleRule {
   readonly muscle: MuscleGroup;
   readonly keywords: readonly string[];

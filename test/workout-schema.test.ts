@@ -44,6 +44,83 @@ const row = (
   Notes: notes,
 });
 
+describe('parseWorkoutRows muscle overrides', () => {
+  // "High low" names a cable path, not a muscle, so it shares no keyword with
+  // any rule — the shape of name the override layer exists for.
+  const UNPLACED = 'High low';
+
+  test('the rules cannot place the name these tests use', () => {
+    expect(muscleFor(UNPLACED)).toBe('Other');
+  });
+
+  // The contract every existing caller relies on: passing no overrides has to
+  // behave exactly as it did before overrides existed.
+  test('without overrides an unplaced name stays Other', () => {
+    const { sets, unresolved } = parseWorkoutRows([row('2026-07-24', UNPLACED, 1, 20, 12)]);
+    expect(sets[0].muscle).toBe('Other');
+    expect(unresolved).toEqual([UNPLACED]);
+  });
+
+  test('an override places the name and clears it from the report', () => {
+    const { sets, unresolved } = parseWorkoutRows(
+      [row('2026-07-24', UNPLACED, 1, 20, 12)],
+      new Map([['high low', 'Chest']]),
+    );
+    expect(sets[0].muscle).toBe('Chest');
+    expect(unresolved).toEqual([]);
+  });
+
+  // The rules stay authoritative: an override may fill a gap, never contradict
+  // a keyword match, so a name the rules place ignores the map entirely.
+  test('an override cannot overrule a rule', () => {
+    const { sets } = parseWorkoutRows(
+      [row('2026-07-24', 'ベンチプレス', 1, 100, 5)],
+      new Map([['ベンチプレス', 'Biceps']]),
+    );
+    expect(sets[0].muscle).toBe('Chest');
+  });
+
+  // Overrides are keyed by the same normalization the translation table uses,
+  // so one entry has to cover every spelling of the name.
+  test('matches regardless of case, padding, or full-width spaces', () => {
+    const overrides = new Map([['high low', 'Chest' as const]]);
+    for (const spelling of ['high low', 'HIGH LOW', '  High　 Low  ']) {
+      const { sets } = parseWorkoutRows([row('2026-07-24', spelling, 1, 20, 12)], overrides);
+      expect({ spelling, muscle: sets[0].muscle }).toEqual({ spelling, muscle: 'Chest' });
+    }
+  });
+
+  test('an explicit Other is a reviewed answer, not an unresolved name', () => {
+    const { sets, unresolved } = parseWorkoutRows(
+      [row('2026-07-24', UNPLACED, 1, 20, 12)],
+      new Map([['high low', 'Other']]),
+    );
+    expect(sets[0].muscle).toBe('Other');
+    expect(unresolved).toEqual([]);
+  });
+
+  test('reports each unplaced name once, in its logged spelling', () => {
+    const { unresolved } = parseWorkoutRows([
+      row('2026-07-24', UNPLACED, 1, 20, 12),
+      row('2026-07-24', 'HIGH LOW', 2, 20, 12),
+      row('2026-07-25', 'Another Mystery', 1, 20, 12),
+    ]);
+    expect(unresolved).toEqual([UNPLACED, 'Another Mystery']);
+  });
+
+  // Cardio is dropped before the override layer is reached, so conditioning
+  // rows can never be reported as unclassified or re-placed by an override.
+  test('cardio is still dropped and never reported as unresolved', () => {
+    const { sets, excludedCardio, unresolved } = parseWorkoutRows(
+      [row('2026-07-24', 'トレッドミル', 1, 0, 30)],
+      new Map([['トレッドミル', 'Quads']]),
+    );
+    expect(sets).toHaveLength(0);
+    expect(excludedCardio).toBe(1);
+    expect(unresolved).toEqual([]);
+  });
+});
+
 describe('parseWorkoutRows', () => {
   test('normalizes a valid row and computes volume', () => {
     const { sets, skipped } = parseWorkoutRows([row('2026-07-24', 'ベンチプレス', 1, 100, 5)]);

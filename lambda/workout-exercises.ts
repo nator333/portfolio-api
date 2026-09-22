@@ -180,8 +180,18 @@ const TRANSLATIONS: Record<string, string> = {
   'リカベントバイク': 'Recumbent Bike',
 };
 
-/** Collapse whitespace (incl. full-width spaces) and lowercase, for lookup only. */
-const normalize = (s: string): string => s.trim().replace(/[\s　]+/g, ' ').toLowerCase();
+/**
+ * Collapse whitespace (incl. full-width spaces) and lowercase, for lookup only.
+ *
+ * Exported because it is also the key under which a name's hand- or
+ * model-assigned muscle group is stored (see workout-muscle-map.ts). Both
+ * lookups have to fold the same spellings together, or a name could translate
+ * under one spelling and miss its muscle override under another.
+ */
+export const normalizeExerciseName = (s: string): string =>
+  s.trim().replace(/[\s　]+/g, ' ').toLowerCase();
+
+const normalize = normalizeExerciseName;
 
 const LOOKUP: ReadonlyMap<string, string> = new Map(
   Object.entries(TRANSLATIONS).map(([raw, english]) => [normalize(raw), english]),

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { muscleFor, MUSCLE_GROUPS, type MuscleGroup } from './workout-muscles';
-import { exerciseName } from './workout-exercises';
+import { muscleFor, MUSCLE_GROUPS, type AssignableMuscle, type MuscleGroup } from './workout-muscles';
+import { exerciseName, normalizeExerciseName } from './workout-exercises';
 
 /**
  * Shared shapes and pure transforms for the workout pipeline: parsing a Fitness
@@ -75,6 +75,12 @@ export const SUMMARY_PK = {
   /** Sets per muscle per ISO week. */
   week: 'WEEK',
   meta: 'META',
+  /**
+   * Muscle group assigned to an exercise name the substring rules could not
+   * classify. Unlike every partition above it is *not* derived from the sets, so
+   * the import must never prune it — see deleteStaleRows in workout-ingest.ts.
+   */
+  muscleMap: 'MUSCLEMAP',
 } as const;
 
 /** Sort key of the single META item under SUMMARY_PK.meta. */
@@ -192,15 +198,34 @@ const daysBetween = (from: string, to: string): number =>
  * charting it against a muscle would distort every rollup. They are reported
  * separately from invalid rows (`excludedCardio`) since they are valid data we
  * chose to exclude, not malformed input.
+ *
+ * `overrides` supplies muscle groups for names the substring rules cannot place,
+ * keyed by normalizeExerciseName. It is consulted *only* where muscleFor already
+ * returned 'Other', so the rules stay authoritative and an override can never
+ * contradict one — it can only fill a gap the rules left. Called without it,
+ * which is what every caller that does not maintain the map should do, behaviour
+ * is exactly what it was before overrides existed.
+ *
+ * Names that neither the rules nor the overrides could place come back in
+ * `unresolved`, distinct and in first-seen order, so the import can report them
+ * instead of letting them disappear into 'Other' unremarked — which is how a
+ * newly logged movement used to skew the per-muscle rollups silently.
  */
-export function parseWorkoutRows(records: readonly unknown[]): {
+export function parseWorkoutRows(
+  records: readonly unknown[],
+  overrides?: ReadonlyMap<string, AssignableMuscle>,
+): {
   sets: WorkoutSet[];
   skipped: number;
   excludedCardio: number;
+  unresolved: string[];
 } {
   const sets: WorkoutSet[] = [];
   let skipped = 0;
   let excludedCardio = 0;
+  // Keyed by normalized name so spelling variants report once; the value keeps
+  // the raw spelling, which is what has to be pasted into a rule or an override.
+  const unresolved = new Map<string, string>();
 
   for (const record of records) {
     const parsed = csvRecordSchema.safeParse(record);
@@ -213,10 +238,19 @@ export function parseWorkoutRows(records: readonly unknown[]): {
     // Classify on the raw name (muscleFor knows both languages); store the
     // canonical English name so the rollups read in English and duplicate
     // spellings of the same movement merge into one exercise.
-    const muscle = muscleFor(rawExercise);
-    if (muscle === 'Cardio') {
+    const ruled = muscleFor(rawExercise);
+    if (ruled === 'Cardio') {
       excludedCardio += 1;
       continue;
+    }
+    // The rules had no opinion: fall back to an override, and failing that keep
+    // 'Other' and remember the name so the import can ask about it.
+    let muscle: AssignableMuscle = ruled;
+    if (ruled === 'Other') {
+      const key = normalizeExerciseName(rawExercise);
+      const override = overrides?.get(key);
+      if (override) muscle = override;
+      else if (!unresolved.has(key)) unresolved.set(key, rawExercise.trim());
     }
     const exercise = exerciseName(rawExercise);
     const weight = r['Weight/Distance'];
@@ -236,7 +270,7 @@ export function parseWorkoutRows(records: readonly unknown[]): {
     });
   }
 
-  return { sets, skipped, excludedCardio };
+  return { sets, skipped, excludedCardio, unresolved: [...unresolved.values()] };
 }
 
 /** A set plus the sort key it is stored under, within its date partition. */

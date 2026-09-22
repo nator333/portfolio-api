@@ -5,6 +5,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, BatchWriteCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { simpleParser } from 'mailparser';
 import { parse as parseCsv } from 'csv-parse/sync';
+import { loadMuscleOverrides } from './workout-muscle-map';
 import {
   META_SK,
   assignSetKeys,
@@ -101,7 +102,10 @@ async function processObject(bucket: string, key: string, config: Config): Promi
     bom: true,
   }) as Record<string, string>[];
 
-  const { sets, skipped, excludedCardio } = parseWorkoutRows(records);
+  // Read before parsing rather than parsing twice: the overrides are a handful
+  // of rows, and the CSV is ~16k of them.
+  const overrides = await loadMuscleOverrides(ddb, config.summaryTable);
+  const { sets, skipped, excludedCardio, unresolved } = parseWorkoutRows(records, overrides);
   if (sets.length === 0) {
     await sendReport(config, {
       subject: 'Workout import failed: no valid rows',
@@ -125,10 +129,10 @@ async function processObject(bucket: string, key: string, config: Config): Promi
   await writeSummaries(config.summaryTable, summaries, csv.filename);
 
   const newDays = summaries.days.map((d) => d.sk).filter((sk) => !priorDays.has(sk));
-  await sendReport(config, buildReport({ summaries, sets, skipped, excludedCardio, newDays, priorTotalSets, filename: csv.filename }));
+  await sendReport(config, buildReport({ summaries, sets, skipped, excludedCardio, unresolved, newDays, priorTotalSets, filename: csv.filename }));
 
   console.log(
-    `Imported ${sets.length} sets over ${summaries.meta.workoutDays} days from ${csv.filename} (${skipped} skipped, ${excludedCardio} cardio excluded, ${newDays.length} new days)`,
+    `Imported ${sets.length} sets over ${summaries.meta.workoutDays} days from ${csv.filename} (${skipped} skipped, ${excludedCardio} cardio excluded, ${newDays.length} new days, ${unresolved.length} unclassified)`,
   );
 }
 
@@ -251,6 +255,11 @@ async function writeSummaries(
  * behind, the ghost rows double-count in the all-time balance and show renamed
  * exercises twice. For each partition, delete every row whose key is absent from
  * the freshly written summary.
+ *
+ * Only the partitions named by the caller are swept, which is what keeps
+ * SUMMARY_PK.muscleMap safe: it is the one partition not derived from the sets,
+ * so a sweep that included it would delete every recorded classification on the
+ * next import and re-orphan the names they placed.
  */
 async function deleteStaleRows(
   summaryTable: string,
@@ -352,6 +361,7 @@ interface ReportInput {
   sets: readonly WorkoutSet[];
   skipped: number;
   excludedCardio: number;
+  unresolved: readonly string[];
   newDays: string[];
   priorTotalSets: number | null;
   filename: string;
@@ -365,13 +375,15 @@ const mass = (kgValue: number, sourceValue: number): string =>
 
 /** Dates listed inline before the report just points at the totals instead. */
 const MAX_LISTED_DAYS = 20;
+/** Unplaced names listed before the report truncates; a healthy import has none. */
+const MAX_LISTED_UNRESOLVED = 20;
 /** Weeks averaged for the sets-per-muscle-per-week figure. */
 const WEEKS_WINDOW = 12;
 /** Lifts shown in the strength-progression section, most-trained first. */
 const TOP_LIFTS = 6;
 
 function buildReport(input: ReportInput): Report {
-  const { summaries, skipped, excludedCardio, newDays, priorTotalSets, filename } = input;
+  const { summaries, skipped, excludedCardio, unresolved, newDays, priorTotalSets, filename } = input;
   const { meta } = summaries;
   const newSets = priorTotalSets === null ? null : meta.totalSets - priorTotalSets;
 
@@ -407,12 +419,33 @@ function buildReport(input: ReportInput): Report {
       ? 'First import (no prior baseline).'
       : `New sets since last import: ${num(newSets)}`,
     newDaysLine,
+  ];
+
+  // The point of the section: an unplaced name counts toward no muscle, so it
+  // silently drags down whichever group it belongs to in the per-muscle figures
+  // below and in every volume-versus-target check built on them. Listing them is
+  // what turns that from a silent error into a visible one.
+  if (unresolved.length) {
+    lines.push(
+      '',
+      `— Unclassified exercises (${num(unresolved.length)}) —`,
+      'These count toward no muscle group. Add a keyword rule in',
+      'lambda/workout-muscles.ts, or a name in MUSCLE_SEEDS in',
+      'lambda/workout-muscle-map.ts, then re-send this CSV.',
+      ...unresolved.slice(0, MAX_LISTED_UNRESOLVED),
+    );
+    if (unresolved.length > MAX_LISTED_UNRESOLVED) {
+      lines.push(`… and ${num(unresolved.length - MAX_LISTED_UNRESOLVED)} more.`);
+    }
+  }
+
+  lines.push(
     '',
     '— Consistency —',
     `Sessions: ${num(freq.sessionsLast30)} in the last 30 days, ${num(freq.sessionsLast90)} in 90 (${freq.sessionsPerWeek}/week)`,
     `Current streak: ${num(freq.currentStreakWeeks)} consecutive weeks`,
     `Last session: ${meta.lastDate}`,
-  ];
+  );
 
   // Sets per muscle per week is the metric training guidance is expressed in
   // (~10-20 hard sets per muscle per week), unlike total mass lifted.

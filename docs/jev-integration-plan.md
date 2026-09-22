@@ -140,13 +140,20 @@ names should send zero questions, not thousands.
 
 ## Sequencing
 
-| Step | Work |
-| --- | --- |
-| 0 | Obtain API access; spike `models.list()` from a us-west-2 Lambda |
-| 1 | `MUSCLE_CRITERIA` + `overrides` param on `parseWorkoutRows`; tests prove no-override behavior is unchanged |
-| 2 | `MUSCLEMAP` cache partition, read/write path, seeded by hand for today's known `Other` names |
-| 3 | `lambda/jev.ts`, secret wiring in `WorkoutIngestStack`, dev-only, **shadow mode**: call, log, cache nothing |
-| 4 | Enforce: write through to cache, re-parse with overrides, report unresolved names |
+| Step | Work | Status |
+| --- | --- | --- |
+| 0 | Obtain API access; spike `models.list()` from a us-west-2 Lambda | blocked on access |
+| 1 | `MUSCLE_CRITERIA` + `overrides` param on `parseWorkoutRows`; tests prove no-override behavior is unchanged | **built** |
+| 2 | `MUSCLEMAP` cache partition, read/write path, unresolved names reported in the import email | **built** |
+| 3 | `lambda/jev.ts`, secret wiring in `WorkoutIngestStack`, dev-only, **shadow mode**: call, log, cache nothing | not started |
+| 4 | Enforce: write through to cache, re-parse with overrides | not started |
+
+Steps 1 and 2 landed without the `MUSCLE_SEEDS` table being populated. The live
+vocabulary has exactly one unplaced name — `High low`, 8 sets over 3 sessions
+between 2025-04-21 and 2026-01-23 — and what it targets cannot be read off the
+name, which is the whole reason the report lists names rather than the code
+guessing at them. It will appear under "Unclassified exercises" on the next
+import until a rule or a seed places it.
 
 Step 2 has standalone value. A hand-seeded override table plus the report lines
 fixes the silent-`Other` problem on its own; Jev then removes the hand-seeding.
