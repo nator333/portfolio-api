@@ -277,7 +277,10 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'actually lifted. Returns the current version by default; pass `version` for a specific one, ' +
       '`date` for whichever was in force that day, or `history: true` to list all versions. ' +
       'The menu and the weekly set targets are versioned separately and composed here into one ' +
-      'document; `targetsVersion` says which target set was used. Admin only.',
+      'document; `targetsVersion` says which target set was used. Each weekly set target is ' +
+      '{muscles, sets: {min, max}, bonusWeekSets, maintenanceSets}: `sets` is the hypertrophy range, ' +
+      'and `maintenanceSets` is the maintenance floor, which runs up to `sets.min`; it is null, or ' +
+      'absent on target sets stored before it existed, where no floor is declared. Admin only.',
     requiresAuth: true,
     inputSchema: PLAN_READ_ARGS,
     annotations: readAnnotations,
