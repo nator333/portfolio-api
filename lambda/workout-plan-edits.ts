@@ -58,7 +58,7 @@ export const planEditSchema = z.discriminatedUnion('op', [
    */
   z.object({
     op: z.literal('set-target'),
-    target: weeklySetTargetSchema.partial({ bonusWeekSets: true }),
+    target: weeklySetTargetSchema.partial({ bonusWeekSets: true, maintenanceSets: true }),
   }),
   z.object({
     op: z.literal('remove-target'),
@@ -240,12 +240,14 @@ function applyOneTarget(
     return { ok: true, targets: targets.filter((_, i) => i !== at) };
   }
 
-  // `bonusWeekSets` is optional on the wire but stored explicitly, so a target
-  // set without one reads as "unchanged on a bonus week" rather than absent.
+  // `bonusWeekSets` and `maintenanceSets` are optional on the wire but stored
+  // explicitly, so a target set without them reads as "unchanged on a bonus
+  // week" and "no maintenance floor" rather than absent.
   const next: WeeklySetTarget = {
     muscles: edit.target.muscles,
     sets: edit.target.sets,
     bonusWeekSets: edit.target.bonusWeekSets ?? null,
+    maintenanceSets: edit.target.maintenanceSets ?? null,
   };
 
   if (at !== -1) {

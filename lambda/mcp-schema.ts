@@ -286,7 +286,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_muscle_volume_status',
     title: 'Get muscle volume status',
     description:
-      'Whether each muscle is under, in range or over its target training volume right now. This ' +
+      'Whether each muscle is under, maintaining, in range or over its target training volume right now. ' +
+      '"maintenance" means at or above the target\'s maintenance floor but below its hypertrophy range; ' +
+      'targets without a floor report "under" there instead. This ' +
       'is the one place that judgement is computed: it rolls the logged sets up over a trailing ' +
       'window (7 days by default, ending at the moment of the call) and compares them against the ' +
       'CURRENT plan version\'s weekly set targets, read fresh on every call. Prefer it to working ' +
@@ -388,7 +390,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
         weeklySetTargets: {
           type: 'array',
           description:
-            'Declared sets per muscle per week: [{muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null}]. ' +
+            'Declared sets per muscle per week: [{muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null, maintenanceSets: number|null}]. ' +
             'These are what get_muscle_volume_status judges actual volume against, so they are the ' +
             'canonical target ranges — no consumer should keep its own copy. IGNORED on this ' +
             'tool: change them with revise_workout_plan instead.',
@@ -453,13 +455,16 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
               target: {
                 type: 'object',
                 description:
-                  'For set-target: a weekly set target, {muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null}. ' +
-                  'Replaces the entry covering exactly those muscles, or adds one. `bonusWeekSets` may be omitted for null. ' +
+                  'For set-target: a weekly set target, {muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null, maintenanceSets: number|null}. ' +
+                  '`sets` is the hypertrophy range; `maintenanceSets` is the maintenance floor, which must be below `sets.min` ' +
+                  '(maintenance runs from it up to where hypertrophy begins). ' +
+                  'Replaces the entry covering exactly those muscles, or adds one. `bonusWeekSets` and `maintenanceSets` may be omitted for null. ' +
                   'An entry spanning several muscles (e.g. glutes + hamstrings) is addressed by naming all of them.',
                 properties: {
                   muscles: { type: 'array', items: { type: 'string' }, minItems: 1 },
                   sets: { type: 'object', properties: { min: { type: 'number' }, max: { type: 'number' } }, required: ['min', 'max'] },
                   bonusWeekSets: { type: ['object', 'null'], properties: { min: { type: 'number' }, max: { type: 'number' } } },
+                  maintenanceSets: { type: ['number', 'null'], description: 'Weekly maintenance floor; must be below sets.min.' },
                 },
                 required: ['muscles', 'sets'],
               },

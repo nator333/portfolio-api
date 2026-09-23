@@ -222,10 +222,21 @@ describe('editing the weekly set targets', () => {
       muscles: ['Chest'],
       sets: { min: 10, max: 12 },
       bonusWeekSets: null,
+      maintenanceSets: null,
     });
     // And only that entry moved.
     expect(result.targets).toHaveLength(BASE_TARGETS.length);
     expect(byMuscles(result.targets).get('Lats')).toEqual(byMuscles(BASE_TARGETS).get('Lats'));
+  });
+
+  it('should carry a maintenance floor through when one is given', () => {
+    const result = editTargets([
+      { op: 'set-target', target: { muscles: ['Chest'], sets: { min: 10, max: 12 }, maintenanceSets: 5 } },
+    ]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(byMuscles(result.targets).get('Chest')?.maintenanceSets).toBe(5);
   });
 
   it('should add a target for a muscle nothing covered', () => {
