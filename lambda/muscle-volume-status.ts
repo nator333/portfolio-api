@@ -15,7 +15,12 @@ import type { Range, WeeklySetTarget } from './workout-plan-schema';
  * share the same arithmetic rather than each approximating it.
  */
 
-export type VolumeStatus = 'under' | 'in_range' | 'over';
+/**
+ * `maintenance` sits between `under` and `in_range`: enough to hold the muscle,
+ * not enough to grow it. It is only reported for targets that declare a
+ * maintenance floor; without one, anything below the range is simply `under`.
+ */
+export type VolumeStatus = 'under' | 'maintenance' | 'in_range' | 'over';
 
 /**
  * Rolling window in days, ending at the moment of the request rather than at a
@@ -52,6 +57,13 @@ export interface MuscleVolumeRow {
    * every muscle "over" for no reason but the width of the question.
    */
   readonly target: Range;
+  /**
+   * The maintenance floor as the plan states it, per week; null where none is
+   * declared. Maintenance runs from here up to `weeklyTarget.min`.
+   */
+  readonly weeklyMaintenance: number | null;
+  /** `weeklyMaintenance` scaled to the window, as `target` is; what `status` uses. */
+  readonly maintenance: number | null;
   /** Sets logged for this muscle alone within the window. */
   readonly sets: number;
   /**
@@ -138,9 +150,18 @@ export function rollUpSets(days: readonly DayTally[]): Map<MuscleGroup, number> 
   return totals;
 }
 
-/** Where a set count falls against a range; both bounds are inclusive. */
-export function statusFor(sets: number, target: Range): VolumeStatus {
-  if (sets < target.min) return 'under';
+/**
+ * Where a set count falls against a range; both bounds are inclusive. Below the
+ * range, a count at or above `maintenance` is maintaining rather than under.
+ */
+export function statusFor(
+  sets: number,
+  target: Range,
+  maintenance: number | null = null,
+): VolumeStatus {
+  if (sets < target.min) {
+    return maintenance !== null && sets >= maintenance ? 'maintenance' : 'under';
+  }
   if (sets > target.max) return 'over';
   return 'in_range';
 }
@@ -148,8 +169,13 @@ export function statusFor(sets: number, target: Range): VolumeStatus {
 /** A weekly range restated over a window of `days`. */
 export function scaleTarget(weekly: Range, days: number): Range {
   if (days === DAYS_PER_WEEK) return weekly;
-  const factor = days / DAYS_PER_WEEK;
-  return { min: round1(weekly.min * factor), max: round1(weekly.max * factor) };
+  return { min: scaleSets(weekly.min, days), max: scaleSets(weekly.max, days) };
+}
+
+/** A weekly set count restated over a window of `days`. */
+export function scaleSets(weekly: number, days: number): number {
+  if (days === DAYS_PER_WEEK) return weekly;
+  return round1((weekly * days) / DAYS_PER_WEEK);
 }
 
 /**
@@ -228,15 +254,20 @@ export function muscleVolumeStatus(
 
     const weeklyTarget = weeklyRangeFor(entry, bonusWindow);
     const target = scaleTarget(weeklyTarget, options.days);
+    const weeklyMaintenance = entry.maintenanceSets ?? null;
+    const maintenance =
+      weeklyMaintenance === null ? null : scaleSets(weeklyMaintenance, options.days);
 
     muscles.push({
       muscle,
       weeklyTarget,
       target,
+      weeklyMaintenance,
+      maintenance,
       sets,
       countedSets,
       sharedWith: shared,
-      status: statusFor(countedSets, target),
+      status: statusFor(countedSets, target, maintenance),
     });
   }
 

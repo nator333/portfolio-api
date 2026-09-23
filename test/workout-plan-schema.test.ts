@@ -6,6 +6,7 @@ import {
   planVersionSchema,
   planVersionSk,
   plannedWeeklySets,
+  targetSetSchema,
   versionInEffect,
   workoutPlanTableName,
 } from '../lambda/workout-plan-schema';
@@ -268,5 +269,35 @@ describe('planVersionSchema rejections', () => {
     const plan = variant();
     plan.sessions[0].exercises[0].options = [];
     expect(planVersionSchema.safeParse(plan).success).toBe(false);
+  });
+});
+
+describe('the maintenance floor', () => {
+  const withChest = (maintenanceSets: number | null | undefined) =>
+    targetSetSchema.safeParse({
+      ...UPPER_LOWER_TARGETS_V1,
+      weeklySetTargets: [
+        { muscles: ['Chest'], sets: { min: 8, max: 9 }, bonusWeekSets: null, maintenanceSets },
+      ],
+    });
+
+  it('should accept a floor below where the hypertrophy range begins', () => {
+    const parsed = withChest(4);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.weeklySetTargets[0].maintenanceSets).toBe(4);
+  });
+
+  it('should default an absent floor to null', () => {
+    const parsed = withChest(undefined);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.weeklySetTargets[0].maintenanceSets).toBeNull();
+  });
+
+  it('should refuse a floor at or above the start of the hypertrophy range', () => {
+    for (const floor of [8, 9]) {
+      const parsed = withChest(floor);
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues[0].path).toEqual(['weeklySetTargets', 0, 'maintenanceSets']);
+    }
   });
 });

@@ -141,6 +141,15 @@ describe('judging a count against a range', () => {
     expect(statusFor(10, target)).toBe('over');
   });
 
+  it('should call a count between the maintenance floor and the range maintaining', () => {
+    const target = { min: 8, max: 9 };
+    expect(statusFor(3, target, 4)).toBe('under');
+    expect(statusFor(4, target, 4)).toBe('maintenance');
+    expect(statusFor(7, target, 4)).toBe('maintenance');
+    expect(statusFor(8, target, 4)).toBe('in_range');
+    expect(statusFor(10, target, 4)).toBe('over');
+  });
+
   it('should restate a weekly range over the requested window', () => {
     expect(scaleTarget({ min: 8, max: 9 }, 7)).toEqual({ min: 8, max: 9 });
     expect(scaleTarget({ min: 8, max: 9 }, 14)).toEqual({ min: 16, max: 18 });
@@ -229,6 +238,42 @@ describe('the status rollup', () => {
     expect(bonus.bonusWindow).toBe(true);
     expect(bonus.muscles.find((m) => m.muscle === 'Calves')?.weeklyTarget).toEqual({ min: 15, max: 15 });
     expect(bonus.muscles.find((m) => m.muscle === 'Calves')?.status).toBe('in_range');
+  });
+
+  it('should judge against a declared maintenance floor, scaled to the window', () => {
+    const targets = [{ muscles: ['Chest' as const], sets: { min: 8, max: 9 }, bonusWeekSets: null, maintenanceSets: 4 }];
+
+    const week = muscleVolumeStatus(targets, counts({ Chest: 5 }), {
+      days: 7,
+      sessions: 3,
+      sessionsPerWeek: 3,
+    });
+    const chest = week.muscles.find((m) => m.muscle === 'Chest');
+    expect(chest?.weeklyMaintenance).toBe(4);
+    expect(chest?.maintenance).toBe(4);
+    expect(chest?.status).toBe('maintenance');
+
+    // Over a fortnight the floor doubles with the range, so five sets is under.
+    const fortnight = muscleVolumeStatus(targets, counts({ Chest: 5 }), {
+      days: 14,
+      sessions: 6,
+      sessionsPerWeek: 3,
+    });
+    const chest14 = fortnight.muscles.find((m) => m.muscle === 'Chest');
+    expect(chest14?.maintenance).toBe(8);
+    expect(chest14?.status).toBe('under');
+  });
+
+  it('should report under below the range when no maintenance floor is declared', () => {
+    const { muscles } = muscleVolumeStatus(TARGETS, counts({ Chest: 5 }), {
+      days: 7,
+      sessions: 3,
+      sessionsPerWeek: 3,
+    });
+    const chest = muscles.find((m) => m.muscle === 'Chest');
+    expect(chest?.weeklyMaintenance).toBeNull();
+    expect(chest?.maintenance).toBeNull();
+    expect(chest?.status).toBe('under');
   });
 
   it('should report a trained muscle the plan sets no target for', () => {

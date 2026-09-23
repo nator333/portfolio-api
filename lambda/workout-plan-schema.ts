@@ -133,9 +133,18 @@ export interface PlanSession {
 export interface WeeklySetTarget {
   /** One entry may span several groups, e.g. a combined glutes+hamstrings target. */
   readonly muscles: readonly MuscleGroup[];
+  /** The hypertrophy range. */
   readonly sets: Range;
   /** Target on weeks the bonus session is added; null where it is unchanged. */
   readonly bonusWeekSets: Range | null;
+  /**
+   * The least weekly volume that holds the muscle where it is. A single number
+   * rather than a range because its ceiling is already stated: maintenance runs
+   * from here up to where the hypertrophy range (`sets.min`) begins, so a week
+   * in between is maintaining rather than simply "under". Null, or absent on
+   * target sets stored before it existed, where no floor is declared.
+   */
+  readonly maintenanceSets?: number | null;
 }
 
 /** One immutable revision of a program. */
@@ -261,6 +270,7 @@ export const weeklySetTargetSchema = z.object({
   muscles: z.array(muscleGroupSchema).min(1),
   sets: rangeSchema(MAX_SETS * 10),
   bonusWeekSets: rangeSchema(MAX_SETS * 10).nullable(),
+  maintenanceSets: z.number().min(0).max(MAX_SETS * 10).nullable().default(null),
 });
 
 export const planVersionSchema = z
@@ -320,7 +330,19 @@ export const targetSetSchema = z.object({
         return true;
       },
       { message: 'a muscle may appear in only one weekly set target' },
-    ),
+    )
+    // Maintenance ends where hypertrophy begins, so a floor at or above the
+    // range's start would leave the two zones overlapping or inside out.
+    .superRefine((list, ctx) => {
+      list.forEach((target, i) => {
+        if (target.maintenanceSets == null || target.maintenanceSets < target.sets.min) return;
+        ctx.addIssue({
+          code: 'custom',
+          path: [i, 'maintenanceSets'],
+          message: `maintenanceSets (${target.maintenanceSets}) must be below the hypertrophy range's min (${target.sets.min}) for ${target.muscles.join(' + ')}`,
+        });
+      });
+    }),
   effectiveFrom: isoDateSchema.nullable(),
   effectiveTo: isoDateSchema.nullable(),
   changeNote: z.string(),
