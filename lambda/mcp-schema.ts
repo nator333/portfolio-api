@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import {
+  REFLECTION_BODY_MAX,
+  REFLECTION_LIST_DEFAULT_LIMIT,
+  REFLECTION_LIST_MAX_LIMIT,
+  REFLECTION_THEMES_MAX,
+  REFLECTION_TYPES,
+} from './reflection-schema';
 
 /**
  * Declarative side of the Model Context Protocol server that fronts this API.
@@ -486,6 +493,93 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       additionalProperties: false,
     },
     annotations: appendAnnotations,
+  },
+  {
+    name: 'list_reflections',
+    title: 'List reflection notes',
+    description:
+      'Read the owner\'s private reflection notes, newest first. `type` is "workout" (how a ' +
+      'training session went) or "life" (higher-level notes on how things are going generally); ' +
+      'omit it to read both. Call this BEFORE add_reflection — read the last few notes of the ' +
+      'same type so the new one can build on them (recurring themes, what changed since) rather ' +
+      'than starting cold. Also the tool for "what patterns keep coming up?": read a window and ' +
+      'look across the notes. A workout note\'s `date` is the session day, so it lines up with ' +
+      'get_workout_sets for that date. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: [...REFLECTION_TYPES], description: 'Which kind. Optional; omit for all.' },
+        from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Optional.' },
+        to: { type: 'string', description: 'Inclusive end date, ISO YYYY-MM-DD. Optional.' },
+        theme: { type: 'string', description: 'Only notes tagged with this theme, e.g. "sleep". Optional.' },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: REFLECTION_LIST_MAX_LIMIT,
+          description: `Most notes to return. Optional; defaults to ${REFLECTION_LIST_DEFAULT_LIMIT}.`,
+        },
+      },
+      additionalProperties: false,
+    },
+    annotations: readAnnotations,
+  },
+  {
+    name: 'add_reflection',
+    title: 'Add reflection note',
+    description:
+      'Save a reflection note from the current conversation. Always appends a new note; it never ' +
+      'replaces one, so call it once per reflection. Write `body` as a concise summary in the ' +
+      'owner\'s own framing — keep one or two of their actual phrases verbatim, since a summary ' +
+      'cannot be un-summarised later — and put the recurring threads in `themes` as short ' +
+      'lowercase tags (e.g. "sleep", "shoulder", "motivation"), reusing tags from earlier notes ' +
+      'where they fit so they can be followed over time. `date` is the day the note is about, in ' +
+      'the owner\'s local calendar (for a workout, the session day). Call list_reflections first. ' +
+      'Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: [...REFLECTION_TYPES], description: '"workout" or "life".' },
+        date: { type: 'string', description: 'ISO YYYY-MM-DD, the day the note is about.' },
+        body: { type: 'string', maxLength: REFLECTION_BODY_MAX, description: 'The reflection itself.' },
+        themes: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: REFLECTION_THEMES_MAX,
+          description: 'Short lowercase tags for the recurring threads. Optional.',
+        },
+      },
+      required: ['type', 'date', 'body'],
+      additionalProperties: false,
+    },
+    annotations: appendAnnotations,
+  },
+  {
+    name: 'update_reflection',
+    title: 'Correct reflection note',
+    description:
+      'Correct the body and/or themes of an existing reflection, addressed by `type` and the `id` ' +
+      'list_reflections returned. For fixing a note, not for adding to it — a new thought is a ' +
+      'new note via add_reflection. The type and date cannot change. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: [...REFLECTION_TYPES] },
+        id: { type: 'string', description: 'The note\'s id, exactly as list_reflections returned it.' },
+        body: { type: 'string', maxLength: REFLECTION_BODY_MAX, description: 'Replacement body. Optional.' },
+        themes: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: REFLECTION_THEMES_MAX,
+          description: 'Replacement themes (the whole list). Optional.',
+        },
+      },
+      required: ['type', 'id'],
+      additionalProperties: false,
+    },
+    annotations: writeAnnotations,
   },
 ] as const;
 

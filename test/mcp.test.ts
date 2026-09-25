@@ -7,6 +7,8 @@ const mockGetCv = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]
 const mockUpdateCv = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
 jest.mock('../lambda/get-cv', () => ({ handler: mockGetCv }));
 jest.mock('../lambda/update-cv', () => ({ handler: mockUpdateCv }));
+const mockListReflections = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
+jest.mock('../lambda/list-reflections', () => ({ handler: mockListReflections }));
 
 // Stub the Cognito access-token verifier: create() hands back an object whose
 // verify each test drives to accept or reject.
@@ -48,6 +50,7 @@ const adminPayload = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   mockGetCv.mockReset();
   mockUpdateCv.mockReset();
+  mockListReflections.mockReset();
   mockVerify.mockReset();
 });
 
@@ -73,7 +76,7 @@ test('the initialized notification is acknowledged with 202 and no body', async 
 
 test('tools/list advertises every tool in the catalogue', async () => {
   const { json } = await call({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-  expect(json.result.tools).toHaveLength(19);
+  expect(json.result.tools).toHaveLength(22);
   expect(json.result.tools.map((t: { name: string }) => t.name)).toContain('get_cv');
 });
 
@@ -100,6 +103,40 @@ test('an admin tool with no bearer token returns 401 with a discovery challenge'
   expect(result.headers?.['WWW-Authenticate']).toContain(
     'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"',
   );
+});
+
+test('reflection notes are private: reading them without a token is refused', async () => {
+  // The first private read of personal writing rather than training data; the
+  // gate must cover the read, not just the writes.
+  const result = await handler(
+    rpcEvent({ jsonrpc: '2.0', id: 40, method: 'tools/call', params: { name: 'list_reflections', arguments: {} } }),
+  );
+
+  expect(mockListReflections).not.toHaveBeenCalled();
+  expect(result.statusCode).toBe(401);
+});
+
+test('list_reflections forwards its arguments as the query strings the handler reads', async () => {
+  mockVerify.mockResolvedValue(adminPayload());
+  mockListReflections.mockResolvedValue({ statusCode: 200, body: '{"count":0,"reflections":[]}' } as APIGatewayProxyResult);
+
+  const { json } = await call(
+    {
+      jsonrpc: '2.0',
+      id: 41,
+      method: 'tools/call',
+      params: { name: 'list_reflections', arguments: { type: 'life', from: '2026-09-01', theme: 'sleep', limit: 5 } },
+    },
+    { Authorization: 'Bearer good' },
+  );
+
+  expect(json.result.isError).toBe(false);
+  expect(mockListReflections.mock.calls[0][0].queryStringParameters).toEqual({
+    type: 'life',
+    from: '2026-09-01',
+    theme: 'sleep',
+    limit: '5',
+  });
 });
 
 test('an admin tool is refused with 401 when the token fails verification', async () => {
