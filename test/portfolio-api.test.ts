@@ -632,3 +632,37 @@ test('the MCP role may write the plan table and only read the training log', () 
   expect(writable).not.toContain('portfolio-workout-sets-test');
   expect(writable).not.toContain('portfolio-workout-summary-test');
 });
+
+test('the reflections table is reachable from the MCP Lambda alone, and never deletable', () => {
+  // Private writing, not site content: no REST route and no other function —
+  // above all not the anonymous /chat and /agent — may hold a grant on it.
+  const template = synthStackWithMcp();
+
+  const tables = template.findResources('AWS::DynamoDB::Table', {
+    Properties: { KeySchema: [{ AttributeName: 'type', KeyType: 'HASH' }, { AttributeName: 'sk', KeyType: 'RANGE' }] },
+  });
+  const tableIds = Object.keys(tables);
+  expect(tableIds).toHaveLength(1);
+  const [tableId] = tableIds;
+  expect(tables[tableId].DeletionPolicy).toBe('Retain');
+  expect(tables[tableId].Properties.PointInTimeRecoverySpecification).toEqual({ PointInTimeRecoveryEnabled: true });
+
+  const functions = template.findResources('AWS::Lambda::Function');
+  const withTableEnv = Object.entries(functions).filter(([, f]) =>
+    JSON.stringify(f.Properties?.Environment?.Variables ?? {}).includes(tableId),
+  );
+  expect(withTableEnv).toHaveLength(1);
+  expect(Object.keys(withTableEnv[0][1].Properties.Environment.Variables)).toContain('MCP_CLIENT_IDS');
+
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const granting = policies.filter((p) => JSON.stringify(p.Properties.PolicyDocument).includes(tableId));
+  expect(granting).toHaveLength(1);
+  for (const statement of granting[0].Properties.PolicyDocument.Statement as Array<{
+    Action?: string | string[];
+    Resource?: unknown;
+  }>) {
+    if (!JSON.stringify(statement.Resource ?? '').includes(tableId)) continue;
+    const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+    expect(actions).not.toContain('dynamodb:DeleteItem');
+  }
+});

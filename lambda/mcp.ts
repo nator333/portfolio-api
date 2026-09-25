@@ -20,6 +20,9 @@ import { handler as updateHome } from './update-home';
 import { handler as updateMedia } from './update-media';
 import { handler as updateWorkoutPlan } from './update-workout-plan';
 import { handler as reviseWorkoutPlan } from './revise-workout-plan';
+import { handler as listReflections } from './list-reflections';
+import { handler as addReflection } from './add-reflection';
+import { handler as updateReflection } from './update-reflection';
 
 import {
   JSON_RPC,
@@ -100,6 +103,9 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   update_home: (args) => updateHome(proxyEvent({ body: args })),
   update_workout_plan: (args) => updateWorkoutPlan(proxyEvent({ body: args })),
   revise_workout_plan: (args) => reviseWorkoutPlan(proxyEvent({ body: args })),
+  list_reflections: (args) => listReflections(proxyEvent({ query: reflectionQuery(args) })),
+  add_reflection: (args) => addReflection(proxyEvent({ body: args })),
+  update_reflection: (args) => updateReflection(proxyEvent({ body: args })),
   update_media: (args) => {
     const { assetId, ...rest } = args as { assetId?: string } & Record<string, unknown>;
     return updateMedia(proxyEvent({ path: { id: String(assetId ?? '') }, body: rest }));
@@ -129,6 +135,16 @@ function muscleVolumeQuery(args: Record<string, unknown>): Record<string, string
   const query: Record<string, string | undefined> = {};
   if (typeof args.window === 'number') query.window = String(args.window);
   if (typeof args.planId === 'string') query.planId = args.planId;
+  return query;
+}
+
+function reflectionQuery(args: Record<string, unknown>): Record<string, string | undefined> {
+  const query: Record<string, string | undefined> = {};
+  if (typeof args.type === 'string') query.type = args.type;
+  if (typeof args.from === 'string') query.from = args.from;
+  if (typeof args.to === 'string') query.to = args.to;
+  if (typeof args.theme === 'string') query.theme = args.theme;
+  if (typeof args.limit === 'number') query.limit = String(args.limit);
   return query;
 }
 

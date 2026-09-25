@@ -714,6 +714,28 @@ export class PortfolioApiStack extends cdk.Stack {
         }),
       );
 
+      // Reflection notes: the owner's private after-session and life write-ups.
+      // Declared here rather than beside the content tables because the MCP
+      // server is its only reader and writer — no REST route, and no grant to
+      // any other function, least of all the anonymous /chat and /agent. The
+      // admin gate in lambda/mcp.ts covers the reads as well as the writes.
+      const reflectionsTable = new dynamodb.Table(this, 'ReflectionsTable', {
+        partitionKey: { name: 'type', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        // Unlike the site content, nothing else holds a copy of these notes.
+        pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      });
+      mcpFn.addEnvironment('REFLECTIONS_TABLE_NAME', reflectionsTable.tableName);
+      // Read, append and correct; no DeleteItem.
+      mcpFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:Query', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+          resources: [reflectionsTable.tableArn],
+        }),
+      );
+
       // Discovery documents. Static apart from the deployment's own URLs, so one
       // small function serves both well-known paths.
       const mcpOAuthEnv = {
