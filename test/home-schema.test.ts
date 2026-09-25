@@ -1,4 +1,16 @@
-import { homeDataSchema, MAX_MOTTO_COUNT, MAX_MOTTO_LENGTH } from '../lambda/home-schema';
+import {
+  homeDataSchema,
+  MAX_BACKGROUND_CAPTION_LENGTH,
+  MAX_BACKGROUND_COUNT,
+  MAX_MOTTO_COUNT,
+  MAX_MOTTO_LENGTH,
+} from '../lambda/home-schema';
+
+const photo = {
+  url: 'https://cdn.example.com/abc/w2560.webp',
+  caption: 'Mt. Hakkai, Minamiuonuma',
+  alt: 'Snow-capped Mt. Hakkai at dawn',
+};
 
 test('accepts a valid home document', () => {
   const data = { mottoes: ['Scream Dependencies', 'Hide Complexities'] };
@@ -30,5 +42,33 @@ test('rejects an empty motto line', () => {
 
 test('rejects a motto line over the length limit', () => {
   const data = { mottoes: ['x'.repeat(MAX_MOTTO_LENGTH + 1)] };
+  expect(homeDataSchema.safeParse(data).success).toBe(false);
+});
+
+test('accepts background photos', () => {
+  const data = { mottoes: [], backgrounds: [photo, { url: photo.url, caption: '' }] };
+  expect(homeDataSchema.safeParse(data).success).toBe(true);
+});
+
+test('rejects more background photos than the cap', () => {
+  const data = { mottoes: [], backgrounds: Array.from({ length: MAX_BACKGROUND_COUNT + 1 }, () => photo) };
+  expect(homeDataSchema.safeParse(data).success).toBe(false);
+});
+
+test('rejects a non-https background url', () => {
+  const data = { mottoes: [], backgrounds: [{ ...photo, url: 'http://cdn.example.com/a.webp' }] };
+  expect(homeDataSchema.safeParse(data).success).toBe(false);
+});
+
+test('rejects a javascript: background url', () => {
+  const data = { mottoes: [], backgrounds: [{ ...photo, url: 'javascript:alert(1)' }] };
+  expect(homeDataSchema.safeParse(data).success).toBe(false);
+});
+
+test('rejects a background caption over the length limit', () => {
+  const data = {
+    mottoes: [],
+    backgrounds: [{ ...photo, caption: 'x'.repeat(MAX_BACKGROUND_CAPTION_LENGTH + 1) }],
+  };
   expect(homeDataSchema.safeParse(data).success).toBe(false);
 });

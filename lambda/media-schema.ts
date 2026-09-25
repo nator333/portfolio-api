@@ -27,11 +27,14 @@ export const MEDIA_INCOMING_PREFIX = 'incoming/';
 export const MEDIA_PUBLIC_PREFIX = 'public/';
 
 /**
- * Variants the resize pipeline emits, all WebP. `w1600` is the eye-catch/project
- * image; `thumb` backs list and picker views. Widths are an upper bound —
- * smaller originals are never enlarged.
+ * Variants the resize pipeline emits, all WebP. `w2560` backs full-screen
+ * backgrounds, where 1600px goes visibly soft on large displays; `w1600` is the
+ * eye-catch/project image; `thumb` backs list and picker views. Widths are an
+ * upper bound — smaller originals are never enlarged. Assets uploaded before a
+ * variant existed simply lack it, so readers fall back to `cdnUrl`.
  */
 export const MEDIA_VARIANTS = [
+  { label: 'w2560', width: 2560 },
   { label: 'w1600', width: 1600 },
   { label: 'thumb', width: 400 },
 ] as const;

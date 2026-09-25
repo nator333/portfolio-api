@@ -210,7 +210,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
   {
     name: 'get_home',
     title: 'Get home',
-    description: 'Read the home-page document (the hero mottoes).',
+    description: 'Read the home-page document (the hero mottoes and background photos).',
     requiresAuth: false,
     inputSchema: NO_ARGS,
     annotations: readAnnotations,
@@ -337,7 +337,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
   {
     name: 'update_home',
     title: 'Update home',
-    description: 'Replace the home-page document (hero mottoes). Admin only. Validated server-side.',
+    description: 'Replace the home-page document (hero mottoes and background photos). Admin only. Validated server-side. ' +
+      'Each background is { url, caption, alt? }: url is a media asset URL (prefer its w2560 variant, from list_media), ' +
+      'caption is shown on the hero (usually where the photo was taken), alt describes the image.',
     requiresAuth: true,
     inputSchema: documentArgs('home'),
     annotations: writeAnnotations,
