@@ -70,7 +70,7 @@ const BEDROCK_REGION = 'us-west-2';
  */
 const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 /**
- * Sonnet-class profile for the admin CV agent — writing quality matters there,
+ * Sonnet-class profile for the admin edit agent — writing quality matters there,
  * and the endpoint is Cognito-gated single-user, so the higher per-token price
  * stays within the Bedrock budget.
  */
@@ -341,7 +341,7 @@ export class PortfolioApiStack extends cdk.Stack {
       });
     chatFn.addToRolePolicy(bedrockInvokePolicy());
 
-    // Admin CV agent: proposes CV/projects edits but never writes — the only
+    // Admin edit agent: proposes CV/projects edits but never writes — the only
     // write path stays the Cognito-protected PUT endpoints, so this function
     // gets read grants only.
     const agentFn = new lambdaNode.NodejsFunction(this, 'AgentFunction', {
