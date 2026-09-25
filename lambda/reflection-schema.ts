@@ -52,9 +52,28 @@ const isoDate = z
  * Themes are the tags a later "what keeps coming up?" read groups by, so they
  * are normalised on the way in — `Sleep`, ` sleep ` and `sleep` are one theme —
  * and de-duplicated.
+ *
+ * They are also English-only, while the body is in whatever language the
+ * conversation was. A body loses its voice in translation; a tag loses its
+ * whole purpose if one topic is spelt two ways, because `sleep` and `睡眠` are
+ * two themes and a read filtered on one silently misses the other. Lowercasing
+ * cannot fold those together, so the vocabulary is pinned instead: lowercase
+ * ASCII words joined by single spaces or hyphens.
  */
+const THEME_RE = /^[a-z0-9]+(?:[ -][a-z0-9]+)*$/;
+const THEME_MESSAGE =
+  'themes must be short English tags: lowercase letters and digits, words joined by a space or hyphen (e.g. "sleep", "lower-back")';
+
+const theme = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(1)
+  .max(REFLECTION_THEME_MAX_LENGTH)
+  .regex(THEME_RE, THEME_MESSAGE);
+
 const themes = z
-  .array(z.string().trim().toLowerCase().min(1).max(REFLECTION_THEME_MAX_LENGTH))
+  .array(theme)
   .max(REFLECTION_THEMES_MAX)
   .transform((list) => [...new Set(list)]);
 
@@ -91,7 +110,7 @@ export const listReflectionsSchema = z
     type: z.enum(REFLECTION_TYPES).optional(),
     from: isoDate.optional(),
     to: isoDate.optional(),
-    theme: z.string().trim().toLowerCase().min(1).optional(),
+    theme: theme.optional(),
     limit: z.coerce.number().int().min(1).max(REFLECTION_LIST_MAX_LIMIT).optional(),
   })
   .strict()

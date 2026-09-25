@@ -512,7 +512,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
         type: { type: 'string', enum: [...REFLECTION_TYPES], description: 'Which kind. Optional; omit for all.' },
         from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Optional.' },
         to: { type: 'string', description: 'Inclusive end date, ISO YYYY-MM-DD. Optional.' },
-        theme: { type: 'string', description: 'Only notes tagged with this theme, e.g. "sleep". Optional.' },
+        theme: { type: 'string', description: 'Only notes tagged with this theme, an English tag such as "sleep". Optional.' },
         limit: {
           type: 'integer',
           minimum: 1,
@@ -530,10 +530,12 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     description:
       'Save a reflection note from the current conversation. Always appends a new note; it never ' +
       'replaces one, so call it once per reflection. Write `body` as a concise summary in the ' +
-      'owner\'s own framing — keep one or two of their actual phrases verbatim, since a summary ' +
-      'cannot be un-summarised later — and put the recurring threads in `themes` as short ' +
-      'lowercase tags (e.g. "sleep", "shoulder", "motivation"), reusing tags from earlier notes ' +
-      'where they fit so they can be followed over time. `date` is the day the note is about, in ' +
+      'owner\'s own framing, in the language the conversation was held in — keep one or two of ' +
+      'their actual phrases verbatim and untranslated, since a summary cannot be un-summarised ' +
+      'later. Put the recurring threads in `themes` as short lowercase ENGLISH tags whatever the ' +
+      'body\'s language (e.g. "sleep", "shoulder", "work-stress"; never "睡眠"), reusing tags from ' +
+      'earlier notes where they fit so they can be followed over time — a non-English tag is ' +
+      'refused. `date` is the day the note is about, in ' +
       'the owner\'s local calendar (for a workout, the session day). Call list_reflections first. ' +
       'Admin only.',
     requiresAuth: true,
@@ -547,7 +549,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
           type: 'array',
           items: { type: 'string' },
           maxItems: REFLECTION_THEMES_MAX,
-          description: 'Short lowercase tags for the recurring threads. Optional.',
+          description: 'Short lowercase English tags for the recurring threads, e.g. "sleep", "lower-back". Optional.',
         },
       },
       required: ['type', 'date', 'body'],
@@ -573,7 +575,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
           type: 'array',
           items: { type: 'string' },
           maxItems: REFLECTION_THEMES_MAX,
-          description: 'Replacement themes (the whole list). Optional.',
+          description: 'Replacement themes (the whole list), lowercase English tags. Optional.',
         },
       },
       required: ['type', 'id'],

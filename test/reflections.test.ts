@@ -78,6 +78,24 @@ describe('adding a reflection', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  it('should keep a Japanese body verbatim but refuse a non-English theme', async () => {
+    mockSend.mockResolvedValueOnce({});
+    const { statusCode, body } = parse(
+      await addReflection(
+        bodyEvent({ type: 'life', date: '2026-09-24', body: '「今日は集中できなかった」', themes: ['Work-Stress'] }),
+      ),
+    );
+    expect(statusCode).toBe(201);
+    expect(body.body).toBe('「今日は集中できなかった」');
+    expect(body.themes).toEqual(['work-stress']);
+
+    // `sleep` and `睡眠` would be two themes, and a filter on one misses the other.
+    for (const bad of ['睡眠', 'lower_back', 'sleep  debt', '-sleep']) {
+      expect([bad, addReflectionSchema.safeParse({ type: 'life', date: '2026-09-24', body: 'x', themes: [bad] }).success])
+        .toEqual([bad, false]);
+    }
+  });
+
   it('should require the date instead of guessing it in UTC', () => {
     expect(addReflectionSchema.safeParse({ type: 'life', body: 'x' }).success).toBe(false);
     expect(addReflectionSchema.safeParse({ type: 'life', body: 'x', date: '2026-02-30' }).success).toBe(false);
@@ -140,6 +158,12 @@ describe('listing reflections', () => {
     expect(first.Limit).toBeUndefined();
     expect(mockSend.mock.calls[1][0].input.ExclusiveStartKey).toEqual({ type: 'life', sk: 'x' });
     expect(body.count).toBe(1);
+  });
+
+  it('should refuse a non-English theme filter rather than return an empty history', async () => {
+    const { statusCode } = parse(await listReflections(queryEvent({ theme: '睡眠' })));
+    expect(statusCode).toBe(400);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('should refuse a reversed window', async () => {
