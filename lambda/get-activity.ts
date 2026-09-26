@@ -10,13 +10,16 @@ import {
   type ActivityEntry,
 } from './activity-schema';
 import { BLOG_TABLE_ITEM_ID } from './blog-schema';
+import { GITHUB_SUMMARY_PK, itemsToSummaries, type GitHubDaySummary } from './github-summary-schema';
 import { SUMMARY_PK } from './workout-schema';
 import { corsHeaders } from './cors';
 
 /**
  * Unified activity feed for the home page's contribution calendar and recent
  * activity list: blog posts and the GitHub snapshot from the local table, gym
- * sessions from the workout summary table in us-west-2.
+ * sessions from the workout summary table in us-west-2, and the daily GitHub
+ * work summaries alongside — one per day rather than per entry, so they sit
+ * beside `entries` instead of inflating the calendar's counts.
  *
  * Merging server-side means the landing page makes one call instead of three,
  * which matters against a per-day request quota shared by every visitor.
@@ -45,6 +48,7 @@ export const handler = async (
     return { statusCode: 500, headers, body: JSON.stringify({ message: 'CV_TABLE_NAME is not configured' }) };
   }
   const workoutTable = process.env.WORKOUT_SUMMARY_TABLE_NAME;
+  const summaryTable = process.env.GITHUB_SUMMARY_TABLE_NAME;
 
   const params = event.queryStringParameters ?? {};
   const to = params.to && DATE_RE.test(params.to) ? params.to : isoDate(new Date());
@@ -57,10 +61,11 @@ export const handler = async (
     from = isoDate(d);
   }
 
-  const [github, blog, gym] = await Promise.all([
+  const [github, blog, gym, summaries] = await Promise.all([
     readGitHub(cvTable),
     readBlog(cvTable),
     workoutTable ? readWorkout(workoutTable, from, to) : Promise.resolve([]),
+    summaryTable ? readSummaries(summaryTable, from, to) : Promise.resolve([]),
   ]);
 
   const entries = mergeActivity([github, blog, gym], { from, to });
@@ -71,6 +76,7 @@ export const handler = async (
     body: JSON.stringify({
       range: { from, to },
       entries,
+      summaries,
       counts: {
         github: github.length,
         blog: blog.length,
@@ -126,4 +132,25 @@ const readWorkout = (table: string, from: string, to: string): Promise<ActivityE
       lastKey = page.LastEvaluatedKey;
     } while (lastKey);
     return workoutDaysToEntries(days);
+  });
+
+const readSummaries = (table: string, from: string, to: string): Promise<GitHubDaySummary[]> =>
+  safely('github summaries', async () => {
+    const items: Record<string, unknown>[] = [];
+    let lastKey: Record<string, unknown> | undefined;
+    do {
+      const page = await local.send(
+        new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'pk = :pk AND #date BETWEEN :from AND :to',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':pk': GITHUB_SUMMARY_PK, ':from': from, ':to': to },
+          ProjectionExpression: '#date, summary, repos',
+          ExclusiveStartKey: lastKey,
+        }),
+      );
+      items.push(...((page.Items ?? []) as Record<string, unknown>[]));
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey);
+    return itemsToSummaries(items);
   });

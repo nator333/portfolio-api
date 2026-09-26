@@ -18,7 +18,8 @@ function synthStack(stage = 'test') {
 test('MediaAssets table is a second table keyed by assetId', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::DynamoDB::Table', 2);
+  // CvTable, MediaAssets and the GitHub daily-summary table.
+  template.resourceCountIs('AWS::DynamoDB::Table', 3);
   template.hasResourceProperties('AWS::DynamoDB::Table', {
     KeySchema: [{ AttributeName: 'assetId', KeyType: 'HASH' }],
     BillingMode: 'PAY_PER_REQUEST',

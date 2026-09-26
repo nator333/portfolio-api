@@ -76,6 +76,11 @@ const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
  */
 // Sonnet 5 is listed but not yet invocable for this account; 4.6 is verified working.
 const AGENT_MODEL_ID = 'us.anthropic.claude-sonnet-4-6';
+/**
+ * The daily GitHub work summary is one short call a day; Haiku writes it well
+ * enough, and at that volume the model's price barely registers in the budget.
+ */
+const SUMMARY_MODEL_ID = CHAT_MODEL_ID;
 /** Monthly Bedrock spend (USD) that triggers the budget email alert. */
 const BEDROCK_BUDGET_USD = 5;
 
@@ -199,6 +204,16 @@ export class PortfolioApiStack extends cdk.Stack {
     userPoolClient.node.addDependency(googleIdp);
 
     const allowedOrigins = props.allowedOrigins ?? ['http://localhost:4200'];
+
+    // Daily GitHub work summaries (pk = "GITHUB_DAY", sk = date). A table of its
+    // own rather than an item in CvTable: the summaries accumulate indefinitely,
+    // and a single item would hit DynamoDB's 400 KB cap within a few years.
+    const gitHubSummaryTable = new dynamodb.Table(this, 'GitHubSummaryTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'date', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     // Media (blog eye-catch + project images). Uploads land under `incoming/`
     // via a presigned POST, a resize Lambda writes optimised WebP variants to
@@ -480,9 +495,11 @@ export class PortfolioApiStack extends cdk.Stack {
         ...lambdaDefaults.environment,
         WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
         WORKOUT_REGION,
+        GITHUB_SUMMARY_TABLE_NAME: gitHubSummaryTable.tableName,
       },
     });
     cvTable.grantReadData(getActivityFn);
+    gitHubSummaryTable.grantReadData(getActivityFn);
     getActivityFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['dynamodb:Query'],
@@ -686,6 +703,9 @@ export class PortfolioApiStack extends cdk.Stack {
       });
       cvTable.grantReadWriteData(mcpFn);
       mediaTable.grantReadWriteData(mcpFn);
+      // get_activity returns the daily GitHub summaries with the feed.
+      mcpFn.addEnvironment('GITHUB_SUMMARY_TABLE_NAME', gitHubSummaryTable.tableName);
+      gitHubSummaryTable.grantReadData(mcpFn);
       // get_workout / get_activity / list_exercises read the summary table;
       // get_workout_sets reads the per-set table by date and
       // get_exercise_history reads it by exercise, which is a separate resource:
@@ -833,6 +853,34 @@ export class PortfolioApiStack extends cdk.Stack {
         schedule: events.Schedule.rate(cdk.Duration.days(1)),
         targets: [new eventsTargets.LambdaFunction(gitHubIngestFn)],
         description: 'Refreshes the GitHub activity snapshot for the home-page calendar',
+      });
+
+      // Prose summary of each finished day's work, written once and kept. Its
+      // only grants are writing its own table and invoking Bedrock: the commit
+      // messages it reads are third-party text, so it gets nothing else to act on.
+      const gitHubSummaryFn = new lambdaNode.NodejsFunction(this, 'GitHubSummaryFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'github-summary.ts'),
+        runtime: lambda.Runtime.NODEJS_20_X,
+        bundling: { externalModules: ['@aws-sdk/*'] },
+        // Up to a few dozen GitHub calls and a handful of Bedrock calls, in series.
+        timeout: cdk.Duration.minutes(3),
+        memorySize: 256,
+        environment: {
+          GITHUB_SUMMARY_TABLE_NAME: gitHubSummaryTable.tableName,
+          GITHUB_USER: props.githubUser,
+          BEDROCK_REGION,
+          SUMMARY_MODEL_ID,
+        },
+      });
+      gitHubSummaryTable.grantReadWriteData(gitHubSummaryFn);
+      gitHubSummaryFn.addToRolePolicy(bedrockInvokePolicy());
+
+      // Shortly after the UTC day closes — the feed's day boundary — so
+      // yesterday is complete when it is summarised.
+      new events.Rule(this, 'GitHubSummarySchedule', {
+        schedule: events.Schedule.cron({ minute: '20', hour: '0' }),
+        targets: [new eventsTargets.LambdaFunction(gitHubSummaryFn)],
+        description: "Summarises the previous day's GitHub work with Bedrock",
       });
     }
 

@@ -59,15 +59,15 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   const template = synthStack();
 
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
-  // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
-  // for media (16); the CDK-managed S3 bucket-notifications handler (17);
-  // list/update/delete-media for the media library (20); and the draft-returning
-  // admin blog reader behind /blog/all (21); get-muscle-volume-status, the
-  // only function that reads the plan and the log together (22); and the
-  // get/update pair behind the weekly-set-target editor (24). The MCP server's
+  // get-activity, github-ingest, github-summary, pre-signup (15); create-upload and resize-image
+  // for media (17); the CDK-managed S3 bucket-notifications handler (18);
+  // list/update/delete-media for the media library (21); and the draft-returning
+  // admin blog reader behind /blog/all (22); get-muscle-volume-status, the
+  // only function that reads the plan and the log together (23); and the
+  // get/update pair behind the weekly-set-target editor (25). The MCP server's
   // three functions are not here: they are only declared when MCP options are
   // supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 24);
+  template.resourceCountIs('AWS::Lambda::Function', 25);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -214,10 +214,10 @@ test('POST /agent requires Cognito auth and no API key', () => {
   }
 });
 
-test('agent Lambda can invoke Bedrock but cannot write to the table', () => {
+test('Bedrock-holding Lambdas cannot write to the content tables', () => {
   const template = synthStack();
 
-  // Both chat and agent roles carry the Bedrock invoke statement.
+  // Chat, agent and the GitHub summariser roles carry the Bedrock invoke statement.
   const policies = template.findResources('AWS::IAM::Policy');
   const bedrockPolicies = Object.values(policies).filter((p) =>
     p.Properties.PolicyDocument.Statement.some(
@@ -225,16 +225,21 @@ test('agent Lambda can invoke Bedrock but cannot write to the table', () => {
         Array.isArray(s.Action) && s.Action.includes('bedrock:InvokeModel'),
     ),
   );
-  expect(bedrockPolicies.length).toBe(2);
+  expect(bedrockPolicies.length).toBe(3);
 
-  // Neither Bedrock-holding role may carry a DynamoDB write action.
+  // No Bedrock-holding role may write anywhere but the summariser's own table:
+  // the text these models read is visitor- or third-party-supplied.
   for (const policy of bedrockPolicies) {
-    const actions = policy.Properties.PolicyDocument.Statement.flatMap(
-      (s: { Action?: string | string[] }) =>
-        Array.isArray(s.Action) ? s.Action : [s.Action],
-    );
-    expect(actions).not.toContain('dynamodb:PutItem');
-    expect(actions).not.toContain('dynamodb:UpdateItem');
+    for (const statement of policy.Properties.PolicyDocument.Statement as {
+      Action?: string | string[];
+      Resource?: unknown;
+    }[]) {
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      if (actions.includes('dynamodb:PutItem') || actions.includes('dynamodb:UpdateItem')) {
+        expect(JSON.stringify(statement.Resource)).toMatch(/GitHubSummaryTable/);
+        expect(JSON.stringify(statement.Resource)).not.toMatch(/CvTable/);
+      }
+    }
   }
 });
 
@@ -288,9 +293,31 @@ test('GET /activity is public and merges sources server-side', () => {
 test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::Events::Rule', 1);
+  template.resourceCountIs('AWS::Events::Rule', 2);
   template.hasResourceProperties('AWS::Events::Rule', {
     ScheduleExpression: 'rate(1 day)',
+  });
+});
+
+test('daily GitHub summaries are written once a day after the UTC day closes', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::Events::Rule', {
+    ScheduleExpression: 'cron(20 0 * * ? *)',
+  });
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    KeySchema: [
+      { AttributeName: 'pk', KeyType: 'HASH' },
+      { AttributeName: 'date', KeyType: 'RANGE' },
+    ],
+  });
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    Environment: {
+      Variables: Match.objectLike({
+        GITHUB_USER: 'octocat',
+        SUMMARY_MODEL_ID: Match.stringLikeRegexp('^us\\.anthropic\\.'),
+      }),
+    },
   });
 });
 
