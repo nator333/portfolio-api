@@ -89,17 +89,21 @@ The home page's activity feed rolls GitHub events up to "3 pushes to
 octo/repo" — where work happened, not what it was. `lambda/github-summary.ts`
 adds the what: once a day, shortly after the UTC day closes, it lists the
 commits behind each branch pushed that day and has Bedrock (Haiku, via the same
-`us.` inference profile as chat) write a two-to-four-sentence summary.
+`us.` inference profile as chat) write one phrase per repository — at most 50
+characters, enforced in code at a word boundary, so each fits on about one line
+of a phone-width feed. One call per day covers all of that day's repositories.
 
 * **Stored for good** in `GitHubSummaryTable` (`pk = GITHUB_DAY`, `date`), one
-  item per day, written once with a conditional put. The event snapshot only
+  item per day holding `summaries: { "owner/repo": "…" }`, written once with a
+  conditional put. The event snapshot only
   reaches back ~90 days; the summaries keep accumulating past it.
 * **Self-healing** — each run also fills any day in the last 30 still missing a
   summary (a missed schedule, a Bedrock error), up to five days per run, so a
   first deploy backfills recent history over a few nights.
-* **Served with the feed** — `GET /activity` (and the MCP `get_activity` tool)
-  returns them as `summaries: [{ date, summary, repos }]` beside `entries`,
-  rather than as entries, so they don't inflate the calendar's per-day counts.
+* **Served on the feed entries** — `GET /activity` (and the MCP `get_activity`
+  tool) puts each on its repository's entry for that day as `summary`. A
+  summary whose entry has aged out of the snapshot becomes an entry of its own,
+  so GitHub history on the calendar no longer stops at ~90 days.
 * **Rate-limited by design** — GitHub is called unauthenticated (60 req/h), so
   one request per branch tip per day replaces one per push, and a run spends at
   most 40 commit requests.

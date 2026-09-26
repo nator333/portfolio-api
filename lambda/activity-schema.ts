@@ -20,6 +20,8 @@ export interface ActivityEntry {
   readonly title: string;
   /** In-app route ("/blog/x") or external URL; omitted when not linkable. */
   readonly url?: string;
+  /** GitHub only: a one-line AI summary of that day's work in the repository. */
+  readonly summary?: string;
 }
 
 /** Item id under which the daily GitHub snapshot is stored in the CV table. */

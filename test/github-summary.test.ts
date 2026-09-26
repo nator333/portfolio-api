@@ -65,7 +65,9 @@ describe('github-summary handler', () => {
       if (command instanceof QueryCommand) return { Items: [{ date: '2026-09-24' }] };
       return {};
     });
-    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Added and fixed the calendar.' }] });
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: '{"octo/repo": "Added and fixed the calendar."}' }],
+    });
 
     await handler();
 
@@ -79,8 +81,7 @@ describe('github-summary handler', () => {
     expect(puts[0].input.Item).toMatchObject({
       pk: 'GITHUB_DAY',
       date: '2026-09-25',
-      summary: 'Added and fixed the calendar.',
-      repos: ['octo/repo'],
+      summaries: { 'octo/repo': 'Added and fixed the calendar' },
       commitCount: 2,
     });
     expect(puts[0].input.ConditionExpression).toBe('attribute_not_exists(pk)');
@@ -98,14 +99,14 @@ describe('github-summary handler', () => {
     expect(mockSend.mock.calls.some(([c]) => c instanceof PutCommand)).toBe(false);
   });
 
-  test('skips storing an empty reply so the day is retried', async () => {
+  test('skips storing a reply with no usable summary so the day is retried', async () => {
     fetchMock.mockImplementation(async (url: string) =>
       url.includes('/events/public')
         ? json([{ type: 'PushEvent', created_at: '2026-09-25T10:00:00Z', repo: { name: 'octo/repo' }, payload: { ref: 'refs/heads/main', head: 'h' } }])
         : json([], 404),
     );
     mockSend.mockResolvedValue({ Items: [] });
-    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: '   ' }] });
+    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Sorry, I cannot help with that.' }] });
 
     await handler();
 

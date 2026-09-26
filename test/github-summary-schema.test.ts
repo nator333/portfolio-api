@@ -2,11 +2,13 @@ import {
   MAX_REFS_PER_REPO_DAY,
   MAX_SUMMARY_CHARS,
   SUMMARY_DAYS_PER_RUN,
+  attachSummaries,
   buildSummaryPrompt,
   cleanSummary,
   commitLine,
   groupEventsByDay,
   itemsToSummaries,
+  parseRepoSummaries,
   pendingSummaryDates,
   type GitHubEventWithPayload,
 } from '../lambda/github-summary-schema';
@@ -157,23 +159,77 @@ describe('buildSummaryPrompt', () => {
 });
 
 describe('cleanSummary', () => {
-  test('collapses whitespace and caps the length', () => {
-    expect(cleanSummary('  Added   a\n\nthing. ')).toBe('Added a thing.');
-    expect(cleanSummary('a'.repeat(5000))).toHaveLength(MAX_SUMMARY_CHARS);
+  test('collapses whitespace and drops markdown and a trailing period', () => {
+    expect(cleanSummary('  **Added**   the\n\ncalendar. ')).toBe('Added the calendar');
+  });
+
+  test('caps the length at a word boundary with an ellipsis', () => {
+    const long = 'Added a scheduled Lambda that summarises each day of commits with Bedrock';
+    const cut = cleanSummary(long);
+    expect(cut.length).toBeLessThanOrEqual(MAX_SUMMARY_CHARS);
+    expect(cut).toBe('Added a scheduled Lambda that summarises each day…');
+  });
+
+  test('hard-cuts a line with no usable word break', () => {
+    const cut = cleanSummary('x'.repeat(200));
+    expect(cut).toHaveLength(MAX_SUMMARY_CHARS);
+    expect(cut.endsWith('…')).toBe(true);
+  });
+});
+
+describe('parseRepoSummaries', () => {
+  const repos = ['octo/a', 'octo/b'];
+
+  test('keeps only the repositories asked about, cleaned', () => {
+    const reply = '{"octo/a": "Added the calendar.", "octo/b": "", "evil/x": "Injected"}';
+    expect(parseRepoSummaries(reply, repos)).toEqual({ 'octo/a': 'Added the calendar' });
+  });
+
+  test('tolerates a code fence or prose around the object', () => {
+    expect(parseRepoSummaries('Here:\n```json\n{"octo/b": "Fixed a bug"}\n```', repos)).toEqual({
+      'octo/b': 'Fixed a bug',
+    });
+  });
+
+  test('returns nothing for an unparseable reply', () => {
+    expect(parseRepoSummaries('Added the calendar', repos)).toEqual({});
+    expect(parseRepoSummaries('{not json}', repos)).toEqual({});
+    expect(parseRepoSummaries('["octo/a"]', repos)).toEqual({});
   });
 });
 
 describe('itemsToSummaries', () => {
-  test('returns well-formed items newest first and drops the rest', () => {
+  test('flattens day items into one summary per repository and drops malformed ones', () => {
     expect(
       itemsToSummaries([
-        { date: '2026-09-19', summary: 'Older.', repos: ['octo/a', 3] },
-        { date: '2026-09-20', summary: 'Newer.' },
+        { date: '2026-09-20', summaries: { 'octo/a': 'Added a thing', 'octo/b': 3 } },
         { date: '2026-09-21' },
+        { summaries: { 'octo/a': 'No date' } },
       ]),
-    ).toEqual([
-      { date: '2026-09-20', summary: 'Newer.', repos: [] },
-      { date: '2026-09-19', summary: 'Older.', repos: ['octo/a'] },
+    ).toEqual([{ date: '2026-09-20', repo: 'octo/a', summary: 'Added a thing' }]);
+  });
+});
+
+describe('attachSummaries', () => {
+  test("puts each summary on its repository's entry for that day", () => {
+    const entries = [
+      { date: '2026-09-20', type: 'github' as const, title: 'octo/a: 2 pushes', url: 'https://github.com/octo/a' },
+      { date: '2026-09-20', type: 'github' as const, title: 'octo/b: 1 push', url: 'https://github.com/octo/b' },
+      { date: '2026-09-19', type: 'github' as const, title: 'octo/a: 1 push', url: 'https://github.com/octo/a' },
+    ];
+    const result = attachSummaries(entries, [{ date: '2026-09-20', repo: 'octo/a', summary: 'Added a thing' }]);
+    expect(result.map((e) => e.summary)).toEqual(['Added a thing', undefined, undefined]);
+  });
+
+  test('keeps a summary whose entry aged out of the snapshot as an entry of its own', () => {
+    expect(attachSummaries([], [{ date: '2026-01-05', repo: 'octo/a', summary: 'Fixed a bug' }])).toEqual([
+      {
+        date: '2026-01-05',
+        type: 'github',
+        title: 'octo/a',
+        url: 'https://github.com/octo/a',
+        summary: 'Fixed a bug',
+      },
     ]);
   });
 });

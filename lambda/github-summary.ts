@@ -8,10 +8,10 @@ import {
   SUMMARY_SYSTEM_PROMPT,
   backfillStart,
   buildSummaryPrompt,
-  cleanSummary,
   commitLine,
   groupEventsByDay,
   nextDay,
+  parseRepoSummaries,
   pendingSummaryDates,
   type DayWork,
   type GitHubEventWithPayload,
@@ -19,8 +19,9 @@ import {
 } from './github-summary-schema';
 
 /**
- * Writes a short prose summary of each finished day's GitHub work and keeps it
- * for good, so the activity feed can say what was done rather than only where.
+ * Writes a one-line summary of each repository's work on each finished day and
+ * keeps it for good, so the activity feed can say what was done rather than
+ * only where. One Bedrock call per day covers all of that day's repositories.
  *
  * Runs daily just after the UTC day closes. Each run also fills any recent day
  * still missing a summary (a missed schedule, a Bedrock error), a few days at a
@@ -30,8 +31,8 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 let bedrock: AnthropicBedrock | undefined;
 
-/** Bounds the reply; the prompt asks for 2–4 sentences, well under this. */
-const MAX_SUMMARY_TOKENS = 400;
+/** Bounds the reply: a 50-character phrase per repository, as JSON. */
+const MAX_SUMMARY_TOKENS = 600;
 
 /**
  * Commit-list requests per run. The unauthenticated limit is 60 an hour per IP,
@@ -75,8 +76,8 @@ export const handler = async (): Promise<void> => {
     const repos = await withCommits(day, user, budget);
     budget -= Math.min(needed, budget);
 
-    const summary = await summarise(modelId, date, repos);
-    if (!summary) {
+    const summaries = await summarise(modelId, date, repos);
+    if (Object.keys(summaries).length === 0) {
       console.warn(`Empty summary for ${date}; will retry next run`);
       continue;
     }
@@ -87,8 +88,7 @@ export const handler = async (): Promise<void> => {
         Item: {
           pk: GITHUB_SUMMARY_PK,
           date,
-          summary,
-          repos: repos.map((r) => r.repo),
+          summaries,
           commitCount: repos.reduce((n, r) => n + r.commits.length, 0),
           model: modelId,
           generatedAt: new Date().toISOString(),
@@ -158,7 +158,11 @@ async function withCommits(day: DayWork, author: string, budget: number): Promis
   return repos;
 }
 
-async function summarise(modelId: string, date: string, repos: RepoDayDetail[]): Promise<string> {
+async function summarise(
+  modelId: string,
+  date: string,
+  repos: RepoDayDetail[],
+): Promise<Record<string, string>> {
   const response = await bedrock!.messages.create({
     model: modelId,
     max_tokens: MAX_SUMMARY_TOKENS,
@@ -169,5 +173,8 @@ async function summarise(modelId: string, date: string, repos: RepoDayDetail[]):
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('');
-  return cleanSummary(text);
+  return parseRepoSummaries(
+    text,
+    repos.map((r) => r.repo),
+  );
 }
