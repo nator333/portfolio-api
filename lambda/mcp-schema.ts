@@ -228,7 +228,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_activity',
     title: 'Get activity feed',
     description:
-      'Read the merged activity feed (GitHub contributions, blog posts and gym sessions) for the home-page calendar, over an optional date range.',
+      'Read the merged activity feed (GitHub contributions, blog posts and gym sessions) for the home-page calendar, with a one-line AI summary on each day\'s GitHub entry per repository, over an optional date range.',
     requiresAuth: false,
     inputSchema: DATE_RANGE_ARGS,
     annotations: readAnnotations,

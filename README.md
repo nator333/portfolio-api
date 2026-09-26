@@ -83,6 +83,33 @@ the OAuth Client ID. Leave the client secret blank — it is a public client usi
 authorization-code + PKCE. Connectors configured on claude.ai are available in
 Claude Desktop and Claude Mobile, so iOS needs no separate registration.
 
+## Daily GitHub work summaries
+
+The home page's activity feed rolls GitHub events up to "3 pushes to
+octo/repo" — where work happened, not what it was. `lambda/github-summary.ts`
+adds the what: once a day, shortly after the UTC day closes, it lists the
+commits behind each branch pushed that day and has Bedrock (Haiku, via the same
+`us.` inference profile as chat) write one phrase per repository — at most 75
+characters, enforced in code at a word boundary, so each fits within two lines
+of a phone-width feed. One call per day covers all of that day's repositories.
+
+* **Stored for good** in `GitHubSummaryTable` (`pk = GITHUB_DAY`, `date`), one
+  item per day holding `summaries: { "owner/repo": "…" }`, written once with a
+  conditional put. The event snapshot only
+  reaches back ~90 days; the summaries keep accumulating past it.
+* **Self-healing** — each run also fills any day in the last 30 still missing a
+  summary (a missed schedule, a Bedrock error), up to five days per run, so a
+  first deploy backfills recent history over a few nights.
+* **Served on the feed entries** — `GET /activity` (and the MCP `get_activity`
+  tool) puts each on its repository's entry for that day as `summary`. A
+  summary whose entry has aged out of the snapshot becomes an entry of its own,
+  so GitHub history on the calendar no longer stops at ~90 days.
+* **Rate-limited by design** — GitHub is called unauthenticated (60 req/h), so
+  one request per branch tip per day replaces one per push, and a run spends at
+  most 40 commit requests.
+* **Least privilege** — commit messages are third-party text, so the function
+  can only invoke Bedrock and write its own table.
+
 ## Useful commands
 
 * `npm run build`        compile TypeScript to JS
