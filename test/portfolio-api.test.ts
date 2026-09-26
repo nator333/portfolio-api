@@ -666,3 +666,35 @@ test('the reflections table is reachable from the MCP Lambda alone, and never de
     expect(actions).not.toContain('dynamodb:DeleteItem');
   }
 });
+
+test('the Google Health grant is readable by the MCP Lambda alone', () => {
+  // A health-data credential: like the reflections, no anonymous function —
+  // least of all /chat and /agent — may be able to read it.
+  const template = synthStackWithMcp();
+
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const granting = policies.filter((p) =>
+    JSON.stringify(p.Properties.PolicyDocument).includes('secret:google-health-oauth'),
+  );
+  expect(granting).toHaveLength(1);
+  const actions = (granting[0].Properties.PolicyDocument.Statement as Array<{ Action?: string | string[] }>)
+    .flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
+  expect(actions).toContain('secretsmanager:GetSecretValue');
+  expect(actions).not.toContain('secretsmanager:PutSecretValue');
+
+  const functions = Object.values(template.findResources('AWS::Lambda::Function'));
+  const withSecretEnv = functions.filter(
+    (f) => f.Properties?.Environment?.Variables?.GOOGLE_HEALTH_SECRET_NAME === 'google-health-oauth',
+  );
+  expect(withSecretEnv).toHaveLength(1);
+  expect(withSecretEnv[0].Properties.Environment.Variables).toMatchObject({
+    HEALTH_TIME_ZONE: 'Asia/Tokyo',
+    MCP_ADMIN_SCOPE: 'mcp/admin',
+  });
+});
+
+test('without MCP options no function can read the Google Health grant', () => {
+  const template = synthStack();
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  expect(JSON.stringify(policies)).not.toContain('google-health-oauth');
+});

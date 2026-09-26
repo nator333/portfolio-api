@@ -13,6 +13,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as budgets from 'aws-cdk-lib/aws-budgets';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
@@ -83,6 +84,19 @@ const BEDROCK_BUDGET_USD = 5;
 const GOOGLE_CLIENT_ID_PARAM = '/portfolio/cv/google-client-id';
 /** Secrets Manager secret holding the Google OAuth client secret (json field: client_secret). */
 const GOOGLE_CLIENT_SECRET_NAME = 'cv-google-oauth';
+/**
+ * Secrets Manager secret holding the Google Health API grant for get_readiness
+ * (json fields: client_id, client_secret, refresh_token). Written out of band by
+ * scripts/google-health-auth.ts, never by this stack, so a deploy needs no
+ * Google consent and the refresh token never passes through CloudFormation.
+ * Must match that script's default.
+ */
+const GOOGLE_HEALTH_SECRET_NAME = 'google-health-oauth';
+/**
+ * The owner's time zone: get_readiness judges "today", and a Lambda's clock is
+ * UTC, which for a Japan-based owner is still yesterday until 09:00 local.
+ */
+const HEALTH_TIME_ZONE = 'Asia/Tokyo';
 
 /**
  * Pinned sharp version for the resize Lambda. sharp ships prebuilt native
@@ -735,6 +749,15 @@ export class PortfolioApiStack extends cdk.Stack {
           resources: [reflectionsTable.tableArn],
         }),
       );
+
+      // get_readiness reads last night's sleep, HRV and resting heart rate live
+      // from the Google Health API, using a grant stored out of band. Imported by
+      // name rather than created here: the secret's value comes from the owner's
+      // own consent flow, and the tool reports a clear "not connected" until the
+      // script has written it.
+      secretsmanager.Secret.fromSecretNameV2(this, 'GoogleHealthSecret', GOOGLE_HEALTH_SECRET_NAME).grantRead(mcpFn);
+      mcpFn.addEnvironment('GOOGLE_HEALTH_SECRET_NAME', GOOGLE_HEALTH_SECRET_NAME);
+      mcpFn.addEnvironment('HEALTH_TIME_ZONE', HEALTH_TIME_ZONE);
 
       // Discovery documents. Static apart from the deployment's own URLs, so one
       // small function serves both well-known paths.

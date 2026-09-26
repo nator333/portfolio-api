@@ -13,6 +13,7 @@ import { handler as getExerciseHistory } from './get-exercise-history';
 import { handler as listExercises } from './list-exercises';
 import { handler as getWorkoutPlan } from './get-workout-plan';
 import { handler as getMuscleVolumeStatus } from './get-muscle-volume-status';
+import { handler as getReadiness } from './get-readiness';
 import { handler as updateCv } from './update-cv';
 import { handler as updateProjects } from './update-projects';
 import { handler as updateBlog } from './update-blog';
@@ -97,6 +98,7 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   get_workout_plan: (args) => getWorkoutPlan(proxyEvent({ query: planQuery(args) })),
   get_muscle_volume_status: (args) =>
     getMuscleVolumeStatus(proxyEvent({ query: muscleVolumeQuery(args) })),
+  get_readiness: (args) => getReadiness(proxyEvent({ query: readinessQuery(args) })),
   update_cv: (args) => updateCv(proxyEvent({ body: args })),
   update_projects: (args) => updateProjects(proxyEvent({ body: args })),
   update_blog: (args) => updateBlog(proxyEvent({ body: args })),
@@ -135,6 +137,17 @@ function muscleVolumeQuery(args: Record<string, unknown>): Record<string, string
   const query: Record<string, string | undefined> = {};
   if (typeof args.window === 'number') query.window = String(args.window);
   if (typeof args.planId === 'string') query.planId = args.planId;
+  return query;
+}
+
+/**
+ * Like the volume status, "today" is decided server-side (in the owner's time
+ * zone), so an omitted `date` stays absent rather than being filled in here
+ * from whatever clock the client happens to be on.
+ */
+function readinessQuery(args: Record<string, unknown>): Record<string, string | undefined> {
+  const query: Record<string, string | undefined> = {};
+  if (typeof args.date === 'string') query.date = args.date;
   return query;
 }
 
