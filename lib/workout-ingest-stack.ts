@@ -110,7 +110,8 @@ export class WorkoutIngestStack extends cdk.Stack {
     //
     // Nothing in this stack writes it — the ingest pipeline only ever appends
     // history, while a program is hand-authored — so it is seeded and revised out
-    // of band by scripts/publish-workout-plan.ts.
+    // of band by scripts/publish-workout-plan.ts. The ingest Lambda does read it,
+    // to judge its import report against the current weekly set targets.
     const planTable = new dynamodb.Table(this, 'WorkoutPlanTable', {
       tableName: workoutPlanTableName(props.stage),
       partitionKey: { name: 'planId', type: dynamodb.AttributeType.STRING },
@@ -133,6 +134,9 @@ export class WorkoutIngestStack extends cdk.Stack {
       environment: {
         WORKOUT_SETS_TABLE_NAME: setsTable.tableName,
         WORKOUT_SUMMARY_TABLE_NAME: summaryTable.tableName,
+        // Read-only: the import report judges recent volume against the current
+        // weekly set targets.
+        WORKOUT_PLAN_TABLE_NAME: planTable.tableName,
         ADMIN_EMAIL: props.adminEmail,
         MAIL_FROM: props.recipient,
       },
@@ -140,6 +144,7 @@ export class WorkoutIngestStack extends cdk.Stack {
 
     setsTable.grantReadWriteData(ingestFn);
     summaryTable.grantReadWriteData(ingestFn);
+    planTable.grantReadData(ingestFn);
     mailBucket.grantRead(ingestFn);
     ingestFn.addEventSource(
       new S3EventSource(mailBucket, {
