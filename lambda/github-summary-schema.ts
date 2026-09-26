@@ -46,11 +46,11 @@ const MAX_COMMIT_LINE = 300;
 
 /**
  * Longest summary shown, ellipsis included. It sits under its feed row at full
- * width, and 50 characters keeps it to about one line on a 375px phone, so a
+ * width, and 75 characters keeps it within two lines on a 375px phone, so a
  * busy day's summaries lengthen the feed without ever breaking its layout. The
  * model is asked to stay within it; cleanSummary enforces it.
  */
-export const MAX_SUMMARY_CHARS = 50;
+export const MAX_SUMMARY_CHARS = 75;
 
 /** The extra payload fields the summariser reads on top of GitHubEvent. */
 export interface GitHubEventWithPayload extends GitHubEvent {

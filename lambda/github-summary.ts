@@ -31,7 +31,7 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 let bedrock: AnthropicBedrock | undefined;
 
-/** Bounds the reply: a 50-character phrase per repository, as JSON. */
+/** Bounds the reply: a 75-character phrase per repository, as JSON. */
 const MAX_SUMMARY_TOKENS = 600;
 
 /**

@@ -89,8 +89,8 @@ The home page's activity feed rolls GitHub events up to "3 pushes to
 octo/repo" — where work happened, not what it was. `lambda/github-summary.ts`
 adds the what: once a day, shortly after the UTC day closes, it lists the
 commits behind each branch pushed that day and has Bedrock (Haiku, via the same
-`us.` inference profile as chat) write one phrase per repository — at most 50
-characters, enforced in code at a word boundary, so each fits on about one line
+`us.` inference profile as chat) write one phrase per repository — at most 75
+characters, enforced in code at a word boundary, so each fits within two lines
 of a phone-width feed. One call per day covers all of that day's repositories.
 
 * **Stored for good** in `GitHubSummaryTable` (`pk = GITHUB_DAY`, `date`), one

@@ -164,10 +164,11 @@ describe('cleanSummary', () => {
   });
 
   test('caps the length at a word boundary with an ellipsis', () => {
-    const long = 'Added a scheduled Lambda that summarises each day of commits with Bedrock';
+    const long =
+      'Added a scheduled Lambda that summarises each day of commits with Bedrock and stores it';
     const cut = cleanSummary(long);
     expect(cut.length).toBeLessThanOrEqual(MAX_SUMMARY_CHARS);
-    expect(cut).toBe('Added a scheduled Lambda that summarises each day…');
+    expect(cut).toBe('Added a scheduled Lambda that summarises each day of commits with Bedrock…');
   });
 
   test('hard-cuts a line with no usable word break', () => {
