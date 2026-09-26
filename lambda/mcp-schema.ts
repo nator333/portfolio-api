@@ -342,6 +342,35 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: { ...readAnnotations, openWorldHint: true },
   },
   {
+    name: 'get_training_recommendation',
+    title: 'Get today\'s training recommendation',
+    description:
+      'Which session of the current plan to run today, and how hard — get_readiness joined with ' +
+      'get_muscle_volume_status and the plan, so the answer to "what should I do today?" is ' +
+      'computed once rather than re-derived in conversation. The SESSION is chosen from volume ' +
+      'alone: each session is scored by the status of the muscles it trains (under +2, ' +
+      'maintenance +1, in range 0, over -1, each muscle counted once), ties broken by rotation ' +
+      'order; `alternatives` lists the rest, best first. The INTENSITY comes from readiness: ' +
+      '`prescription` restates each slot for today — "top" (push day: top of the set range), ' +
+      '"as_planned", "reduced" (easy day: about two-thirds of the minimum sets, RPE one lower; ' +
+      'or a muscle already over target held to its minimum), or "skip" (an over-target muscle ' +
+      'on an easy day). It never prescribes more than the plan does. When readiness has no ' +
+      'verdict yet (watch not synced) or cannot be read, the session is still returned but ' +
+      '`prescription` is null — do not fill it in yourself; `readiness` says why. ' +
+      '`restSuggested` is true on an easy day when nothing any session trains is behind. ' +
+      'Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        planId: { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' },
+      },
+      additionalProperties: false,
+    },
+    // Reaches the Google Health API through its readiness half.
+    annotations: { ...readAnnotations, openWorldHint: true },
+  },
+  {
     name: 'update_cv',
     title: 'Update CV',
     description: 'Replace the CV document. Admin only. Validated server-side; an invalid document is rejected unchanged.',
