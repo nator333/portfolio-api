@@ -15,6 +15,13 @@ import {
   type WorkoutSet,
   type WorkoutSummaries,
 } from './workout-schema';
+import {
+  PLAN_TARGET_PREFIX,
+  PLAN_VERSION_PREFIX,
+  type PlanVersionItem,
+  type TargetSetItem,
+} from './workout-plan-schema';
+import { targetReportLines, type ReportTargets } from './workout-target-report';
 
 /**
  * Ingests a workout-history CSV emailed to the configured workout address.
@@ -23,7 +30,8 @@ import {
  * off that PUT, extracts the CSV attachment, normalizes every set, recomputes
  * all rollups from scratch (the CSV is the full history re-sent each time),
  * writes the raw sets and summaries to DynamoDB, and emails back an import
- * report. Everything here runs in us-west-2 alongside the tables.
+ * report judged against the plan's current weekly set targets. Everything here
+ * runs in us-west-2 alongside the tables.
  */
 
 const s3 = new S3Client({});
@@ -34,9 +42,13 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 
 const DDB_BATCH_LIMIT = 25;
 
+/** The program whose targets the report is judged against; mirrors get-muscle-volume-status.ts. */
+const DEFAULT_PLAN_ID = 'upper-lower';
+
 interface Config {
   setsTable: string;
   summaryTable: string;
+  planTable: string;
   adminEmail: string;
   mailFrom: string;
 }
@@ -44,14 +56,15 @@ interface Config {
 function loadConfig(): Config {
   const setsTable = process.env.WORKOUT_SETS_TABLE_NAME;
   const summaryTable = process.env.WORKOUT_SUMMARY_TABLE_NAME;
+  const planTable = process.env.WORKOUT_PLAN_TABLE_NAME;
   const adminEmail = process.env.ADMIN_EMAIL;
   const mailFrom = process.env.MAIL_FROM;
-  if (!setsTable || !summaryTable || !adminEmail || !mailFrom) {
+  if (!setsTable || !summaryTable || !planTable || !adminEmail || !mailFrom) {
     throw new Error(
-      'Missing required env: WORKOUT_SETS_TABLE_NAME, WORKOUT_SUMMARY_TABLE_NAME, ADMIN_EMAIL, MAIL_FROM',
+      'Missing required env: WORKOUT_SETS_TABLE_NAME, WORKOUT_SUMMARY_TABLE_NAME, WORKOUT_PLAN_TABLE_NAME, ADMIN_EMAIL, MAIL_FROM',
     );
   }
-  return { setsTable, summaryTable, adminEmail, mailFrom };
+  return { setsTable, summaryTable, planTable, adminEmail, mailFrom };
 }
 
 export const handler = async (event: S3Event): Promise<void> => {
@@ -114,9 +127,10 @@ async function processObject(bucket: string, key: string, config: Config): Promi
   }
 
   // Snapshot prior state before overwriting, so the report can show deltas.
-  const [priorDays, priorTotalSets] = await Promise.all([
+  const [priorDays, priorTotalSets, targets] = await Promise.all([
     loadExistingDays(config.summaryTable),
     loadPriorTotalSets(config.summaryTable),
+    loadReportTargets(config.planTable),
   ]);
 
   const summaries = summarize(sets);
@@ -125,7 +139,17 @@ async function processObject(bucket: string, key: string, config: Config): Promi
   await writeSummaries(config.summaryTable, summaries, csv.filename);
 
   const newDays = summaries.days.map((d) => d.sk).filter((sk) => !priorDays.has(sk));
-  await sendReport(config, buildReport({ summaries, sets, skipped, excludedCardio, newDays, priorTotalSets, filename: csv.filename }));
+  await sendReport(config, buildReport({
+    summaries,
+    sets,
+    skipped,
+    excludedCardio,
+    newDays,
+    priorTotalSets,
+    filename: csv.filename,
+    targets,
+    asOf: new Date(),
+  }));
 
   console.log(
     `Imported ${sets.length} sets over ${summaries.meta.workoutDays} days from ${csv.filename} (${skipped} skipped, ${excludedCardio} cardio excluded, ${newDays.length} new days)`,
@@ -193,6 +217,43 @@ async function loadPriorTotalSets(summaryTable: string): Promise<number | null> 
   );
   const total = result.Item?.totalSets;
   return typeof total === 'number' ? total : null;
+}
+
+/**
+ * The current target set and the menu's sessions-per-week, read the same way
+ * get-muscle-volume-status.ts reads them (targets item first, else the menu's
+ * legacy embedded copy).
+ *
+ * Null rather than a throw on any failure: the import has already succeeded by
+ * the time the report is built, and a missing or unreadable plan should cost
+ * the email its target verdicts, not the email itself.
+ */
+async function loadReportTargets(planTable: string): Promise<ReportTargets | null> {
+  try {
+    const [menu, targetSet] = await Promise.all([
+      latestPlanItem<PlanVersionItem>(planTable, PLAN_VERSION_PREFIX),
+      latestPlanItem<TargetSetItem>(planTable, PLAN_TARGET_PREFIX),
+    ]);
+    if (!menu) return null;
+    const targets = targetSet?.weeklySetTargets ?? menu.weeklySetTargets ?? [];
+    return targets.length ? { targets, sessionsPerWeek: menu.sessionsPerWeek } : null;
+  } catch (err) {
+    console.warn('Could not load weekly set targets; reporting without them', err);
+    return null;
+  }
+}
+
+async function latestPlanItem<T>(planTable: string, prefix: string): Promise<T | null> {
+  const result = await ddb.send(
+    new QueryCommand({
+      TableName: planTable,
+      KeyConditionExpression: 'planId = :p AND begins_with(sk, :prefix)',
+      ExpressionAttributeValues: { ':p': DEFAULT_PLAN_ID, ':prefix': prefix },
+      ScanIndexForward: false,
+      Limit: 1,
+    }),
+  );
+  return (result.Items?.[0] as T | undefined) ?? null;
 }
 
 async function writeSets(setsTable: string, sets: readonly WorkoutSet[]): Promise<void> {
@@ -355,6 +416,9 @@ interface ReportInput {
   newDays: string[];
   priorTotalSets: number | null;
   filename: string;
+  /** Null when no plan targets are published; the report then falls back to the generic guide. */
+  targets: ReportTargets | null;
+  asOf: Date;
 }
 
 const num = (n: number): string => Math.round(n).toLocaleString('en-US');
@@ -371,7 +435,7 @@ const WEEKS_WINDOW = 12;
 const TOP_LIFTS = 6;
 
 function buildReport(input: ReportInput): Report {
-  const { summaries, skipped, excludedCardio, newDays, priorTotalSets, filename } = input;
+  const { summaries, skipped, excludedCardio, newDays, priorTotalSets, filename, targets, asOf } = input;
   const { meta } = summaries;
   const newSets = priorTotalSets === null ? null : meta.totalSets - priorTotalSets;
 
@@ -417,7 +481,13 @@ function buildReport(input: ReportInput): Report {
   // Sets per muscle per week is the metric training guidance is expressed in
   // (~10-20 hard sets per muscle per week), unlike total mass lifted.
   const recentWeeks = summaries.weeks.slice(-WEEKS_WINDOW);
-  if (recentWeeks.length) {
+  let underCount = 0;
+  if (targets) {
+    const days = summaries.days.map((d) => ({ date: d.sk, muscles: d.muscles }));
+    const report = targetReportLines(targets, days, recentWeeks, asOf);
+    lines.push(...report.lines);
+    underCount = report.underCount;
+  } else if (recentWeeks.length) {
     const perMuscle = new Map<string, number>();
     for (const w of recentWeeks) {
       for (const [muscle, count] of Object.entries(w.muscles)) {
@@ -475,7 +545,7 @@ function buildReport(input: ReportInput): Report {
 
   const subject = `Workout import: ${num(meta.totalSets)} sets, ${freq.sessionsPerWeek}/week${
     newDays.length ? `, +${newDays.length} new day${newDays.length === 1 ? '' : 's'}` : ''
-  }`;
+  }${underCount ? `, ${underCount} under target` : ''}`;
   return { subject, lines };
 }
 

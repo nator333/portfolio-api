@@ -122,3 +122,28 @@ test('ingest Lambda may send email and is triggered by S3 object creation', () =
   );
   expect(sesPolicies.length).toBe(1);
 });
+
+test('ingest Lambda may read the plan table, for the report\'s weekly targets', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    Environment: {
+      Variables: Match.objectLike({ WORKOUT_PLAN_TABLE_NAME: Match.anyValue() }),
+    },
+  });
+
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const statements = policies.flatMap((p) => p.Properties.PolicyDocument.Statement);
+  const writesPlan = statements.some(
+    (s: { Action?: string | string[]; Resource?: unknown }) =>
+      JSON.stringify(s.Resource ?? '').includes('WorkoutPlanTable') &&
+      (Array.isArray(s.Action) ? s.Action : [s.Action]).some((a) => a === 'dynamodb:PutItem'),
+  );
+  const readsPlan = statements.some(
+    (s: { Action?: string | string[]; Resource?: unknown }) =>
+      JSON.stringify(s.Resource ?? '').includes('WorkoutPlanTable') &&
+      (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:Query'),
+  );
+  expect(readsPlan).toBe(true);
+  expect(writesPlan).toBe(false);
+});
