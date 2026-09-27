@@ -90,6 +90,24 @@ describe('gym-summary handler', () => {
     expect(sent(DeleteCommand)[0].input.Key).toEqual({ pk: 'GYM_DAY', date: '2026-09-20' });
   });
 
+  test('sends an overrunning phrase back once, then caps it', async () => {
+    mockSend.mockImplementation(async (command: unknown) =>
+      command instanceof QueryCommand ? { Items: [{ body: 'Upper A deload.' }] } : {},
+    );
+    const long = 'Completed an upper-body deload with reduced sets, incline press and lateral raises';
+    mockCreate.mockResolvedValueOnce(reply(long)).mockResolvedValueOnce(reply('Completed an upper-body deload'));
+
+    await handler(streamEvent(['workout', '2026-09-25#a']));
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(mockCreate.mock.calls[1][0].messages.map((m: { role: string }) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+    ]);
+    expect(sent(PutCommand)[0].input.Item?.summary).toBe('Completed an upper-body deload');
+  });
+
   test('a Bedrock failure propagates so the stream retries the day', async () => {
     mockSend.mockResolvedValue({ Items: [{ body: 'Bench 100x5.' }] });
     mockCreate.mockRejectedValue(new Error('throttled'));

@@ -125,17 +125,26 @@ The home page's activity feed rolls GitHub events up to "3 pushes to
 octo/repo" — where work happened, not what it was. `lambda/github-summary.ts`
 adds the what: once a day, shortly after the UTC day closes, it lists the
 commits behind each branch pushed that day and has Bedrock (Haiku, via the same
-`us.` inference profile as chat) write one phrase per repository — at most 75
-characters, enforced in code at a word boundary, so each fits within two lines
-of a phone-width feed. One call per day covers all of that day's repositories.
+`us.` inference profile as chat) write one phrase per repository, so each fits
+within two lines of a phone-width feed. The model is asked for about 60
+characters; a phrase over 75 is sent back once to be shortened, and only then
+cut at a word boundary. One call per day covers all of that day's repositories.
+
+* **Every commit on the pushed branch, not just the owner's.** Commits made from
+  Claude Code sessions are authored as Claude, so filtering by author kept only
+  the owner's merge commits; branch-into-branch merges are dropped as noise.
+* **No filler.** A repository whose day has no commit message or titled PR gets
+  no line at all, rather than "Updated repository" or "Merged PR 51".
 
 * **Stored for good** in `GitHubSummaryTable` (`pk = GITHUB_DAY`, `date`), one
-  item per day holding `summaries: { "owner/repo": "…" }`, written once with a
-  conditional put. The event snapshot only
-  reaches back ~90 days; the summaries keep accumulating past it.
+  item per day holding `summaries: { "owner/repo": "…" }` and the
+  `SUMMARY_VERSION` it was written under. The event snapshot only reaches back
+  ~90 days; the summaries keep accumulating past it.
 * **Self-healing** — each run also fills any day in the last 30 still missing a
-  summary (a missed schedule, a Bedrock error), up to five days per run, so a
-  first deploy backfills recent history over a few nights.
+  summary (a missed schedule, a Bedrock error) or stored under an older
+  `SUMMARY_VERSION`, up to five days per run. A first deploy backfills recent
+  history over a few nights, and bumping the version after a prompt or fetch
+  fix regenerates recent days the same way, with no manual step.
 * **Served on the feed entries** — `GET /activity` (and the MCP `get_activity`
   tool) puts each on its repository's entry for that day as `summary`. A
   summary whose entry has aged out of the snapshot becomes an entry of its own,

@@ -43,15 +43,18 @@ export async function fetchEvents(user: string): Promise<GitHubEvent[]> {
 }
 
 /**
- * The user's commits reachable from `sha` within [since, until). A branch tip
+ * Commits reachable from `sha` within [since, until). Not filtered by author:
+ * commits made from Claude Code sessions are authored as Claude rather than the
+ * account owner, and an author filter kept only the owner's merge commits. The
+ * tip is one the owner pushed that day, so its commits are their work. A branch tip
  * that no longer exists (a deleted, force-pushed branch) yields an empty list
  * rather than an error, so one vanished branch cannot sink a day's summary.
  */
 export async function fetchCommits(
   repo: string,
-  { sha, author, since, until }: { sha: string; author: string; since: string; until: string },
+  { sha, since, until }: { sha: string; since: string; until: string },
 ): Promise<GitHubCommit[]> {
-  const params = new URLSearchParams({ sha, author, since, until, per_page: '100' });
+  const params = new URLSearchParams({ sha, since, until, per_page: '100' });
   const url = `https://api.github.com/repos/${repo}/commits?${params.toString()}`;
   const response = await fetch(url, { headers: HEADERS });
   if (response.status === 404 || response.status === 409 || response.status === 422) return [];

@@ -13,7 +13,7 @@ describe('GYM_SUMMARY_SYSTEM_PROMPT', () => {
     // The one guard between private notes and the public site besides the
     // add_reflection instruction; a rewrite must not drop it.
     expect(GYM_SUMMARY_SYSTEM_PROMPT).toMatch(/Never mention private life/);
-    expect(GYM_SUMMARY_SYSTEM_PROMPT).toContain(`at most ${MAX_SUMMARY_CHARS} characters`);
+    expect(GYM_SUMMARY_SYSTEM_PROMPT).toContain(`never exceed ${MAX_SUMMARY_CHARS}`);
   });
 });
 
@@ -32,9 +32,9 @@ describe('buildGymPrompt', () => {
 });
 
 describe('parseGymSummary', () => {
-  test('cleans a phrase to the public cap', () => {
+  test('normalises a phrase, leaving an overrun uncapped so it can be sent back', () => {
     expect(parseGymSummary('"Hit a squat PR at 140 kg."')).toBe('Hit a squat PR at 140 kg');
-    expect(parseGymSummary('x '.repeat(100))!.length).toBeLessThanOrEqual(MAX_SUMMARY_CHARS);
+    expect(parseGymSummary('x '.repeat(100))!.length).toBeGreaterThan(MAX_SUMMARY_CHARS);
   });
 
   test('treats the no-summary marker and an empty reply as nothing to publish', () => {

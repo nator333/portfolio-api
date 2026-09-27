@@ -12,10 +12,12 @@ import {
   GYM_REFLECTION_TYPE,
   GYM_SUMMARY_PK,
   GYM_SUMMARY_SYSTEM_PROMPT,
+  SHORTEN_GYM_REQUEST,
   buildGymPrompt,
   dateFromReflectionKey,
   parseGymSummary,
 } from './gym-summary-schema';
+import { cleanSummary, overLimit } from './github-summary-schema';
 
 /**
  * Keeps one public line per training day in step with that day's private
@@ -142,16 +144,32 @@ async function readDayNotes(table: string, date: string): Promise<string[]> {
     .filter((body): body is string => typeof body === 'string' && body.trim() !== '');
 }
 
+/** One phrase for the day; an overrun is sent back once before the hard cap cuts it. */
 async function summarise(modelId: string, date: string, bodies: string[]): Promise<string | null> {
+  const messages: { role: 'user' | 'assistant'; content: string }[] = [
+    { role: 'user', content: buildGymPrompt(date, bodies) },
+  ];
+  const first = await ask(modelId, messages);
+  let summary = parseGymSummary(first);
+  if (summary && overLimit(summary)) {
+    messages.push({ role: 'assistant', content: first }, { role: 'user', content: SHORTEN_GYM_REQUEST });
+    summary = parseGymSummary(await ask(modelId, messages)) ?? summary;
+  }
+  return summary ? cleanSummary(summary) : null;
+}
+
+async function ask(
+  modelId: string,
+  messages: { role: 'user' | 'assistant'; content: string }[],
+): Promise<string> {
   const response = await bedrock!.messages.create({
     model: modelId,
     max_tokens: MAX_SUMMARY_TOKENS,
     system: GYM_SUMMARY_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: buildGymPrompt(date, bodies) }],
+    messages,
   });
-  const text = response.content
+  return response.content
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('');
-  return parseGymSummary(text);
 }
