@@ -16,6 +16,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
 import {
   workoutSummaryTableName,
@@ -750,9 +751,10 @@ export class PortfolioApiStack extends cdk.Stack {
 
       // Reflection notes: the owner's private after-session and life write-ups.
       // Declared here rather than beside the content tables because the MCP
-      // server is its only reader and writer — no REST route, and no grant to
-      // any other function, least of all the anonymous /chat and /agent. The
-      // admin gate in lambda/mcp.ts covers the reads as well as the writes.
+      // server is their only writer — no REST route, and no grant to any other
+      // function, least of all the anonymous /chat and /agent. The admin gate in
+      // lambda/mcp.ts covers the reads as well as the writes. The one other
+      // reader is the gym summariser below, read-only.
       const reflectionsTable = new dynamodb.Table(this, 'ReflectionsTable', {
         partitionKey: { name: 'type', type: dynamodb.AttributeType.STRING },
         sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
@@ -760,6 +762,9 @@ export class PortfolioApiStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.RETAIN,
         // Unlike the site content, nothing else holds a copy of these notes.
         pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+        // Keys only: the stream tells the gym summariser which day changed, and
+        // no note text passes through it.
+        stream: dynamodb.StreamViewType.KEYS_ONLY,
       });
       mcpFn.addEnvironment('REFLECTIONS_TABLE_NAME', reflectionsTable.tableName);
       // Read, append and correct; no DeleteItem.
@@ -778,6 +783,54 @@ export class PortfolioApiStack extends cdk.Stack {
       secretsmanager.Secret.fromSecretNameV2(this, 'GoogleHealthSecret', GOOGLE_HEALTH_SECRET_NAME).grantRead(mcpFn);
       mcpFn.addEnvironment('GOOGLE_HEALTH_SECRET_NAME', GOOGLE_HEALTH_SECRET_NAME);
       mcpFn.addEnvironment('HEALTH_TIME_ZONE', HEALTH_TIME_ZONE);
+
+      // One public line per training day, distilled from that day's workout
+      // notes whenever one is added or corrected. The only function besides the
+      // MCP server that reads the notes, so it is kept to the minimum: Query on
+      // the notes (no write), and Put/Delete of GYM_DAY rows in the summary
+      // table, which also holds nothing private.
+      const gymSummaryFn = new lambdaNode.NodejsFunction(this, 'GymSummaryFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'gym-summary.ts'),
+        runtime: lambda.Runtime.NODEJS_20_X,
+        bundling: { externalModules: ['@aws-sdk/*'] },
+        // A hand-run backfill summarises a few dozen days in series.
+        timeout: cdk.Duration.minutes(5),
+        memorySize: 256,
+        environment: {
+          REFLECTIONS_TABLE_NAME: reflectionsTable.tableName,
+          GITHUB_SUMMARY_TABLE_NAME: gitHubSummaryTable.tableName,
+          BEDROCK_REGION,
+          SUMMARY_MODEL_ID,
+        },
+      });
+      gymSummaryFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:Query'],
+          resources: [reflectionsTable.tableArn],
+        }),
+      );
+      gymSummaryFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:PutItem', 'dynamodb:DeleteItem'],
+          resources: [gitHubSummaryTable.tableArn],
+        }),
+      );
+      gymSummaryFn.addToRolePolicy(bedrockInvokePolicy());
+      gymSummaryFn.addEventSource(
+        new lambdaEventSources.DynamoEventSource(reflectionsTable, {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 10,
+          // A Bedrock hiccup is retried; a day that keeps failing is dropped
+          // rather than blocking every later note behind it.
+          retryAttempts: 3,
+          // "life" notes never reach the function at all.
+          filters: [
+            lambda.FilterCriteria.filter({
+              dynamodb: { Keys: { type: { S: lambda.FilterRule.isEqual('workout') } } },
+            }),
+          ],
+        }),
+      );
 
       // Discovery documents. Static apart from the deployment's own URLs, so one
       // small function serves both well-known paths.

@@ -146,6 +146,26 @@ of a phone-width feed. One call per day covers all of that day's repositories.
 * **Least privilege** — commit messages are third-party text, so the function
   can only invoke Bedrock and write its own table.
 
+### Gym-day summaries from workout reflections
+
+Gym entries get the same one-line `summary`, written from that day's private
+**workout** reflection notes (`lambda/gym-summary.ts`). This is the one place
+reflection text reaches the public site, so the boundary is kept narrow:
+
+* **Triggered by the reflections table's stream** (keys only — no note text
+  passes through it), filtered to `type = workout`, so adding or correcting a
+  note refreshes its day within seconds. "life" notes never reach the function.
+* **Read-only on the notes.** The summariser is the only reader besides the MCP
+  server; it can Query the notes and Put/Delete `GYM_DAY` rows in the summary
+  table, nothing else.
+* **Two privacy guards.** `add_reflection` / `update_reflection` tell the
+  writer that workout notes feed a public line and must hold nothing private
+  (health, injuries, mood, work, relationships — those go in a "life" note),
+  and the summary prompt forbids mentioning private life even if a note does,
+  replying `-` (no line) when nothing about the training remains.
+* **Backfill** notes written before this existed by invoking
+  `GymSummaryFunction` by hand with `{ "backfillDays": 90 }`.
+
 ## Useful commands
 
 * `npm run build`        compile TypeScript to JS
