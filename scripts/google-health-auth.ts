@@ -78,8 +78,12 @@ function listen(state: string): Promise<{ redirectUri: string; code: Promise<str
       }
       const failure = error ?? (url.searchParams.get('state') === state ? null : 'state mismatch');
       res.writeHead(failure ? 400 : 200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end(failure ? `Authorization failed: ${failure}` : 'Google Health connected. You can close this tab.');
-      server.close();
+      res.end(failure ? `Authorization failed: ${failure}` : 'Google Health connected. You can close this tab.', () => {
+        // close() alone waits on the browser's keep-alive connections, which
+        // it can hold open for minutes; drop them once the page is sent.
+        server.close();
+        server.closeAllConnections();
+      });
       if (failure) rejectCode(new Error(`Authorization failed: ${failure}`));
       else resolveCode(received!);
     });
@@ -180,7 +184,11 @@ async function main(): Promise<void> {
   console.log(`\nStored the Google Health grant in Secrets Manager: ${secretName} (${region}).`);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+// Exit explicitly: the SDK's and fetch's pooled sockets would otherwise keep
+// the process alive for a while after the work is done.
+main()
+  .then(() => process.exit())
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
