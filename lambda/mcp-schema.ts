@@ -570,6 +570,11 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'earlier notes where they fit so they can be followed over time — a non-English tag is ' +
       'refused. `date` is the day the note is about, in ' +
       'the owner\'s local calendar (for a workout, the session day). Call list_reflections first. ' +
+      'PUBLIC SUMMARY: every "workout" note is distilled into a one-line summary shown under that ' +
+      'day\'s gym session on the public site. Keep a workout note to the training itself — ' +
+      'exercises, weights, technique, how the session went — and put nothing private in it: no ' +
+      'health or medical details, injuries, mood, work, relationships or other personal life. ' +
+      'Anything like that belongs in a "life" note, which is never published. ' +
       'Admin only.',
     requiresAuth: true,
     inputSchema: {
@@ -596,7 +601,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     description:
       'Correct the body and/or themes of an existing reflection, addressed by `type` and the `id` ' +
       'list_reflections returned. For fixing a note, not for adding to it — a new thought is a ' +
-      'new note via add_reflection. The type and date cannot change. Admin only.',
+      'new note via add_reflection. The type and date cannot change. Correcting a "workout" note ' +
+      'refreshes its day\'s public one-line summary, so the same rule as add_reflection applies: ' +
+      'nothing private in a workout note. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',

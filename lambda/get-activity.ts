@@ -14,16 +14,17 @@ import {
   GITHUB_SUMMARY_PK,
   attachSummaries,
   itemsToSummaries,
-  type GitHubRepoSummary,
 } from './github-summary-schema';
+import { GYM_SUMMARY_PK, attachGymSummaries, itemsToGymSummaries } from './gym-summary-schema';
 import { SUMMARY_PK } from './workout-schema';
 import { corsHeaders } from './cors';
 
 /**
  * Unified activity feed for the home page's contribution calendar and recent
  * activity list: blog posts and the GitHub snapshot from the local table, gym
- * sessions from the workout summary table in us-west-2. GitHub entries carry
- * their day's AI summary for that repository (see attachSummaries).
+ * sessions from the workout summary table in us-west-2. GitHub and gym entries
+ * carry a one-line AI summary of that day's work where one exists (see
+ * attachSummaries and attachGymSummaries), from the local summary table.
  *
  * Merging server-side means the landing page makes one call instead of three,
  * which matters against a per-day request quota shared by every visitor.
@@ -65,14 +66,21 @@ export const handler = async (
     from = isoDate(d);
   }
 
-  const [snapshot, blog, gym, summaries] = await Promise.all([
+  const range = { from, to };
+  const [snapshot, blog, workoutDays, githubItems, gymItems] = await Promise.all([
     readGitHub(cvTable),
     readBlog(cvTable),
     workoutTable ? readWorkout(workoutTable, from, to) : Promise.resolve([]),
-    summaryTable ? readSummaries(summaryTable, from, to) : Promise.resolve([]),
+    summaryTable
+      ? readSummaryDays('github summaries', summaryTable, GITHUB_SUMMARY_PK, '#date, summaries', range)
+      : Promise.resolve([]),
+    summaryTable
+      ? readSummaryDays('gym summaries', summaryTable, GYM_SUMMARY_PK, '#date, summary', range)
+      : Promise.resolve([]),
   ]);
 
-  const github = attachSummaries(snapshot, summaries);
+  const github = attachSummaries(snapshot, itemsToSummaries(githubItems));
+  const gym = attachGymSummaries(workoutDays, itemsToGymSummaries(gymItems));
   const entries = mergeActivity([github, blog, gym], { from, to });
 
   return {
@@ -138,8 +146,15 @@ const readWorkout = (table: string, from: string, to: string): Promise<ActivityE
     return workoutDaysToEntries(days);
   });
 
-const readSummaries = (table: string, from: string, to: string): Promise<GitHubRepoSummary[]> =>
-  safely('github summaries', async () => {
+/** Every item of one summary partition within the date range. */
+const readSummaryDays = (
+  label: string,
+  table: string,
+  pk: string,
+  projection: string,
+  { from, to }: { from: string; to: string },
+): Promise<Record<string, unknown>[]> =>
+  safely(label, async () => {
     const items: Record<string, unknown>[] = [];
     let lastKey: Record<string, unknown> | undefined;
     do {
@@ -148,13 +163,13 @@ const readSummaries = (table: string, from: string, to: string): Promise<GitHubR
           TableName: table,
           KeyConditionExpression: 'pk = :pk AND #date BETWEEN :from AND :to',
           ExpressionAttributeNames: { '#date': 'date' },
-          ExpressionAttributeValues: { ':pk': GITHUB_SUMMARY_PK, ':from': from, ':to': to },
-          ProjectionExpression: '#date, summaries',
+          ExpressionAttributeValues: { ':pk': pk, ':from': from, ':to': to },
+          ProjectionExpression: projection,
           ExclusiveStartKey: lastKey,
         }),
       );
       items.push(...((page.Items ?? []) as Record<string, unknown>[]));
       lastKey = page.LastEvaluatedKey;
     } while (lastKey);
-    return itemsToSummaries(items);
+    return items;
   });
