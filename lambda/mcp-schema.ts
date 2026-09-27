@@ -311,6 +311,37 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: readAnnotations,
   },
   {
+    name: 'get_readiness',
+    title: 'Get training readiness',
+    description:
+      'Whether today should be a "push", "normal" or "easy" training day, judged from last night\'s ' +
+      'sleep, HRV and resting heart rate against the owner\'s own trailing 28-day baseline. The ' +
+      'signals are read live from the Google Health API at the moment of the call, never from a ' +
+      'stored copy, because they only exist once the watch has synced after waking. For the same ' +
+      'reason an older night is never used in place of last night: when today\'s data has not ' +
+      'arrived, `status` is "not_synced" (no night ending today yet — ask the owner to open the ' +
+      'Fitbit / Google Health app and sync) or "pending" (synced but still processing — try again ' +
+      'in a few minutes), `verdict` is null, and `missing` lists each absent signal with the newest ' +
+      'date it does have. Do not substitute a verdict of your own in that case. "insufficient_baseline" ' +
+      'means under 7 days of HRV history. When `status` is "ready", `reasons` explains the verdict ' +
+      'and every signal carries the date it was measured on. Combine with get_muscle_volume_status ' +
+      'to decide what to train as well as how hard. `date` (ISO YYYY-MM-DD, the owner\'s local day) ' +
+      'defaults to today in the owner\'s time zone; pass an earlier one to look back. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: {
+          type: 'string',
+          description: 'The local day to judge, ISO YYYY-MM-DD. Optional; defaults to today in the owner\'s time zone.',
+        },
+      },
+      additionalProperties: false,
+    },
+    // Read-only, but unlike every other read it reaches outside this API.
+    annotations: { ...readAnnotations, openWorldHint: true },
+  },
+  {
     name: 'update_cv',
     title: 'Update CV',
     description: 'Replace the CV document. Admin only. Validated server-side; an invalid document is rejected unchanged.',

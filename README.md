@@ -19,7 +19,8 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
 * **Public read tools** — `get_cv`, `get_projects`, `get_blog`, `get_home`,
   `get_workout`, `get_activity`: the same data the site already serves.
 * **Admin tools** — `get_workout_sets` (the private per-set training log),
-  `get_exercise_history`, `list_exercises`, `get_workout_plan`, `list_media`,
+  `get_exercise_history`, `list_exercises`, `get_workout_plan`, `get_readiness`,
+  `list_media`,
   and every `update_`/`revise_` tool. Each is refused with `401` and a
   `WWW-Authenticate` challenge unless the request carries an access token issued
   by this user pool, for this resource, bearing the `mcp/admin` scope.
@@ -50,6 +51,41 @@ table's `EXERCISE` partition already is one — the import rebuilds it from
 scratch every ingest and prunes rows the new rollup no longer produces, so it
 cannot drift from the sets it summarises. A second table would duplicate that,
 and an alias column would duplicate `workout-exercises.ts` into data.
+
+### Training readiness from Google Health
+
+`get_readiness` answers "push, normal or easy today?" from last night's sleep,
+HRV and resting heart rate, each judged against the owner's own trailing
+28-day baseline (`lambda/readiness.ts`).
+
+The signals are read **live from the Google Health API at call time**, not by
+a scheduled ingest. They only exist once the watch syncs after waking, a time
+no schedule can know in advance: a daily batch would, most mornings, have run
+before that sync and judged today on the night before last. For the same
+reason the tool never falls back to an older value. If last night has not
+synced, it answers `status: "not_synced"` (or `"pending"` while the night is
+still processing) with `verdict: null`, and lists each missing signal with the
+newest date it does have. "Today" is the owner's local day
+(`HEALTH_TIME_ZONE`, Asia/Tokyo), not the Lambda's UTC one.
+
+Connecting it is a one-time step outside the deploy:
+
+1. In the Google Cloud console, enable the Google Health API, configure the
+   OAuth consent screen (add yourself as a test user), and create an OAuth
+   client of type **Desktop app**. Download its JSON.
+2. With AWS credentials for the stack's account:
+
+   ```bash
+   npm run health:auth -- --client-secret=path/to/client_secret.json
+   ```
+
+   This opens Google's consent flow on a loopback redirect and stores
+   `{client_id, client_secret, refresh_token}` in the Secrets Manager secret
+   `google-health-oauth` (us-west-1). Only the MCP Lambda can read it.
+
+While the consent screen stays in *Testing*, Google expires the refresh token
+after 7 days. The tool then reports that the grant was refused, and re-running
+step 2 fixes it.
 
 ### Why there is no dynamic client registration
 
