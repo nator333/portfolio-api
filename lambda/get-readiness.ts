@@ -81,6 +81,10 @@ export const handler = async (
   let sleeps: SleepSession[];
   let hrv: DailyValue[];
   let restingHeartRate: DailyValue[];
+  // Points returned vs points usable, per read. Real data disagreed with the
+  // documented shapes once already (every night dropped); this makes the next
+  // disagreement visible in the answer instead of silent.
+  let fetched: Record<'sleep' | 'hrv' | 'restingHeartRate', { points: number; usable: number }>;
   try {
     const [sleepPoints, hrvPoints, rhrPoints] = await Promise.all([
       listDataPoints(
@@ -102,9 +106,20 @@ export const handler = async (
         `daily_resting_heart_rate.date >= "${baselineFrom}" AND daily_resting_heart_rate.date < "${tomorrow}"`,
       ),
     ]);
-    sleeps = sleepPoints.map(parseSleep).filter((s): s is SleepSession => s !== null);
-    hrv = hrvPoints.map(parseDailyHrv).filter((v): v is DailyValue => v !== null);
-    restingHeartRate = rhrPoints.map(parseDailyRestingHeartRate).filter((v): v is DailyValue => v !== null);
+    sleeps = sleepPoints.map((p) => parseSleep(p, timeZone)).filter((s): s is SleepSession => s !== null);
+    hrv = hrvPoints.map((p) => parseDailyHrv(p)).filter((v): v is DailyValue => v !== null);
+    restingHeartRate = rhrPoints
+      .map((p) => parseDailyRestingHeartRate(p))
+      .filter((v): v is DailyValue => v !== null);
+    fetched = {
+      sleep: { points: sleepPoints.length, usable: sleeps.length },
+      hrv: { points: hrvPoints.length, usable: hrv.length },
+      restingHeartRate: { points: rhrPoints.length, usable: restingHeartRate.length },
+    };
+    if (sleepPoints.length > sleeps.length) {
+      // The raw shape is what needs seeing when a point will not parse.
+      console.warn('Unparseable sleep point', JSON.stringify(sleepPoints.find((p) => !parseSleep(p, timeZone))));
+    }
   } catch (error) {
     if (error instanceof GoogleHealthError) {
       console.error('Google Health read failed', error.kind, error.status, error.message);
@@ -121,5 +136,6 @@ export const handler = async (
     asOf: asOf.toISOString(),
     timeZone,
     ...result,
+    fetched,
   });
 };

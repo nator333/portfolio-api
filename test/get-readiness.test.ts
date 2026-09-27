@@ -163,3 +163,21 @@ test('missing configuration is a 500, not a guess at the owner\'s time zone', as
   const result = await handler(event());
   expect(result.statusCode).toBe(500);
 });
+
+test('reports how many points each read returned and how many were usable', async () => {
+  const noCivil = {
+    sleep: {
+      interval: { endTime: '2026-09-25T10:30:00Z', endUtcOffset: '-14400s' },
+      metadata: { processed: true, mainSleep: true },
+      summary: { minutesAsleep: '400' },
+    },
+  };
+  answer({ sleep: [noCivil, { sleep: {} }], hrv: [hrvPoint('2026-09-25', 50)], rhr: [] });
+
+  const body = JSON.parse((await handler(event())).body);
+  expect(body.fetched).toEqual({
+    sleep: { points: 2, usable: 1 },
+    hrv: { points: 1, usable: 1 },
+    restingHeartRate: { points: 0, usable: 0 },
+  });
+});

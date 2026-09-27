@@ -99,10 +99,11 @@ const GOOGLE_CLIENT_SECRET_NAME = 'cv-google-oauth';
  */
 const GOOGLE_HEALTH_SECRET_NAME = 'google-health-oauth';
 /**
- * The owner's time zone: get_readiness judges "today", and a Lambda's clock is
- * UTC, which for a Japan-based owner is still yesterday until 09:00 local.
+ * The owner's time zone (Montreal; America/Montreal is only a deprecated alias
+ * of this zone): get_readiness judges "today", and a Lambda's clock is UTC,
+ * which in Eastern time is already tomorrow from 19:00 or 20:00 local.
  */
-const HEALTH_TIME_ZONE = 'Asia/Tokyo';
+const HEALTH_TIME_ZONE = 'America/Toronto';
 
 /**
  * Pinned sharp version for the resize Lambda. sharp ships prebuilt native
