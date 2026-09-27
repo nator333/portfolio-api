@@ -2,11 +2,15 @@ import {
   MAX_REFS_PER_REPO_DAY,
   MAX_SUMMARY_CHARS,
   SUMMARY_DAYS_PER_RUN,
+  SUMMARY_VERSION,
   attachSummaries,
   buildSummaryPrompt,
   cleanSummary,
   commitLine,
   groupEventsByDay,
+  hasSummarisableWork,
+  isNoiseCommit,
+  overLimit,
   itemsToSummaries,
   parseRepoSummaries,
   pendingSummaryDates,
@@ -85,19 +89,29 @@ describe('groupEventsByDay', () => {
 describe('pendingSummaryDates', () => {
   const today = '2026-09-26';
 
-  test('never summarises today, and skips days already done', () => {
+  test('never summarises today, and skips days already current', () => {
     expect(
-      pendingSummaryDates(['2026-09-26', '2026-09-25', '2026-09-24'], new Set(['2026-09-24']), today),
+      pendingSummaryDates(
+        ['2026-09-26', '2026-09-25', '2026-09-24'],
+        new Map([['2026-09-24', SUMMARY_VERSION]]),
+        today,
+      ),
     ).toEqual(['2026-09-25']);
   });
 
+  test('redoes a day stored under an older version', () => {
+    expect(pendingSummaryDates(['2026-09-24'], new Map([['2026-09-24', SUMMARY_VERSION - 1]]), today)).toEqual([
+      '2026-09-24',
+    ]);
+  });
+
   test('ignores days outside the backfill window', () => {
-    expect(pendingSummaryDates(['2026-06-01', '2026-09-20'], new Set(), today)).toEqual(['2026-09-20']);
+    expect(pendingSummaryDates(['2026-06-01', '2026-09-20'], new Map(), today)).toEqual(['2026-09-20']);
   });
 
   test('works newest first and caps the days per run', () => {
     const active = Array.from({ length: SUMMARY_DAYS_PER_RUN + 2 }, (_, i) => `2026-09-${String(10 + i).padStart(2, '0')}`);
-    const pending = pendingSummaryDates(active, new Set(), today);
+    const pending = pendingSummaryDates(active, new Map(), today);
     expect(pending).toHaveLength(SUMMARY_DAYS_PER_RUN);
     expect(pending[0]).toBe(active[active.length - 1]);
   });
@@ -150,11 +164,39 @@ describe('buildSummaryPrompt', () => {
     );
   });
 
-  test('still describes a repository whose commits could not be fetched', () => {
+  test('leaves out bare PR numbers, which only produced "Merged PR 51"', () => {
     const prompt = buildSummaryPrompt('2026-09-20', [
-      { repo: 'octo/repo', heads: [], pullRequests: [], events: 4, commits: [] },
+      { repo: 'octo/repo', heads: [], pullRequests: [{ number: 51, action: 'merged' }], events: 2, commits: ['Add x'] },
     ]);
-    expect(prompt).toContain('4 GitHub events, no commit details available');
+    expect(prompt).not.toContain('#51');
+  });
+});
+
+describe('hasSummarisableWork', () => {
+  const repo = { repo: 'octo/repo', heads: [], events: 3 };
+
+  test('needs a commit message or a titled PR', () => {
+    expect(hasSummarisableWork({ ...repo, pullRequests: [], commits: ['Add x'] })).toBe(true);
+    expect(hasSummarisableWork({ ...repo, pullRequests: [{ number: 1, action: 'merged', title: 'X' }], commits: [] })).toBe(true);
+    expect(hasSummarisableWork({ ...repo, pullRequests: [{ number: 51, action: 'merged' }], commits: [] })).toBe(false);
+    expect(hasSummarisableWork({ ...repo, pullRequests: [], commits: [] })).toBe(false);
+  });
+});
+
+describe('isNoiseCommit', () => {
+  test('drops branch merges but keeps a merged PR, whose body is its title', () => {
+    expect(isNoiseCommit("Merge remote-tracking branch 'origin/master' into feature")).toBe(true);
+    expect(isNoiseCommit("Merge branch 'master' into feature")).toBe(true);
+    expect(isNoiseCommit('Merge pull request #57 from octo/feature\n\nfeat: add x')).toBe(false);
+    expect(isNoiseCommit('Add the calendar')).toBe(false);
+  });
+});
+
+describe('overLimit', () => {
+  test('flags a phrase the cap would have to cut', () => {
+    expect(overLimit('a'.repeat(MAX_SUMMARY_CHARS))).toBe(false);
+    expect(overLimit(`${'a'.repeat(MAX_SUMMARY_CHARS)}.`)).toBe(false);
+    expect(overLimit('a'.repeat(MAX_SUMMARY_CHARS + 1))).toBe(true);
   });
 });
 
@@ -181,9 +223,12 @@ describe('cleanSummary', () => {
 describe('parseRepoSummaries', () => {
   const repos = ['octo/a', 'octo/b'];
 
-  test('keeps only the repositories asked about, cleaned', () => {
+  test('keeps only the repositories asked about, normalised but not yet capped', () => {
     const reply = '{"octo/a": "Added the calendar.", "octo/b": "", "evil/x": "Injected"}';
     expect(parseRepoSummaries(reply, repos)).toEqual({ 'octo/a': 'Added the calendar' });
+    // Left long so the handler can send it back to be shortened.
+    const long = 'x'.repeat(MAX_SUMMARY_CHARS + 10);
+    expect(parseRepoSummaries(`{"octo/a": "${long}"}`, repos)['octo/a']).toBe(long);
   });
 
   test('tolerates a code fence or prose around the object', () => {

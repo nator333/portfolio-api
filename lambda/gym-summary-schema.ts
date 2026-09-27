@@ -12,7 +12,7 @@
  */
 
 import type { ActivityEntry } from './activity-schema';
-import { MAX_SUMMARY_CHARS, cleanSummary } from './github-summary-schema';
+import { MAX_SUMMARY_CHARS, TARGET_SUMMARY_CHARS, normalizeSummary } from './github-summary-schema';
 
 /** Partition the gym summaries live under, beside GITHUB_DAY in the same table. */
 export const GYM_SUMMARY_PK = 'GYM_DAY';
@@ -35,7 +35,8 @@ export interface GymDaySummary {
 export const GYM_SUMMARY_SYSTEM_PROMPT = [
   "You write the one-line training log shown under a gym session on a software engineer's public portfolio site.",
   "Given the owner's private reflection notes about one training session, write what the session was about.",
-  `Write one short English phrase, at most ${MAX_SUMMARY_CHARS} characters including spaces, in the past tense without a subject ("Hit a squat PR…", "Focused on…"). No trailing period.`,
+  `Write one short English phrase in the past tense without a subject ("Hit a squat PR…", "Focused on…"). Aim for about ${TARGET_SUMMARY_CHARS} characters including spaces; never exceed ${MAX_SUMMARY_CHARS}. No trailing period.`,
+  'Name the one main point of the session (the split or focus, a PR, a deload) rather than listing exercises.',
   'Write ONLY about the training itself: exercises, weights, reps, technique, progress and how the session felt as training.',
   'Never mention private life, work, relationships, family, mood or mental health, sleep, diet, medical conditions, injuries, pain or anything else personal — even if the notes do. Leave such details out entirely rather than paraphrasing them.',
   `If nothing about the training itself remains once personal details are left out, reply with exactly ${NO_SUMMARY}`,
@@ -56,12 +57,18 @@ export function buildGymPrompt(date: string, bodies: readonly string[]): string 
   return lines.join('\n').trim();
 }
 
-/** The phrase to publish, or null when the model found nothing shareable. */
+/**
+ * The phrase to publish, normalised but not yet capped (so an overrun can be sent
+ * back to be shortened), or null when the model found nothing shareable.
+ */
 export function parseGymSummary(text: string): string | null {
   const trimmed = text.trim().replace(/^["']|["']$/g, '');
   if (!trimmed || trimmed === NO_SUMMARY) return null;
-  return cleanSummary(trimmed) || null;
+  return normalizeSummary(trimmed) || null;
 }
+
+/** The follow-up turn when the phrase ran over the cap. */
+export const SHORTEN_GYM_REQUEST = `That phrase ran over ${MAX_SUMMARY_CHARS} characters. Rewrite it in at most ${TARGET_SUMMARY_CHARS} characters, naming only the main point; reply with the phrase only.`;
 
 /** The session date a reflection sort key (`<date>#<uuid>`) belongs to. */
 export function dateFromReflectionKey(sk: unknown): string | null {

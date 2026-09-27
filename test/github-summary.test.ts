@@ -15,6 +15,7 @@ jest.mock('@anthropic-ai/bedrock-sdk', () => ({
 
 import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { handler } from '../lambda/github-summary';
+import { SUMMARY_VERSION } from '../lambda/github-summary-schema';
 
 const json = (body: unknown, status = 200) =>
   ({ ok: status < 400, status, statusText: '', json: async () => body }) as Response;
@@ -53,8 +54,11 @@ describe('github-summary handler', () => {
         expect(url).toContain('sha=h25');
         expect(url).toContain('since=2026-09-25T00%3A00%3A00Z');
         expect(url).toContain('until=2026-09-26T00%3A00%3A00Z');
-        expect(url).toContain('author=octocat');
+        // Commits made from Claude Code sessions are authored as Claude, so an
+        // author filter would drop all but the owner's merge commits.
+        expect(url).not.toContain('author=');
         return json([
+          { sha: '3', commit: { message: "Merge branch 'master' into main" } },
           { sha: '2', commit: { message: 'Fix the calendar\n\nCo-Authored-By: A <a@b.c>' } },
           { sha: '1', commit: { message: 'Add the calendar' } },
         ]);
@@ -62,7 +66,7 @@ describe('github-summary handler', () => {
       throw new Error(`unexpected fetch ${url}`);
     });
     mockSend.mockImplementation(async (command: unknown) => {
-      if (command instanceof QueryCommand) return { Items: [{ date: '2026-09-24' }] };
+      if (command instanceof QueryCommand) return { Items: [{ date: '2026-09-24', version: SUMMARY_VERSION }] };
       return {};
     });
     mockCreate.mockResolvedValue({
@@ -73,8 +77,9 @@ describe('github-summary handler', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const prompt = mockCreate.mock.calls[0][0].messages[0].content as string;
-    // Oldest commit first.
+    // Oldest commit first, and branch merges dropped.
     expect(prompt).toContain('- commit: Add the calendar\n- commit: Fix the calendar');
+    expect(prompt).not.toContain("Merge branch");
 
     const puts = mockSend.mock.calls.map(([c]) => c).filter((c) => c instanceof PutCommand);
     expect(puts).toHaveLength(1);
@@ -83,15 +88,74 @@ describe('github-summary handler', () => {
       date: '2026-09-25',
       summaries: { 'octo/repo': 'Added and fixed the calendar' },
       commitCount: 2,
+      version: SUMMARY_VERSION,
     });
-    expect(puts[0].input.ConditionExpression).toBe('attribute_not_exists(pk)');
+    // Overwrites only a missing or outdated day.
+    expect(puts[0].input.ConditionExpression).toBe('attribute_not_exists(pk) OR attribute_not_exists(#v) OR #v < :v');
+  });
+
+  test('sends an overrunning phrase back once to be shortened', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('/events/public')
+        ? json([{ type: 'PushEvent', created_at: '2026-09-25T10:00:00Z', repo: { name: 'octo/repo' }, payload: { ref: 'refs/heads/main', head: 'h' } }])
+        : json([{ sha: '1', commit: { message: 'Add the calendar' } }]),
+    );
+    mockSend.mockResolvedValue({ Items: [] });
+    const long = 'Added a calendar, a feed, a filter, a summariser and a great many other things';
+    mockCreate
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: JSON.stringify({ 'octo/repo': long }) }] })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: '{"octo/repo": "Added the activity calendar"}' }] });
+
+    await handler();
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    const retry = mockCreate.mock.calls[1][0].messages;
+    expect(retry.map((m: { role: string }) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(retry[2].content).toContain('octo/repo');
+    const [put] = mockSend.mock.calls.map(([c]) => c).filter((c) => c instanceof PutCommand);
+    expect(put.input.Item?.summaries).toEqual({ 'octo/repo': 'Added the activity calendar' });
+  });
+
+  test('redoes a day stored under an older version', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('/events/public')
+        ? json([{ type: 'PushEvent', created_at: '2026-09-25T10:00:00Z', repo: { name: 'octo/repo' }, payload: { ref: 'refs/heads/main', head: 'h' } }])
+        : json([{ sha: '1', commit: { message: 'Add the calendar' } }]),
+    );
+    // Written before versions existed.
+    mockSend.mockImplementation(async (command: unknown) =>
+      command instanceof QueryCommand ? { Items: [{ date: '2026-09-25' }] } : {},
+    );
+    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: '{"octo/repo": "Added the calendar"}' }] });
+
+    await handler();
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test('stores a day with nothing concrete as empty, without asking the model', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('/events/public')
+        ? json([
+            { type: 'PullRequestEvent', created_at: '2026-09-25T10:00:00Z', repo: { name: 'octo/repo' }, payload: { action: 'merged', number: 51 } },
+            { type: 'PushEvent', created_at: '2026-09-25T10:00:00Z', repo: { name: 'octo/repo' }, payload: { ref: 'refs/heads/main', head: 'h' } },
+          ])
+        : json([], 404),
+    );
+    mockSend.mockResolvedValue({ Items: [] });
+
+    await handler();
+
+    expect(mockCreate).not.toHaveBeenCalled();
+    const [put] = mockSend.mock.calls.map(([c]) => c).filter((c) => c instanceof PutCommand);
+    expect(put.input.Item).toMatchObject({ date: '2026-09-25', summaries: {} });
   });
 
   test('does nothing when every active day already has a summary', async () => {
     fetchMock.mockResolvedValue(
       json([{ type: 'PushEvent', created_at: '2026-09-25T10:00:00Z', repo: { name: 'octo/repo' }, payload: { ref: 'refs/heads/main', head: 'h' } }]),
     );
-    mockSend.mockResolvedValue({ Items: [{ date: '2026-09-25' }] });
+    mockSend.mockResolvedValue({ Items: [{ date: '2026-09-25', version: SUMMARY_VERSION }] });
 
     await handler();
 
@@ -103,7 +167,7 @@ describe('github-summary handler', () => {
     fetchMock.mockImplementation(async (url: string) =>
       url.includes('/events/public')
         ? json([{ type: 'PushEvent', created_at: '2026-09-25T10:00:00Z', repo: { name: 'octo/repo' }, payload: { ref: 'refs/heads/main', head: 'h' } }])
-        : json([], 404),
+        : json([{ sha: '1', commit: { message: 'Add the calendar' } }]),
     );
     mockSend.mockResolvedValue({ Items: [] });
     mockCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Sorry, I cannot help with that.' }] });

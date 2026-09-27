@@ -6,10 +6,16 @@ import { fetchCommits, fetchEvents } from './github-api';
 import {
   GITHUB_SUMMARY_PK,
   SUMMARY_SYSTEM_PROMPT,
+  SUMMARY_VERSION,
   backfillStart,
   buildSummaryPrompt,
+  cleanSummary,
   commitLine,
   groupEventsByDay,
+  hasSummarisableWork,
+  isNoiseCommit,
+  overLimit,
+  shortenRepoRequest,
   nextDay,
   parseRepoSummaries,
   pendingSummaryDates,
@@ -24,8 +30,8 @@ import {
  * only where. One Bedrock call per day covers all of that day's repositories.
  *
  * Runs daily just after the UTC day closes. Each run also fills any recent day
- * still missing a summary (a missed schedule, a Bedrock error), a few days at a
- * time; a day, once summarised, is never rewritten.
+ * still missing a current summary — a missed schedule, a Bedrock error, or one
+ * written under an older SUMMARY_VERSION — a few days at a time.
  */
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -73,11 +79,13 @@ export const handler = async (): Promise<void> => {
     // its commits — unless it is the first, which would otherwise never fit.
     if (needed > budget && written > 0) break;
 
-    const repos = await withCommits(day, user, budget);
+    const repos = (await withCommits(day, budget)).filter(hasSummarisableWork);
     budget -= Math.min(needed, budget);
 
-    const summaries = await summarise(modelId, date, repos);
-    if (Object.keys(summaries).length === 0) {
+    // A day with nothing concrete to say is still stored, empty, so it is not
+    // fetched and re-asked every night.
+    const summaries = repos.length ? await summarise(modelId, date, repos) : {};
+    if (repos.length && Object.keys(summaries).length === 0) {
       console.warn(`Empty summary for ${date}; will retry next run`);
       continue;
     }
@@ -90,12 +98,15 @@ export const handler = async (): Promise<void> => {
           date,
           summaries,
           commitCount: repos.reduce((n, r) => n + r.commits.length, 0),
+          version: SUMMARY_VERSION,
           model: modelId,
           generatedAt: new Date().toISOString(),
         },
-        // Summaries are written once; a concurrent or retried run must not
-        // overwrite one already published.
-        ConditionExpression: 'attribute_not_exists(pk)',
+        // Only a missing or outdated summary is written; a concurrent or retried
+        // run must not overwrite one already current.
+        ConditionExpression: 'attribute_not_exists(pk) OR attribute_not_exists(#v) OR #v < :v',
+        ExpressionAttributeNames: { '#v': 'version' },
+        ExpressionAttributeValues: { ':v': SUMMARY_VERSION },
       }),
     ).catch((error: { name?: string }) => {
       if (error.name !== 'ConditionalCheckFailedException') throw error;
@@ -106,22 +117,25 @@ export const handler = async (): Promise<void> => {
   console.log(`Wrote ${written} GitHub day summaries (${pending.length} pending)`);
 };
 
-async function readSummarisedDates(table: string, from: string): Promise<Set<string>> {
-  const dates = new Set<string>();
+/** Stored days in the window and the SUMMARY_VERSION each was written under (1 if unmarked). */
+async function readSummarisedDates(table: string, from: string): Promise<Map<string, number>> {
+  const dates = new Map<string, number>();
   let lastKey: Record<string, unknown> | undefined;
   do {
     const page = await ddb.send(
       new QueryCommand({
         TableName: table,
         KeyConditionExpression: 'pk = :pk AND #date >= :from',
-        ExpressionAttributeNames: { '#date': 'date' },
+        ExpressionAttributeNames: { '#date': 'date', '#v': 'version' },
         ExpressionAttributeValues: { ':pk': GITHUB_SUMMARY_PK, ':from': from },
-        ProjectionExpression: '#date',
+        ProjectionExpression: '#date, #v',
         ExclusiveStartKey: lastKey,
       }),
     );
     for (const item of page.Items ?? []) {
-      if (typeof item.date === 'string') dates.add(item.date);
+      if (typeof item.date === 'string') {
+        dates.set(item.date, typeof item.version === 'number' ? item.version : 1);
+      }
     }
     lastKey = page.LastEvaluatedKey;
   } while (lastKey);
@@ -129,7 +143,7 @@ async function readSummarisedDates(table: string, from: string): Promise<Set<str
 }
 
 /** Fetches each branch tip's commits for the day, deduplicated across branches. */
-async function withCommits(day: DayWork, author: string, budget: number): Promise<RepoDayDetail[]> {
+async function withCommits(day: DayWork, budget: number): Promise<RepoDayDetail[]> {
   const since = `${day.date}T00:00:00Z`;
   const until = `${nextDay(day.date)}T00:00:00Z`;
   const repos: RepoDayDetail[] = [];
@@ -142,10 +156,11 @@ async function withCommits(day: DayWork, author: string, budget: number): Promis
       if (remaining <= 0) break;
       remaining -= 1;
       try {
-        const list = await fetchCommits(repo.repo, { sha: head.sha, author, since, until });
+        const list = await fetchCommits(repo.repo, { sha: head.sha, since, until });
         // Oldest first reads as the day's progression.
         for (const commit of [...list].reverse()) {
           if (!commit.sha || seen.has(commit.sha) || !commit.commit?.message) continue;
+          if (isNoiseCommit(commit.commit.message)) continue;
           seen.add(commit.sha);
           commits.push(commitLine(commit.commit.message));
         }
@@ -158,23 +173,44 @@ async function withCommits(day: DayWork, author: string, budget: number): Promis
   return repos;
 }
 
+/**
+ * One call for the day's repositories. Any phrase that runs over the cap is
+ * sent back once in the same conversation to be shortened, so the cap in
+ * cleanSummary only has to cut the rare phrase that overruns twice.
+ */
 async function summarise(
   modelId: string,
   date: string,
   repos: RepoDayDetail[],
 ): Promise<Record<string, string>> {
+  const names = repos.map((r) => r.repo);
+  const messages: { role: 'user' | 'assistant'; content: string }[] = [
+    { role: 'user', content: buildSummaryPrompt(date, repos) },
+  ];
+  const first = await ask(modelId, messages);
+  const summaries = parseRepoSummaries(first, names);
+
+  const long = Object.keys(summaries).filter((repo) => overLimit(summaries[repo]));
+  if (long.length) {
+    messages.push({ role: 'assistant', content: first }, { role: 'user', content: shortenRepoRequest(long) });
+    Object.assign(summaries, parseRepoSummaries(await ask(modelId, messages), long));
+  }
+
+  return Object.fromEntries(Object.entries(summaries).map(([repo, text]) => [repo, cleanSummary(text)]));
+}
+
+async function ask(
+  modelId: string,
+  messages: { role: 'user' | 'assistant'; content: string }[],
+): Promise<string> {
   const response = await bedrock!.messages.create({
     model: modelId,
     max_tokens: MAX_SUMMARY_TOKENS,
     system: SUMMARY_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: buildSummaryPrompt(date, repos) }],
+    messages,
   });
-  const text = response.content
+  return response.content
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('');
-  return parseRepoSummaries(
-    text,
-    repos.map((r) => r.repo),
-  );
 }
