@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import type { AddressInfo } from 'net';
 import {
   CreateSecretCommand,
+  DescribeSecretCommand,
   PutSecretValueCommand,
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
@@ -95,6 +96,40 @@ function listen(state: string): Promise<{ redirectUri: string; code: Promise<str
   });
 }
 
+/**
+ * Prove the AWS credentials work before the owner clicks through Google's
+ * consent screen, rather than failing only when the token is stored at the end
+ * and having to do the consent all over again.
+ *
+ * DescribeSecret is the cheapest call against the very secret the script will
+ * write: it proves the credentials resolve, that AWS accepts them, and that
+ * they may touch this secret. A "not found" is fine here — the first run
+ * creates the secret.
+ */
+async function checkAwsAccess(sm: SecretsManagerClient, secretName: string, region: string): Promise<void> {
+  try {
+    await sm.send(new DescribeSecretCommand({ SecretId: secretName }));
+  } catch (error) {
+    const name = (error as { name?: string }).name;
+    if (name === 'ResourceNotFoundException') return;
+    const detail = error instanceof Error ? error.message : String(error);
+    const hint =
+      name === 'CredentialsProviderError'
+        ? 'No AWS credentials were found in this terminal.'
+        : name === 'AccessDeniedException'
+          ? `These AWS credentials may not read or write the secret "${secretName}".`
+          : 'AWS rejected these credentials (expired or stale).';
+    throw new Error(
+      `AWS check failed before opening Google consent: ${hint}\n  ${detail}\n\n` +
+        'Sign in and export working credentials in this terminal, then run this again:\n' +
+        '  aws sso login --profile <your-profile>\n' +
+        '  eval "$(aws configure export-credentials --profile <your-profile> --format env)"\n' +
+        '  unset AWS_PROFILE\n' +
+        `(Checked against Secrets Manager in ${region}.)`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const clientSecretPath = argOf('client-secret');
   if (!clientSecretPath) {
@@ -105,6 +140,9 @@ async function main(): Promise<void> {
   const secretName = argOf('secret-name') ?? DEFAULT_SECRET_NAME;
   const region = argOf('region') ?? DEFAULT_REGION;
   const { clientId, clientSecret } = readClient(clientSecretPath);
+
+  const sm = new SecretsManagerClient({ region });
+  await checkAwsAccess(sm, secretName, region);
 
   const state = base64url(randomBytes(16));
   const verifier = base64url(randomBytes(32));
@@ -167,7 +205,6 @@ async function main(): Promise<void> {
     client_secret: clientSecret,
     refresh_token: token.refresh_token,
   });
-  const sm = new SecretsManagerClient({ region });
   try {
     await sm.send(new PutSecretValueCommand({ SecretId: secretName, SecretString: secretString }));
   } catch (error) {
