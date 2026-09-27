@@ -731,7 +731,7 @@ test('the Google Health grant is readable by the MCP Lambda alone', () => {
   );
   expect(withSecretEnv).toHaveLength(1);
   expect(withSecretEnv[0].Properties.Environment.Variables).toMatchObject({
-    HEALTH_TIME_ZONE: 'Asia/Tokyo',
+    HEALTH_TIME_ZONE: 'America/Toronto',
     MCP_ADMIN_SCOPE: 'mcp/admin',
   });
 });

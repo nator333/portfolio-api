@@ -66,7 +66,7 @@ reason the tool never falls back to an older value. If last night has not
 synced, it answers `status: "not_synced"` (or `"pending"` while the night is
 still processing) with `verdict: null`, and lists each missing signal with the
 newest date it does have. "Today" is the owner's local day
-(`HEALTH_TIME_ZONE`, Asia/Tokyo), not the Lambda's UTC one.
+(`HEALTH_TIME_ZONE`, America/Toronto), not the Lambda's UTC one.
 
 Connecting it is a one-time step outside the deploy:
 
