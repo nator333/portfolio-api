@@ -703,7 +703,6 @@ export class PortfolioApiStack extends cdk.Stack {
         memorySize: 256,
         environment: {
           ...lambdaDefaults.environment,
-          MEDIA_TABLE_NAME: mediaTable.tableName,
           WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
           WORKOUT_SETS_TABLE_NAME: workoutSetsTable,
           WORKOUT_PLAN_TABLE_NAME: workoutPlanTable,
@@ -718,11 +717,10 @@ export class PortfolioApiStack extends cdk.Stack {
         },
       });
       cvTable.grantReadWriteData(mcpFn);
-      mediaTable.grantReadWriteData(mcpFn);
-      // get_activity returns the daily GitHub summaries with the feed.
-      mcpFn.addEnvironment('GITHUB_SUMMARY_TABLE_NAME', gitHubSummaryTable.tableName);
-      gitHubSummaryTable.grantReadData(mcpFn);
-      // get_workout / get_activity / list_exercises read the summary table;
+      // No grant on the media or GitHub summary tables: the activity feed and
+      // media tools were dropped from MCP as unused, and nothing else here
+      // reads them. The site still serves both over REST.
+      // get_workout / list_exercises read the summary table;
       // get_workout_sets reads the per-set table by date and
       // get_exercise_history reads it by exercise, which is a separate resource:
       // a Query against a secondary index is authorized on the index ARN, not

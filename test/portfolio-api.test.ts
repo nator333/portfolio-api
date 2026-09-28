@@ -446,7 +446,7 @@ test('the MCP Lambda validates tokens against this resource, and stays off Bedro
     f.Properties?.Environment?.Variables ?? {};
   const mcp = functions.filter((f) => {
     const keys = Object.keys(envVars(f));
-    return keys.includes('MCP_CLIENT_IDS') && keys.includes('MEDIA_TABLE_NAME');
+    return keys.includes('MCP_CLIENT_IDS') && keys.includes('WORKOUT_SETS_TABLE_NAME');
   });
   expect(mcp.length).toBe(1);
 
@@ -460,6 +460,9 @@ test('the MCP Lambda validates tokens against this resource, and stays off Bedro
   expect(env.USER_POOL_ID).toBeDefined();
   // The private per-set table is what the admin tools exist to reach.
   expect(env.WORKOUT_SETS_TABLE_NAME).toBe('portfolio-workout-sets-test');
+  // No MCP tool reaches the media or GitHub summary tables any more.
+  expect(env.MEDIA_TABLE_NAME).toBeUndefined();
+  expect(env.GITHUB_SUMMARY_TABLE_NAME).toBeUndefined();
 });
 
 test('the MCP role reads the private sets table but never invokes Bedrock', () => {

@@ -17,16 +17,18 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
   connection to stream over). Implements `initialize`, `tools/list`,
   `tools/call` and `ping`.
 * **Public read tools** — `get_content` (the `cv`, `projects`, `blog` or `home`
-  document), `get_workout`, `get_activity`: the same data the site already serves.
+  document) and `get_workout`: the same data the site already serves.
 * **Admin tools** — `get_workout_sets` (the private per-set training log),
   `get_exercise_history`, `list_exercises`, `get_workout_plan`,
   `get_muscle_volume_status`, `get_readiness`, `get_training_recommendation`,
-  `get_weight_trend`, `list_media`, `list_reflections`, and every write:
-  `update_content`, `update_media`, `revise_workout_plan` (edits, or a whole new
-  version via `plan`), `add_reflection`, `update_reflection`. Each is refused with
-  `401` and a `WWW-Authenticate` challenge unless the request carries an access
-  token issued by this user pool, for this resource, bearing the `mcp/admin`
-  scope.
+  `get_weight_trend`, `list_reflections`, and every write: `update_content`,
+  `revise_workout_plan` (edits, or a whole new version via `plan`),
+  `add_reflection`, `update_reflection`. Each is refused with `401` and a
+  `WWW-Authenticate` challenge unless the request carries an access token issued
+  by this user pool, for this resource, bearing the `mcp/admin` scope.
+* **Not exposed** — the activity feed and the media catalogue. The site serves
+  them over REST; they were dropped from MCP as unused, since every tool costs
+  context in every conversation.
 
 ### Reading the training log by exercise
 
@@ -177,8 +179,7 @@ cut at a word boundary. One call per day covers all of that day's repositories.
   `SUMMARY_VERSION`, up to five days per run. A first deploy backfills recent
   history over a few nights, and bumping the version after a prompt or fetch
   fix regenerates recent days the same way, with no manual step.
-* **Served on the feed entries** — `GET /activity` (and the MCP `get_activity`
-  tool) puts each on its repository's entry for that day as `summary`. A
+* **Served on the feed entries** — `GET /activity` puts each on its repository's entry for that day as `summary`. A
   summary whose entry has aged out of the snapshot becomes an entry of its own,
   so GitHub history on the calendar no longer stops at ~90 days.
 * **Rate-limited by design** — GitHub is called unauthenticated (60 req/h), so
