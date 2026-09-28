@@ -29,6 +29,7 @@ test('every read tool is public and every write tool requires auth', () => {
     'get_exercise_history',
     'get_muscle_volume_status',
     'get_readiness',
+    'get_weight_trend',
     'get_workout_plan',
     'get_workout_sets',
     'list_exercises',
