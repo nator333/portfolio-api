@@ -66,7 +66,7 @@ reason the tool never falls back to an older value. If last night has not
 synced, it answers `status: "not_synced"` (or `"pending"` while the night is
 still processing) with `verdict: null`, and lists each missing signal with the
 newest date it does have. "Today" is the owner's local day
-(`HEALTH_TIME_ZONE`, Asia/Tokyo), not the Lambda's UTC one.
+(`HEALTH_TIME_ZONE`, America/Toronto), not the Lambda's UTC one.
 
 Connecting it is a one-time step outside the deploy:
 
@@ -138,6 +138,62 @@ opening **Advanced settings** and pasting the `McpUserPoolClientId` output as
 the OAuth Client ID. Leave the client secret blank — it is a public client using
 authorization-code + PKCE. Connectors configured on claude.ai are available in
 Claude Desktop and Claude Mobile, so iOS needs no separate registration.
+
+## Daily GitHub work summaries
+
+The home page's activity feed rolls GitHub events up to "3 pushes to
+octo/repo" — where work happened, not what it was. `lambda/github-summary.ts`
+adds the what: once a day, shortly after the UTC day closes, it lists the
+commits behind each branch pushed that day and has Bedrock (Haiku, via the same
+`us.` inference profile as chat) write one phrase per repository, so each fits
+within two lines of a phone-width feed. The model is asked for about 60
+characters; a phrase over 75 is sent back once to be shortened, and only then
+cut at a word boundary. One call per day covers all of that day's repositories.
+
+* **Every commit on the pushed branch, not just the owner's.** Commits made from
+  Claude Code sessions are authored as Claude, so filtering by author kept only
+  the owner's merge commits; branch-into-branch merges are dropped as noise.
+* **No filler.** A repository whose day has no commit message or titled PR gets
+  no line at all, rather than "Updated repository" or "Merged PR 51".
+
+* **Stored for good** in `GitHubSummaryTable` (`pk = GITHUB_DAY`, `date`), one
+  item per day holding `summaries: { "owner/repo": "…" }` and the
+  `SUMMARY_VERSION` it was written under. The event snapshot only reaches back
+  ~90 days; the summaries keep accumulating past it.
+* **Self-healing** — each run also fills any day in the last 30 still missing a
+  summary (a missed schedule, a Bedrock error) or stored under an older
+  `SUMMARY_VERSION`, up to five days per run. A first deploy backfills recent
+  history over a few nights, and bumping the version after a prompt or fetch
+  fix regenerates recent days the same way, with no manual step.
+* **Served on the feed entries** — `GET /activity` (and the MCP `get_activity`
+  tool) puts each on its repository's entry for that day as `summary`. A
+  summary whose entry has aged out of the snapshot becomes an entry of its own,
+  so GitHub history on the calendar no longer stops at ~90 days.
+* **Rate-limited by design** — GitHub is called unauthenticated (60 req/h), so
+  one request per branch tip per day replaces one per push, and a run spends at
+  most 40 commit requests.
+* **Least privilege** — commit messages are third-party text, so the function
+  can only invoke Bedrock and write its own table.
+
+### Gym-day summaries from workout reflections
+
+Gym entries get the same one-line `summary`, written from that day's private
+**workout** reflection notes (`lambda/gym-summary.ts`). This is the one place
+reflection text reaches the public site, so the boundary is kept narrow:
+
+* **Triggered by the reflections table's stream** (keys only — no note text
+  passes through it), filtered to `type = workout`, so adding or correcting a
+  note refreshes its day within seconds. "life" notes never reach the function.
+* **Read-only on the notes.** The summariser is the only reader besides the MCP
+  server; it can Query the notes and Put/Delete `GYM_DAY` rows in the summary
+  table, nothing else.
+* **Two privacy guards.** `add_reflection` / `update_reflection` tell the
+  writer that workout notes feed a public line and must hold nothing private
+  (health, injuries, mood, work, relationships — those go in a "life" note),
+  and the summary prompt forbids mentioning private life even if a note does,
+  replying `-` (no line) when nothing about the training remains.
+* **Backfill** notes written before this existed by invoking
+  `GymSummaryFunction` by hand with `{ "backfillDays": 90 }`.
 
 ## Useful commands
 

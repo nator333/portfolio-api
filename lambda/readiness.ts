@@ -148,8 +148,9 @@ export function addDays(date: string, days: number): string {
 
 /**
  * The owner's calendar date at `instant`. "Today" has to be the owner's today:
- * the Lambda's clock is UTC, and for a Japan-based owner a UTC date is
- * yesterday until 09:00 — exactly the hours this tool is asked in.
+ * the Lambda's clock is UTC, which differs from the owner's calendar for
+ * hours of every day (in Eastern time, UTC is tomorrow from 19:00 or 20:00),
+ * and the zone is configured rather than assumed.
  */
 export function localDate(instant: Date, timeZone: string): string {
   // en-CA formats as YYYY-MM-DD.
@@ -216,13 +217,37 @@ export function parseDailyRestingHeartRate(point: unknown): DailyValue | null {
   return date && value !== null && value > 0 ? { date, value } : null;
 }
 
-/** A `sleep` data point → the session, keyed on the local date it ended. */
-export function parseSleep(point: unknown): SleepSession | null {
+/** A protobuf Duration as JSON ("-14400s", "3.5s") → seconds. */
+function durationSeconds(value: unknown): number | null {
+  const match = typeof value === 'string' ? /^(-?\d+(?:\.\d+)?)s$/.exec(value) : null;
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * A `sleep` data point → the session, keyed on the local date it ended.
+ *
+ * The local end date is taken from the first source that has it:
+ * `civilEndTime` (documented as output-only; when this parser required it,
+ * every one of the owner's real nights was dropped, and its absence is the
+ * likeliest reason); else `endTime` shifted by `endUtcOffset`, the offset where
+ * the owner actually woke, as Google's own CLI reads it; else `endTime` in the
+ * configured `timeZone`. The handler's `fetched` counts show whether any
+ * points still fail to parse.
+ */
+export function parseSleep(point: unknown, timeZone?: string): SleepSession | null {
   const sleep = asObject(asObject(point)?.sleep);
   const interval = asObject(sleep?.interval);
-  const endDate = civilDate(asObject(interval?.civilEndTime)?.date);
   const endTime = typeof interval?.endTime === 'string' ? interval.endTime : null;
-  if (!endDate || !endTime) return null;
+  const endMs = endTime ? Date.parse(endTime) : NaN;
+  if (!endTime || Number.isNaN(endMs)) return null;
+
+  const offset = durationSeconds(interval?.endUtcOffset);
+  const endDate =
+    civilDate(asObject(interval?.civilEndTime)?.date) ??
+    (offset !== null ? new Date(endMs + offset * 1000).toISOString().slice(0, 10) : null) ??
+    (timeZone ? localDate(new Date(endMs), timeZone) : null);
+  if (!endDate) return null;
+
   const metadata = asObject(sleep?.metadata);
   return {
     endDate,
@@ -233,6 +258,18 @@ export function parseSleep(point: unknown): SleepSession | null {
     nap: metadata?.nap === true,
     processed: metadata?.processed === true,
   };
+}
+
+/**
+ * One value per date. The live API returned more than one resting heart rate
+ * for some days (a 28-day window held 32 values), and counting a day twice
+ * skews the baseline toward whichever days were duplicated. Duplicates are
+ * averaged: nothing in the data says which source to prefer.
+ */
+export function dedupeDaily(values: readonly DailyValue[]): DailyValue[] {
+  const byDate = new Map<string, number[]>();
+  for (const v of values) byDate.set(v.date, [...(byDate.get(v.date) ?? []), v.value]);
+  return [...byDate].map(([date, vs]) => ({ date, value: vs.reduce((a, b) => a + b, 0) / vs.length }));
 }
 
 // --- Judgement ---------------------------------------------------------------
@@ -292,7 +329,12 @@ export function sleepFlag(minutesAsleep: number): SleepFlag {
 
 const hours = (minutes: number) => `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
 
-export function judgeReadiness(input: ReadinessInput): ReadinessResult {
+export function judgeReadiness(rawInput: ReadinessInput): ReadinessResult {
+  const input = {
+    ...rawInput,
+    hrv: dedupeDaily(rawInput.hrv),
+    restingHeartRate: dedupeDaily(rawInput.restingHeartRate),
+  };
   const { date } = input;
   const missing: MissingSignal[] = [];
   const withheld = (status: ReadinessStatus, reasons: string[], signals: ReadinessResult['signals']): ReadinessResult =>

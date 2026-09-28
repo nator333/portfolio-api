@@ -10,13 +10,21 @@ import {
   type ActivityEntry,
 } from './activity-schema';
 import { BLOG_TABLE_ITEM_ID } from './blog-schema';
+import {
+  GITHUB_SUMMARY_PK,
+  attachSummaries,
+  itemsToSummaries,
+} from './github-summary-schema';
+import { GYM_SUMMARY_PK, attachGymSummaries, itemsToGymSummaries } from './gym-summary-schema';
 import { SUMMARY_PK } from './workout-schema';
 import { corsHeaders } from './cors';
 
 /**
  * Unified activity feed for the home page's contribution calendar and recent
  * activity list: blog posts and the GitHub snapshot from the local table, gym
- * sessions from the workout summary table in us-west-2.
+ * sessions from the workout summary table in us-west-2. GitHub and gym entries
+ * carry a one-line AI summary of that day's work where one exists (see
+ * attachSummaries and attachGymSummaries), from the local summary table.
  *
  * Merging server-side means the landing page makes one call instead of three,
  * which matters against a per-day request quota shared by every visitor.
@@ -45,6 +53,7 @@ export const handler = async (
     return { statusCode: 500, headers, body: JSON.stringify({ message: 'CV_TABLE_NAME is not configured' }) };
   }
   const workoutTable = process.env.WORKOUT_SUMMARY_TABLE_NAME;
+  const summaryTable = process.env.GITHUB_SUMMARY_TABLE_NAME;
 
   const params = event.queryStringParameters ?? {};
   const to = params.to && DATE_RE.test(params.to) ? params.to : isoDate(new Date());
@@ -57,12 +66,21 @@ export const handler = async (
     from = isoDate(d);
   }
 
-  const [github, blog, gym] = await Promise.all([
+  const range = { from, to };
+  const [snapshot, blog, workoutDays, githubItems, gymItems] = await Promise.all([
     readGitHub(cvTable),
     readBlog(cvTable),
     workoutTable ? readWorkout(workoutTable, from, to) : Promise.resolve([]),
+    summaryTable
+      ? readSummaryDays('github summaries', summaryTable, GITHUB_SUMMARY_PK, '#date, summaries', range)
+      : Promise.resolve([]),
+    summaryTable
+      ? readSummaryDays('gym summaries', summaryTable, GYM_SUMMARY_PK, '#date, summary', range)
+      : Promise.resolve([]),
   ]);
 
+  const github = attachSummaries(snapshot, itemsToSummaries(githubItems));
+  const gym = attachGymSummaries(workoutDays, itemsToGymSummaries(gymItems));
   const entries = mergeActivity([github, blog, gym], { from, to });
 
   return {
@@ -126,4 +144,32 @@ const readWorkout = (table: string, from: string, to: string): Promise<ActivityE
       lastKey = page.LastEvaluatedKey;
     } while (lastKey);
     return workoutDaysToEntries(days);
+  });
+
+/** Every item of one summary partition within the date range. */
+const readSummaryDays = (
+  label: string,
+  table: string,
+  pk: string,
+  projection: string,
+  { from, to }: { from: string; to: string },
+): Promise<Record<string, unknown>[]> =>
+  safely(label, async () => {
+    const items: Record<string, unknown>[] = [];
+    let lastKey: Record<string, unknown> | undefined;
+    do {
+      const page = await local.send(
+        new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'pk = :pk AND #date BETWEEN :from AND :to',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':pk': pk, ':from': from, ':to': to },
+          ProjectionExpression: projection,
+          ExclusiveStartKey: lastKey,
+        }),
+      );
+      items.push(...((page.Items ?? []) as Record<string, unknown>[]));
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey);
+    return items;
   });

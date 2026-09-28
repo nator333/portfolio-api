@@ -15,6 +15,7 @@ import { handler as getWorkoutPlan } from './get-workout-plan';
 import { handler as getMuscleVolumeStatus } from './get-muscle-volume-status';
 import { handler as getReadiness } from './get-readiness';
 import { handler as getTrainingRecommendation } from './get-training-recommendation';
+import { handler as getWeightTrend } from './get-weight-trend';
 import { handler as updateCv } from './update-cv';
 import { handler as updateProjects } from './update-projects';
 import { handler as updateBlog } from './update-blog';
@@ -103,6 +104,15 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   get_training_recommendation: (args) =>
     getTrainingRecommendation(
       proxyEvent({ query: { planId: typeof args.planId === 'string' ? args.planId : undefined } }),
+    ),
+  get_weight_trend: (args) =>
+    getWeightTrend(
+      proxyEvent({
+        query: {
+          days: typeof args.days === 'number' ? String(args.days) : undefined,
+          exercise: typeof args.exercise === 'string' ? args.exercise : undefined,
+        },
+      }),
     ),
   update_cv: (args) => updateCv(proxyEvent({ body: args })),
   update_projects: (args) => updateProjects(proxyEvent({ body: args })),

@@ -16,6 +16,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
 import {
   workoutSummaryTableName,
@@ -77,6 +78,11 @@ const CHAT_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
  */
 // Sonnet 5 is listed but not yet invocable for this account; 4.6 is verified working.
 const AGENT_MODEL_ID = 'us.anthropic.claude-sonnet-4-6';
+/**
+ * The daily GitHub work summary is one short call a day; Haiku writes it well
+ * enough, and at that volume the model's price barely registers in the budget.
+ */
+const SUMMARY_MODEL_ID = CHAT_MODEL_ID;
 /** Monthly Bedrock spend (USD) that triggers the budget email alert. */
 const BEDROCK_BUDGET_USD = 5;
 
@@ -93,10 +99,11 @@ const GOOGLE_CLIENT_SECRET_NAME = 'cv-google-oauth';
  */
 const GOOGLE_HEALTH_SECRET_NAME = 'google-health-oauth';
 /**
- * The owner's time zone: get_readiness judges "today", and a Lambda's clock is
- * UTC, which for a Japan-based owner is still yesterday until 09:00 local.
+ * The owner's time zone (Montreal; America/Montreal is only a deprecated alias
+ * of this zone): get_readiness judges "today", and a Lambda's clock is UTC,
+ * which in Eastern time is already tomorrow from 19:00 or 20:00 local.
  */
-const HEALTH_TIME_ZONE = 'Asia/Tokyo';
+const HEALTH_TIME_ZONE = 'America/Toronto';
 
 /**
  * Pinned sharp version for the resize Lambda. sharp ships prebuilt native
@@ -213,6 +220,16 @@ export class PortfolioApiStack extends cdk.Stack {
     userPoolClient.node.addDependency(googleIdp);
 
     const allowedOrigins = props.allowedOrigins ?? ['http://localhost:4200'];
+
+    // Daily GitHub work summaries (pk = "GITHUB_DAY", sk = date). A table of its
+    // own rather than an item in CvTable: the summaries accumulate indefinitely,
+    // and a single item would hit DynamoDB's 400 KB cap within a few years.
+    const gitHubSummaryTable = new dynamodb.Table(this, 'GitHubSummaryTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'date', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     // Media (blog eye-catch + project images). Uploads land under `incoming/`
     // via a presigned POST, a resize Lambda writes optimised WebP variants to
@@ -494,9 +511,11 @@ export class PortfolioApiStack extends cdk.Stack {
         ...lambdaDefaults.environment,
         WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
         WORKOUT_REGION,
+        GITHUB_SUMMARY_TABLE_NAME: gitHubSummaryTable.tableName,
       },
     });
     cvTable.grantReadData(getActivityFn);
+    gitHubSummaryTable.grantReadData(getActivityFn);
     getActivityFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['dynamodb:Query'],
@@ -700,6 +719,9 @@ export class PortfolioApiStack extends cdk.Stack {
       });
       cvTable.grantReadWriteData(mcpFn);
       mediaTable.grantReadWriteData(mcpFn);
+      // get_activity returns the daily GitHub summaries with the feed.
+      mcpFn.addEnvironment('GITHUB_SUMMARY_TABLE_NAME', gitHubSummaryTable.tableName);
+      gitHubSummaryTable.grantReadData(mcpFn);
       // get_workout / get_activity / list_exercises read the summary table;
       // get_workout_sets reads the per-set table by date and
       // get_exercise_history reads it by exercise, which is a separate resource:
@@ -730,9 +752,10 @@ export class PortfolioApiStack extends cdk.Stack {
 
       // Reflection notes: the owner's private after-session and life write-ups.
       // Declared here rather than beside the content tables because the MCP
-      // server is its only reader and writer — no REST route, and no grant to
-      // any other function, least of all the anonymous /chat and /agent. The
-      // admin gate in lambda/mcp.ts covers the reads as well as the writes.
+      // server is their only writer — no REST route, and no grant to any other
+      // function, least of all the anonymous /chat and /agent. The admin gate in
+      // lambda/mcp.ts covers the reads as well as the writes. The one other
+      // reader is the gym summariser below, read-only.
       const reflectionsTable = new dynamodb.Table(this, 'ReflectionsTable', {
         partitionKey: { name: 'type', type: dynamodb.AttributeType.STRING },
         sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
@@ -740,6 +763,9 @@ export class PortfolioApiStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.RETAIN,
         // Unlike the site content, nothing else holds a copy of these notes.
         pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+        // Keys only: the stream tells the gym summariser which day changed, and
+        // no note text passes through it.
+        stream: dynamodb.StreamViewType.KEYS_ONLY,
       });
       mcpFn.addEnvironment('REFLECTIONS_TABLE_NAME', reflectionsTable.tableName);
       // Read, append and correct; no DeleteItem.
@@ -758,6 +784,54 @@ export class PortfolioApiStack extends cdk.Stack {
       secretsmanager.Secret.fromSecretNameV2(this, 'GoogleHealthSecret', GOOGLE_HEALTH_SECRET_NAME).grantRead(mcpFn);
       mcpFn.addEnvironment('GOOGLE_HEALTH_SECRET_NAME', GOOGLE_HEALTH_SECRET_NAME);
       mcpFn.addEnvironment('HEALTH_TIME_ZONE', HEALTH_TIME_ZONE);
+
+      // One public line per training day, distilled from that day's workout
+      // notes whenever one is added or corrected. The only function besides the
+      // MCP server that reads the notes, so it is kept to the minimum: Query on
+      // the notes (no write), and Put/Delete of GYM_DAY rows in the summary
+      // table, which also holds nothing private.
+      const gymSummaryFn = new lambdaNode.NodejsFunction(this, 'GymSummaryFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'gym-summary.ts'),
+        runtime: lambda.Runtime.NODEJS_20_X,
+        bundling: { externalModules: ['@aws-sdk/*'] },
+        // A hand-run backfill summarises a few dozen days in series.
+        timeout: cdk.Duration.minutes(5),
+        memorySize: 256,
+        environment: {
+          REFLECTIONS_TABLE_NAME: reflectionsTable.tableName,
+          GITHUB_SUMMARY_TABLE_NAME: gitHubSummaryTable.tableName,
+          BEDROCK_REGION,
+          SUMMARY_MODEL_ID,
+        },
+      });
+      gymSummaryFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:Query'],
+          resources: [reflectionsTable.tableArn],
+        }),
+      );
+      gymSummaryFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:PutItem', 'dynamodb:DeleteItem'],
+          resources: [gitHubSummaryTable.tableArn],
+        }),
+      );
+      gymSummaryFn.addToRolePolicy(bedrockInvokePolicy());
+      gymSummaryFn.addEventSource(
+        new lambdaEventSources.DynamoEventSource(reflectionsTable, {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 10,
+          // A Bedrock hiccup is retried; a day that keeps failing is dropped
+          // rather than blocking every later note behind it.
+          retryAttempts: 3,
+          // "life" notes never reach the function at all.
+          filters: [
+            lambda.FilterCriteria.filter({
+              dynamodb: { Keys: { type: { S: lambda.FilterRule.isEqual('workout') } } },
+            }),
+          ],
+        }),
+      );
 
       // Discovery documents. Static apart from the deployment's own URLs, so one
       // small function serves both well-known paths.
@@ -856,6 +930,34 @@ export class PortfolioApiStack extends cdk.Stack {
         schedule: events.Schedule.rate(cdk.Duration.days(1)),
         targets: [new eventsTargets.LambdaFunction(gitHubIngestFn)],
         description: 'Refreshes the GitHub activity snapshot for the home-page calendar',
+      });
+
+      // Prose summary of each finished day's work, written once and kept. Its
+      // only grants are writing its own table and invoking Bedrock: the commit
+      // messages it reads are third-party text, so it gets nothing else to act on.
+      const gitHubSummaryFn = new lambdaNode.NodejsFunction(this, 'GitHubSummaryFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'github-summary.ts'),
+        runtime: lambda.Runtime.NODEJS_20_X,
+        bundling: { externalModules: ['@aws-sdk/*'] },
+        // Up to a few dozen GitHub calls and a handful of Bedrock calls, in series.
+        timeout: cdk.Duration.minutes(3),
+        memorySize: 256,
+        environment: {
+          GITHUB_SUMMARY_TABLE_NAME: gitHubSummaryTable.tableName,
+          GITHUB_USER: props.githubUser,
+          BEDROCK_REGION,
+          SUMMARY_MODEL_ID,
+        },
+      });
+      gitHubSummaryTable.grantReadWriteData(gitHubSummaryFn);
+      gitHubSummaryFn.addToRolePolicy(bedrockInvokePolicy());
+
+      // Shortly after the UTC day closes — the feed's day boundary — so
+      // yesterday is complete when it is summarised.
+      new events.Rule(this, 'GitHubSummarySchedule', {
+        schedule: events.Schedule.cron({ minute: '20', hour: '0' }),
+        targets: [new eventsTargets.LambdaFunction(gitHubSummaryFn)],
+        description: "Summarises the previous day's GitHub work with Bedrock",
       });
     }
 

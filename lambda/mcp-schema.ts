@@ -228,7 +228,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_activity',
     title: 'Get activity feed',
     description:
-      'Read the merged activity feed (GitHub contributions, blog posts and gym sessions) for the home-page calendar, over an optional date range.',
+      'Read the merged activity feed (GitHub contributions, blog posts and gym sessions) for the home-page calendar, with a one-line AI summary on each day\'s GitHub entry per repository, over an optional date range.',
     requiresAuth: false,
     inputSchema: DATE_RANGE_ARGS,
     annotations: readAnnotations,
@@ -339,6 +339,43 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       additionalProperties: false,
     },
     // Read-only, but unlike every other read it reaches outside this API.
+    annotations: { ...readAnnotations, openWorldHint: true },
+  },
+  {
+    name: 'get_weight_trend',
+    title: 'Get bodyweight trend',
+    description:
+      'The owner\'s bodyweight over time from their smart scale, read live from the Google Health API ' +
+      '(nothing is stored). Raw readings swing 1-2 kg a day on water and food, so do not read ' +
+      'meaning into one reading: use `latest.trendKg`/`trendLb` (a 7-day mean of daily readings, ' +
+      'each day\'s earliest weigh-in) and `rate` (a least-squares fit over the last 28 days, in ' +
+      'kg, lb and % of bodyweight per week, with a descriptive `pace`: stable under 0.1 %/week, ' +
+      '"slowly" under 0.5, "fast" above). `rate` carries a `reason` instead when there are too few ' +
+      'weigh-ins. `bodyFat` is included when the scale measures it (its rate is in percentage ' +
+      'points per week). `latest.stale` is true when the newest weigh-in is over 7 days old: say ' +
+      'so rather than presenting it as current. Pass `exercise` (e.g. "Bench Press"; partial or ' +
+      'Japanese names resolve as in get_exercise_history) to get `relativeStrength`: each ' +
+      'session\'s best estimated 1RM over the bodyweight trend that day, and the change in both ' +
+      'and in the ratio across the window — whether the owner got stronger or just heavier. ' +
+      'The training log is in lb; weights here are given in both kg and lb. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        days: {
+          type: 'integer',
+          minimum: 14,
+          maximum: 365,
+          description: 'Window length in days, ending today in the owner\'s time zone. Optional; defaults to 90.',
+        },
+        exercise: {
+          type: 'string',
+          description: 'A lift to compare against bodyweight, e.g. "Bench Press". Optional.',
+        },
+      },
+      additionalProperties: false,
+    },
+    // Read-only, but reaches the Google Health API.
     annotations: { ...readAnnotations, openWorldHint: true },
   },
   {
@@ -599,6 +636,11 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'earlier notes where they fit so they can be followed over time — a non-English tag is ' +
       'refused. `date` is the day the note is about, in ' +
       'the owner\'s local calendar (for a workout, the session day). Call list_reflections first. ' +
+      'PUBLIC SUMMARY: every "workout" note is distilled into a one-line summary shown under that ' +
+      'day\'s gym session on the public site. Keep a workout note to the training itself — ' +
+      'exercises, weights, technique, how the session went — and put nothing private in it: no ' +
+      'health or medical details, injuries, mood, work, relationships or other personal life. ' +
+      'Anything like that belongs in a "life" note, which is never published. ' +
       'Admin only.',
     requiresAuth: true,
     inputSchema: {
@@ -625,7 +667,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     description:
       'Correct the body and/or themes of an existing reflection, addressed by `type` and the `id` ' +
       'list_reflections returned. For fixing a note, not for adding to it — a new thought is a ' +
-      'new note via add_reflection. The type and date cannot change. Admin only.',
+      'new note via add_reflection. The type and date cannot change. Correcting a "workout" note ' +
+      'refreshes its day\'s public one-line summary, so the same rule as add_reflection applies: ' +
+      'nothing private in a workout note. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',

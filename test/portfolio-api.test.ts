@@ -59,15 +59,15 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   const template = synthStack();
 
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
-  // get-activity, github-ingest, pre-signup (14); create-upload and resize-image
-  // for media (16); the CDK-managed S3 bucket-notifications handler (17);
-  // list/update/delete-media for the media library (20); and the draft-returning
-  // admin blog reader behind /blog/all (21); get-muscle-volume-status, the
-  // only function that reads the plan and the log together (22); and the
-  // get/update pair behind the weekly-set-target editor (24). The MCP server's
+  // get-activity, github-ingest, github-summary, pre-signup (15); create-upload and resize-image
+  // for media (17); the CDK-managed S3 bucket-notifications handler (18);
+  // list/update/delete-media for the media library (21); and the draft-returning
+  // admin blog reader behind /blog/all (22); get-muscle-volume-status, the
+  // only function that reads the plan and the log together (23); and the
+  // get/update pair behind the weekly-set-target editor (25). The MCP server's
   // three functions are not here: they are only declared when MCP options are
   // supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 24);
+  template.resourceCountIs('AWS::Lambda::Function', 25);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -214,10 +214,10 @@ test('POST /agent requires Cognito auth and no API key', () => {
   }
 });
 
-test('agent Lambda can invoke Bedrock but cannot write to the table', () => {
+test('Bedrock-holding Lambdas cannot write to the content tables', () => {
   const template = synthStack();
 
-  // Both chat and agent roles carry the Bedrock invoke statement.
+  // Chat, agent and the GitHub summariser roles carry the Bedrock invoke statement.
   const policies = template.findResources('AWS::IAM::Policy');
   const bedrockPolicies = Object.values(policies).filter((p) =>
     p.Properties.PolicyDocument.Statement.some(
@@ -225,16 +225,21 @@ test('agent Lambda can invoke Bedrock but cannot write to the table', () => {
         Array.isArray(s.Action) && s.Action.includes('bedrock:InvokeModel'),
     ),
   );
-  expect(bedrockPolicies.length).toBe(2);
+  expect(bedrockPolicies.length).toBe(3);
 
-  // Neither Bedrock-holding role may carry a DynamoDB write action.
+  // No Bedrock-holding role may write anywhere but the summariser's own table:
+  // the text these models read is visitor- or third-party-supplied.
   for (const policy of bedrockPolicies) {
-    const actions = policy.Properties.PolicyDocument.Statement.flatMap(
-      (s: { Action?: string | string[] }) =>
-        Array.isArray(s.Action) ? s.Action : [s.Action],
-    );
-    expect(actions).not.toContain('dynamodb:PutItem');
-    expect(actions).not.toContain('dynamodb:UpdateItem');
+    for (const statement of policy.Properties.PolicyDocument.Statement as {
+      Action?: string | string[];
+      Resource?: unknown;
+    }[]) {
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      if (actions.includes('dynamodb:PutItem') || actions.includes('dynamodb:UpdateItem')) {
+        expect(JSON.stringify(statement.Resource)).toMatch(/GitHubSummaryTable/);
+        expect(JSON.stringify(statement.Resource)).not.toMatch(/CvTable/);
+      }
+    }
   }
 });
 
@@ -288,9 +293,31 @@ test('GET /activity is public and merges sources server-side', () => {
 test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
   const template = synthStack();
 
-  template.resourceCountIs('AWS::Events::Rule', 1);
+  template.resourceCountIs('AWS::Events::Rule', 2);
   template.hasResourceProperties('AWS::Events::Rule', {
     ScheduleExpression: 'rate(1 day)',
+  });
+});
+
+test('daily GitHub summaries are written once a day after the UTC day closes', () => {
+  const template = synthStack();
+
+  template.hasResourceProperties('AWS::Events::Rule', {
+    ScheduleExpression: 'cron(20 0 * * ? *)',
+  });
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    KeySchema: [
+      { AttributeName: 'pk', KeyType: 'HASH' },
+      { AttributeName: 'date', KeyType: 'RANGE' },
+    ],
+  });
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    Environment: {
+      Variables: Match.objectLike({
+        GITHUB_USER: 'octocat',
+        SUMMARY_MODEL_ID: Match.stringLikeRegexp('^us\\.anthropic\\.'),
+      }),
+    },
   });
 });
 
@@ -633,9 +660,10 @@ test('the MCP role may write the plan table and only read the training log', () 
   expect(writable).not.toContain('portfolio-workout-summary-test');
 });
 
-test('the reflections table is reachable from the MCP Lambda alone, and never deletable', () => {
+test('the reflections table is written by the MCP Lambda alone, read by the gym summariser, never deletable', () => {
   // Private writing, not site content: no REST route and no other function —
-  // above all not the anonymous /chat and /agent — may hold a grant on it.
+  // above all not the anonymous /chat and /agent — may hold a grant on it. The
+  // one exception is the gym summariser, which may only read it.
   const template = synthStackWithMcp();
 
   const tables = template.findResources('AWS::DynamoDB::Table', {
@@ -646,24 +674,39 @@ test('the reflections table is reachable from the MCP Lambda alone, and never de
   const [tableId] = tableIds;
   expect(tables[tableId].DeletionPolicy).toBe('Retain');
   expect(tables[tableId].Properties.PointInTimeRecoverySpecification).toEqual({ PointInTimeRecoveryEnabled: true });
+  // No note text travels through the stream.
+  expect(tables[tableId].Properties.StreamSpecification).toEqual({ StreamViewType: 'KEYS_ONLY' });
 
   const functions = template.findResources('AWS::Lambda::Function');
   const withTableEnv = Object.entries(functions).filter(([, f]) =>
     JSON.stringify(f.Properties?.Environment?.Variables ?? {}).includes(tableId),
   );
-  expect(withTableEnv).toHaveLength(1);
-  expect(Object.keys(withTableEnv[0][1].Properties.Environment.Variables)).toContain('MCP_CLIENT_IDS');
+  expect(withTableEnv).toHaveLength(2);
+  const [mcpFn, gymFn] = [
+    withTableEnv.find(([, f]) => 'MCP_CLIENT_IDS' in f.Properties.Environment.Variables),
+    withTableEnv.find(([, f]) => 'SUMMARY_MODEL_ID' in f.Properties.Environment.Variables),
+  ];
+  expect(mcpFn).toBeDefined();
+  expect(gymFn).toBeDefined();
 
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
   const granting = policies.filter((p) => JSON.stringify(p.Properties.PolicyDocument).includes(tableId));
-  expect(granting).toHaveLength(1);
-  for (const statement of granting[0].Properties.PolicyDocument.Statement as Array<{
-    Action?: string | string[];
-    Resource?: unknown;
-  }>) {
-    if (!JSON.stringify(statement.Resource ?? '').includes(tableId)) continue;
-    const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
-    expect(actions).not.toContain('dynamodb:DeleteItem');
+  expect(granting).toHaveLength(2);
+  for (const policy of granting) {
+    const isGym = JSON.stringify(policy.Properties.Roles).includes(gymFn![1].Properties.Role['Fn::GetAtt'][0]);
+    for (const statement of policy.Properties.PolicyDocument.Statement as Array<{
+      Action?: string | string[];
+      Resource?: unknown;
+    }>) {
+      if (!JSON.stringify(statement.Resource ?? '').includes(tableId)) continue;
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      expect(actions).not.toContain('dynamodb:DeleteItem');
+      if (isGym) {
+        // Query plus the stream reads CDK grants for the event source; no write.
+        expect(actions).not.toContain('dynamodb:PutItem');
+        expect(actions).not.toContain('dynamodb:UpdateItem');
+      }
+    }
   }
 });
 
@@ -688,7 +731,7 @@ test('the Google Health grant is readable by the MCP Lambda alone', () => {
   );
   expect(withSecretEnv).toHaveLength(1);
   expect(withSecretEnv[0].Properties.Environment.Variables).toMatchObject({
-    HEALTH_TIME_ZONE: 'Asia/Tokyo',
+    HEALTH_TIME_ZONE: 'America/Toronto',
     MCP_ADMIN_SCOPE: 'mcp/admin',
   });
 });
@@ -697,4 +740,15 @@ test('without MCP options no function can read the Google Health grant', () => {
   const template = synthStack();
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
   expect(JSON.stringify(policies)).not.toContain('google-health-oauth');
+});
+
+test('only workout notes reach the gym summariser', () => {
+  const template = synthStackWithMcp();
+
+  template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+    StartingPosition: 'LATEST',
+    FilterCriteria: {
+      Filters: [{ Pattern: JSON.stringify({ dynamodb: { Keys: { type: { S: ['workout'] } } } }) }],
+    },
+  });
 });

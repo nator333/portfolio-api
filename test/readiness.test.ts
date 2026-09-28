@@ -3,6 +3,7 @@ import {
   MIN_BASELINE_DAYS,
   addDays,
   civilDate,
+  dedupeDaily,
   isIsoDate,
   judgeReadiness,
   localDate,
@@ -129,6 +130,57 @@ describe('parsing Google Health data points', () => {
     const processing = { sleep: { ...point.sleep, metadata: {} } };
     expect(parseSleep(processing)?.processed).toBe(false);
     expect(parseSleep({ sleep: { interval: {} } })).toBeNull();
+  });
+});
+
+describe('sleep without civilEndTime (as the live API returns it)', () => {
+  const bare = (endTime: string, endUtcOffset?: string) => ({
+    sleep: {
+      interval: { startTime: '2026-09-27T03:00:00Z', endTime, ...(endUtcOffset ? { endUtcOffset } : {}) },
+      metadata: { processed: true, mainSleep: true },
+      summary: { minutesAsleep: '420' },
+    },
+  });
+
+  test('the local end date comes from endTime shifted by endUtcOffset', () => {
+    // 06:30 in Montreal (UTC-4) on the 27th.
+    expect(parseSleep(bare('2026-09-27T10:30:00Z', '-14400s'))?.endDate).toBe('2026-09-27');
+    // A 22:30 local wake-up is still the 26th locally, though the 27th in UTC.
+    expect(parseSleep(bare('2026-09-27T02:30:00Z', '-14400s'))?.endDate).toBe('2026-09-26');
+  });
+
+  test('with no offset either, the configured time zone decides', () => {
+    expect(parseSleep(bare('2026-09-27T02:30:00Z'), 'America/Toronto')?.endDate).toBe('2026-09-26');
+    // Nothing to place the night in a local day: skipped rather than guessed.
+    expect(parseSleep(bare('2026-09-27T02:30:00Z'))).toBeNull();
+  });
+
+  test('civilEndTime still wins when it is present', () => {
+    const point = bare('2026-09-27T02:30:00Z', '-14400s');
+    (point.sleep.interval as Record<string, unknown>).civilEndTime = { date: { year: 2026, month: 9, day: 27 } };
+    expect(parseSleep(point)?.endDate).toBe('2026-09-27');
+  });
+});
+
+describe('one value per day', () => {
+  test('duplicates for a date are averaged', () => {
+    expect(
+      dedupeDaily([
+        { date: '2026-09-27', value: 60 },
+        { date: '2026-09-27', value: 64 },
+        { date: '2026-09-26', value: 58 },
+      ]),
+    ).toEqual([
+      { date: '2026-09-27', value: 62 },
+      { date: '2026-09-26', value: 58 },
+    ]);
+  });
+
+  test('a duplicated day is counted once in the baseline', () => {
+    // Every baseline day reported twice, as the live resting-HR read did for some.
+    const doubled = [...rhrBaseline, ...rhrBaseline];
+    const result = judge({ rhr: doubled });
+    expect(result.signals.restingHeartRate?.baseline?.days).toBe(BASELINE_DAYS);
   });
 });
 

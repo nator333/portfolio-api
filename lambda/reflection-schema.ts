@@ -5,9 +5,12 @@ import { z } from 'zod';
  * a training session, or life more broadly — written by Claude from a
  * conversation with the owner and read back before the next one.
  *
- * Private by construction. Nothing here is part of the public site; the only
- * reader and writer is the admin-gated MCP server, and the table is granted to
- * no other function in the stack.
+ * Private by construction, with one narrow exception. The only writer is the
+ * admin-gated MCP server. The one other reader is the gym summariser
+ * (gym-summary.ts), which turns each day's *workout* notes into a public line of
+ * at most 75 characters about the training alone; "life" notes never leave the
+ * table. That is why add_reflection tells the writer to keep workout notes free
+ * of private matters. No other function in the stack holds a grant on it.
  *
  * ## Storage shape
  *
