@@ -73,8 +73,6 @@ export interface McpToolSpec {
   };
 }
 
-const NO_ARGS: Record<string, unknown> = { type: 'object', properties: {}, additionalProperties: false };
-
 const DATE_RANGE_ARGS: Record<string, unknown> = {
   type: 'object',
   properties: {
@@ -205,23 +203,6 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: readAnnotations,
   },
   {
-    name: 'get_activity',
-    title: 'Get activity feed',
-    description:
-      'The home-page calendar feed: GitHub contributions (with a one-line AI summary per repository), blog posts and gym sessions.',
-    requiresAuth: false,
-    inputSchema: DATE_RANGE_ARGS,
-    annotations: readAnnotations,
-  },
-  {
-    name: 'list_media',
-    title: 'List media',
-    description: 'The uploaded media catalogue and its metadata. Admin only.',
-    requiresAuth: true,
-    inputSchema: NO_ARGS,
-    annotations: readAnnotations,
-  },
-  {
     name: 'get_workout_sets',
     title: 'Get workout sets',
     description:
@@ -339,8 +320,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     title: 'Update site content',
     description:
       'Replace one site document. Send the whole document, as get_content returns it; it is validated ' +
-      'and an invalid one is rejected unchanged. A home background is {url, caption, alt?}, with url ' +
-      'a media asset\'s w2560 variant from list_media. Admin only.',
+      'and an invalid one is rejected unchanged. A home background is {url, caption, alt?}. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
@@ -349,24 +329,6 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
         document: { type: 'object', description: 'The complete document.', additionalProperties: true },
       },
       required: ['doc', 'document'],
-      additionalProperties: false,
-    },
-    annotations: writeAnnotations,
-  },
-  {
-    name: 'update_media',
-    title: 'Update media metadata',
-    description: 'Edit the alt text, title and/or category of a media asset. Admin only.',
-    requiresAuth: true,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        assetId: { type: 'string' },
-        alt: { type: 'string' },
-        title: { type: 'string' },
-        category: { type: 'string', enum: ['blog', 'project', 'general'] },
-      },
-      required: ['assetId'],
       additionalProperties: false,
     },
     annotations: writeAnnotations,

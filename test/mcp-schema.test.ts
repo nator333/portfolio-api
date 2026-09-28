@@ -14,7 +14,7 @@ test('every read tool is public and every write tool requires auth', () => {
   // get_muscle_volume_status sits with them because it reads the plan, which is
   // private — even though the figures it returns are the ones the public
   // progress page shows.
-  expect(publicTools).toEqual(['get_activity', 'get_content', 'get_workout']);
+  expect(publicTools).toEqual(['get_content', 'get_workout']);
   expect(authTools).toEqual([
     'add_reflection',
     'get_exercise_history',
@@ -25,11 +25,9 @@ test('every read tool is public and every write tool requires auth', () => {
     'get_workout_plan',
     'get_workout_sets',
     'list_exercises',
-    'list_media',
     'list_reflections',
     'revise_workout_plan',
     'update_content',
-    'update_media',
     'update_reflection',
   ]);
 });

@@ -6,8 +6,6 @@ import { handler as getProjects } from './get-projects';
 import { handler as getBlog } from './get-blog';
 import { handler as getHome } from './get-home';
 import { handler as getWorkout } from './get-workout';
-import { handler as getActivity } from './get-activity';
-import { handler as listMedia } from './list-media';
 import { handler as getWorkoutSets } from './get-workout-sets';
 import { handler as getExerciseHistory } from './get-exercise-history';
 import { handler as listExercises } from './list-exercises';
@@ -20,7 +18,6 @@ import { handler as updateCv } from './update-cv';
 import { handler as updateProjects } from './update-projects';
 import { handler as updateBlog } from './update-blog';
 import { handler as updateHome } from './update-home';
-import { handler as updateMedia } from './update-media';
 import { handler as updateWorkoutPlan } from './update-workout-plan';
 import { handler as reviseWorkoutPlan } from './revise-workout-plan';
 import { handler as listReflections } from './list-reflections';
@@ -93,8 +90,6 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
     return read ? read(proxyEvent({})) : Promise.resolve(unknownDoc(args.doc));
   },
   get_workout: (args) => getWorkout(proxyEvent({ query: dateRange(args) })),
-  get_activity: (args) => getActivity(proxyEvent({ query: dateRange(args) })),
-  list_media: () => listMedia(proxyEvent({})),
   get_workout_sets: (args) => getWorkoutSets(proxyEvent({ query: setsRange(args) })),
   list_exercises: (args) => listExercises(proxyEvent({ query: exerciseFilter(args) })),
   get_exercise_history: (args) => getExerciseHistory(proxyEvent({ query: exerciseHistory(args) })),
@@ -123,10 +118,6 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   list_reflections: (args) => listReflections(proxyEvent({ query: reflectionQuery(args) })),
   add_reflection: (args) => addReflection(proxyEvent({ body: args })),
   update_reflection: (args) => updateReflection(proxyEvent({ body: args })),
-  update_media: (args) => {
-    const { assetId, ...rest } = args as { assetId?: string } & Record<string, unknown>;
-    return updateMedia(proxyEvent({ path: { id: String(assetId ?? '') }, body: rest }));
-  },
 };
 
 /**
