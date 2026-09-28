@@ -20,7 +20,7 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
   `get_workout`, `get_activity`: the same data the site already serves.
 * **Admin tools** — `get_workout_sets` (the private per-set training log),
   `get_exercise_history`, `list_exercises`, `get_workout_plan`, `get_readiness`,
-  `list_media`,
+  `get_training_recommendation`, `list_media`,
   and every `update_`/`revise_` tool. Each is refused with `401` and a
   `WWW-Authenticate` challenge unless the request carries an access token issued
   by this user pool, for this resource, bearing the `mcp/admin` scope.
@@ -86,6 +86,26 @@ Connecting it is a one-time step outside the deploy:
 While the consent screen stays in *Testing*, Google expires the refresh token
 after 7 days. The tool then reports that the grant was refused, and re-running
 step 2 fixes it.
+
+### What to train today
+
+`get_training_recommendation` joins `get_readiness` with the volume status and
+the plan (`lambda/training-recommendation.ts`). It calls those handlers
+in-process rather than repeating their queries, so it cannot drift from them.
+
+* **Which session** comes from volume alone. Each plan session is scored by the
+  status of the muscles it trains (under +2, maintenance +1, in range 0,
+  over −1, each muscle counted once), with ties going to rotation order.
+* **How hard** comes from readiness alone. Each slot is restated for today:
+  the top of its set range on a push day, as planned on a normal day, and about
+  two-thirds of its minimum sets at one RPE lower on an easy day. A muscle
+  already over target is held to its minimum sets, or skipped on an easy day.
+  Readiness only ever removes volume, so the plan's compliance with its weekly
+  targets still holds.
+* When readiness has no verdict (the watch hasn't synced, or Google isn't
+  connected), the session is still returned but `prescription` is `null`.
+* `restSuggested` is true on an easy day when nothing any session trains is
+  behind.
 
 ### Why there is no dynamic client registration
 
