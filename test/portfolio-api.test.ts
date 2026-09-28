@@ -64,10 +64,11 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   // list/update/delete-media for the media library (21); and the draft-returning
   // admin blog reader behind /blog/all (22); get-muscle-volume-status, the
   // only function that reads the plan and the log together (23); and the
-  // get/update pair behind the weekly-set-target editor (25). The MCP server's
-  // three functions are not here: they are only declared when MCP options are
-  // supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 25);
+  // get/update pair behind the weekly-set-target editor (25); and get-bodyweight,
+  // which serves the monthly bodyweight snapshot (26). The MCP server's
+  // functions, and the bodyweight ingest that needs its Google grant, are not
+  // here: they are only declared when MCP options are supplied.
+  template.resourceCountIs('AWS::Lambda::Function', 26);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -112,15 +113,15 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   for (const pathPart of ['cv', 'projects', 'blog', 'home']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Seven public GETs (key only): cv, projects, blog, home, workout, activity
-  // and muscle-volume-status; and four Cognito-guarded PUTs across the content
+  // Eight public GETs (key only): cv, projects, blog, home, workout, activity,
+  // muscle-volume-status and bodyweight; and four Cognito-guarded PUTs across the content
   // resources, plus the weekly set targets, which are Cognito-gated both ways.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(7);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(8);
   expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(5);
 });
 
@@ -710,30 +711,67 @@ test('the reflections table is written by the MCP Lambda alone, read by the gym 
   }
 });
 
-test('the Google Health grant is readable by the MCP Lambda alone', () => {
+test('the Google Health grant is readable by the MCP Lambda and the bodyweight ingest alone', () => {
   // A health-data credential: like the reflections, no anonymous function —
-  // least of all /chat and /agent — may be able to read it.
+  // least of all /chat, /agent, or the public /bodyweight it feeds — may be
+  // able to read it. The two holders are the admin-gated MCP server and the
+  // scheduled ingest, which has no API route at all.
   const template = synthStackWithMcp();
 
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
   const granting = policies.filter((p) =>
     JSON.stringify(p.Properties.PolicyDocument).includes('secret:google-health-oauth'),
   );
-  expect(granting).toHaveLength(1);
-  const actions = (granting[0].Properties.PolicyDocument.Statement as Array<{ Action?: string | string[] }>)
-    .flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
-  expect(actions).toContain('secretsmanager:GetSecretValue');
-  expect(actions).not.toContain('secretsmanager:PutSecretValue');
+  expect(granting).toHaveLength(2);
+  for (const policy of granting) {
+    const actions = (policy.Properties.PolicyDocument.Statement as Array<{ Action?: string | string[] }>)
+      .flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
+    expect(actions).toContain('secretsmanager:GetSecretValue');
+    expect(actions).not.toContain('secretsmanager:PutSecretValue');
+  }
 
-  const functions = Object.values(template.findResources('AWS::Lambda::Function'));
-  const withSecretEnv = functions.filter(
-    (f) => f.Properties?.Environment?.Variables?.GOOGLE_HEALTH_SECRET_NAME === 'google-health-oauth',
+  const functions = template.findResources('AWS::Lambda::Function');
+  const withSecretEnv = Object.entries(functions).filter(
+    ([, f]) => f.Properties?.Environment?.Variables?.GOOGLE_HEALTH_SECRET_NAME === 'google-health-oauth',
   );
-  expect(withSecretEnv).toHaveLength(1);
-  expect(withSecretEnv[0].Properties.Environment.Variables).toMatchObject({
-    HEALTH_TIME_ZONE: 'America/Toronto',
-    MCP_ADMIN_SCOPE: 'mcp/admin',
+  expect(withSecretEnv.map(([id]) => id.replace(/[A-F0-9]{8}$/, '')).sort()).toEqual([
+    'BodyweightIngestFunction',
+    'McpFunction',
+  ]);
+  for (const [, f] of withSecretEnv) {
+    expect(f.Properties.Environment.Variables.HEALTH_TIME_ZONE).toBe('America/Toronto');
+  }
+});
+
+test('GET /bodyweight is public (API key only) and served without Google access', () => {
+  const template = synthStackWithMcp();
+  const resources = template.findResources('AWS::ApiGateway::Resource', { Properties: { PathPart: 'bodyweight' } });
+  expect(Object.keys(resources)).toHaveLength(1);
+  const [resourceId] = Object.keys(resources);
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'GET',
+    ApiKeyRequired: true,
+    AuthorizationType: 'NONE',
+    ResourceId: { Ref: resourceId },
   });
+
+  // The function behind it reads the snapshot and holds no secret.
+  const functions = template.findResources('AWS::Lambda::Function');
+  const getter = Object.entries(functions).find(([id]) => id.startsWith('GetBodyweightFunction'));
+  expect(getter).toBeDefined();
+  expect(getter![1].Properties.Environment.Variables.GOOGLE_HEALTH_SECRET_NAME).toBeUndefined();
+});
+
+test('the bodyweight ingest runs daily and only where the Google grant exists', () => {
+  synthStackWithMcp().hasResourceProperties('AWS::Events::Rule', {
+    ScheduleExpression: 'rate(1 day)',
+    Description: 'Refreshes the public monthly bodyweight averages from Google Health',
+  });
+
+  const dev = synthStack();
+  const devFunctions = Object.keys(dev.findResources('AWS::Lambda::Function'));
+  expect(devFunctions.some((id) => id.startsWith('BodyweightIngestFunction'))).toBe(false);
+  expect(devFunctions.some((id) => id.startsWith('GetBodyweightFunction'))).toBe(true);
 });
 
 test('without MCP options no function can read the Google Health grant', () => {

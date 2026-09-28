@@ -504,6 +504,14 @@ export class PortfolioApiStack extends cdk.Stack {
     // Unified activity feed: blog and the GitHub snapshot locally, gym sessions
     // cross-region. Merged here so the landing page makes one call rather than
     // three against a quota every visitor shares.
+    // Public monthly bodyweight for the Training page: reads the snapshot the
+    // (production-only) ingest writes, and nothing else. No Google access.
+    const getBodyweightFn = new lambdaNode.NodejsFunction(this, 'GetBodyweightFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-bodyweight.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantReadData(getBodyweightFn);
+
     const getActivityFn = new lambdaNode.NodejsFunction(this, 'GetActivityFunction', {
       entry: path.join(__dirname, '..', 'lambda', 'get-activity.ts'),
       ...lambdaDefaults,
@@ -781,9 +789,40 @@ export class PortfolioApiStack extends cdk.Stack {
       // name rather than created here: the secret's value comes from the owner's
       // own consent flow, and the tool reports a clear "not connected" until the
       // script has written it.
-      secretsmanager.Secret.fromSecretNameV2(this, 'GoogleHealthSecret', GOOGLE_HEALTH_SECRET_NAME).grantRead(mcpFn);
+      const googleHealthSecret = secretsmanager.Secret.fromSecretNameV2(
+        this,
+        'GoogleHealthSecret',
+        GOOGLE_HEALTH_SECRET_NAME,
+      );
+      googleHealthSecret.grantRead(mcpFn);
       mcpFn.addEnvironment('GOOGLE_HEALTH_SECRET_NAME', GOOGLE_HEALTH_SECRET_NAME);
       mcpFn.addEnvironment('HEALTH_TIME_ZONE', HEALTH_TIME_ZONE);
+
+      // Daily refresh of the public monthly-bodyweight snapshot (GET
+      // /bodyweight). Declared here, beside the MCP server, because it needs the
+      // same Google grant, and that grant exists only on the deployments that
+      // declare the MCP server. The public GET itself never touches Google: it
+      // serves what this writes, which is monthly averages and nothing finer.
+      const bodyweightIngestFn = new lambdaNode.NodejsFunction(this, 'BodyweightIngestFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'bodyweight-ingest.ts'),
+        runtime: lambda.Runtime.NODEJS_20_X,
+        bundling: { externalModules: ['@aws-sdk/*'] },
+        timeout: cdk.Duration.seconds(30),
+        environment: {
+          CV_TABLE_NAME: cvTable.tableName,
+          GOOGLE_HEALTH_SECRET_NAME,
+          HEALTH_TIME_ZONE,
+        },
+      });
+      googleHealthSecret.grantRead(bodyweightIngestFn);
+      cvTable.grantReadWriteData(bodyweightIngestFn);
+      new events.Rule(this, 'BodyweightIngestSchedule', {
+        // Timing hardly matters for a monthly average; once a day keeps the
+        // current month's figure current.
+        schedule: events.Schedule.rate(cdk.Duration.days(1)),
+        targets: [new eventsTargets.LambdaFunction(bodyweightIngestFn)],
+        description: 'Refreshes the public monthly bodyweight averages from Google Health',
+      });
 
       // One public line per training day, distilled from that day's workout
       // notes whenever one is added or corrected. The only function besides the
@@ -1088,6 +1127,12 @@ export class PortfolioApiStack extends cdk.Stack {
     // Public activity feed for the home calendar; same posture as the other
     // public GETs, and drawing on the content quota since the landing page is
     // exactly what that quota is for.
+    // Monthly bodyweight averages; same public posture as /workout, whose page
+    // shows them.
+    api.root.addResource('bodyweight').addMethod('GET', new apigateway.LambdaIntegration(getBodyweightFn), {
+      apiKeyRequired: true,
+    });
+
     const activityResource = api.root.addResource('activity');
     activityResource.addMethod('GET', new apigateway.LambdaIntegration(getActivityFn), {
       apiKeyRequired: true,
