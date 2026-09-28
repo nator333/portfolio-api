@@ -9,21 +9,12 @@ test('every read tool is public and every write tool requires auth', () => {
   const publicTools = TOOL_SPECS.filter((t) => !t.requiresAuth).map((t) => t.name).sort();
   const authTools = TOOL_SPECS.filter((t) => t.requiresAuth).map((t) => t.name).sort();
 
-  // The public get_ tools are anonymous; the private-data reads (list_media,
-  // get_workout_sets, get_exercise_history, list_exercises, get_workout_plan,
-  // get_muscle_volume_status, get_readiness, list_reflections) and every
-  // update_ tool are admin-only.
+  // The public reads are anonymous (get_content serves the site's own
+  // documents). The private-data reads and every write are admin-only.
   // get_muscle_volume_status sits with them because it reads the plan, which is
   // private — even though the figures it returns are the ones the public
   // progress page shows.
-  expect(publicTools).toEqual([
-    'get_activity',
-    'get_blog',
-    'get_cv',
-    'get_home',
-    'get_projects',
-    'get_workout',
-  ]);
+  expect(publicTools).toEqual(['get_activity', 'get_content', 'get_workout']);
   expect(authTools).toEqual([
     'add_reflection',
     'get_exercise_history',
@@ -37,13 +28,9 @@ test('every read tool is public and every write tool requires auth', () => {
     'list_media',
     'list_reflections',
     'revise_workout_plan',
-    'update_blog',
-    'update_cv',
-    'update_home',
+    'update_content',
     'update_media',
-    'update_projects',
     'update_reflection',
-    'update_workout_plan',
   ]);
 });
 
