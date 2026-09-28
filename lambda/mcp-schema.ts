@@ -342,6 +342,43 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: { ...readAnnotations, openWorldHint: true },
   },
   {
+    name: 'get_weight_trend',
+    title: 'Get bodyweight trend',
+    description:
+      'The owner\'s bodyweight over time from their smart scale, read live from the Google Health API ' +
+      '(nothing is stored). Raw readings swing 1-2 kg a day on water and food, so do not read ' +
+      'meaning into one reading: use `latest.trendKg`/`trendLb` (a 7-day mean of daily readings, ' +
+      'each day\'s earliest weigh-in) and `rate` (a least-squares fit over the last 28 days, in ' +
+      'kg, lb and % of bodyweight per week, with a descriptive `pace`: stable under 0.1 %/week, ' +
+      '"slowly" under 0.5, "fast" above). `rate` carries a `reason` instead when there are too few ' +
+      'weigh-ins. `bodyFat` is included when the scale measures it (its rate is in percentage ' +
+      'points per week). `latest.stale` is true when the newest weigh-in is over 7 days old: say ' +
+      'so rather than presenting it as current. Pass `exercise` (e.g. "Bench Press"; partial or ' +
+      'Japanese names resolve as in get_exercise_history) to get `relativeStrength`: each ' +
+      'session\'s best estimated 1RM over the bodyweight trend that day, and the change in both ' +
+      'and in the ratio across the window — whether the owner got stronger or just heavier. ' +
+      'The training log is in lb; weights here are given in both kg and lb. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        days: {
+          type: 'integer',
+          minimum: 14,
+          maximum: 365,
+          description: 'Window length in days, ending today in the owner\'s time zone. Optional; defaults to 90.',
+        },
+        exercise: {
+          type: 'string',
+          description: 'A lift to compare against bodyweight, e.g. "Bench Press". Optional.',
+        },
+      },
+      additionalProperties: false,
+    },
+    // Read-only, but reaches the Google Health API.
+    annotations: { ...readAnnotations, openWorldHint: true },
+  },
+  {
     name: 'update_cv',
     title: 'Update CV',
     description: 'Replace the CV document. Admin only. Validated server-side; an invalid document is rejected unchanged.',
