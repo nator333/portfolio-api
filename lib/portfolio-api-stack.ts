@@ -739,7 +739,7 @@ export class PortfolioApiStack extends cdk.Stack {
         }),
       );
 
-      // get_workout_plan reads and update_workout_plan appends. PutItem is
+      // get_workout_plan reads and revise_workout_plan appends. PutItem is
       // granted only here, and only on the plan table: the log itself stays
       // read-only to this API, since the sole writer of training history is the
       // ingest Lambda in us-west-2.

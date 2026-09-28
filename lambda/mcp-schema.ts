@@ -91,8 +91,8 @@ const DATE_RANGE_ARGS: Record<string, unknown> = {
 const SETS_RANGE_ARGS: Record<string, unknown> = {
   type: 'object',
   properties: {
-    date: { type: 'string', description: 'A single day, ISO YYYY-MM-DD. Simplest and cheapest form.' },
-    from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Use with `to` for a range.' },
+    date: { type: 'string', description: 'A single day, ISO YYYY-MM-DD. Cheapest form.' },
+    from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD.' },
     to: { type: 'string', description: 'Inclusive end date, ISO YYYY-MM-DD. At most 31 days from `from`.' },
   },
   additionalProperties: false,
@@ -109,10 +109,7 @@ const EXERCISE_HISTORY_ARGS: Record<string, unknown> = {
     exercise: {
       type: 'string',
       description:
-        'The exercise, e.g. "Bench Press". Matched leniently — a partial or ' +
-        'Japanese name resolves to the canonical one, and an unrecognised name ' +
-        'comes back with candidates rather than an empty history. Call ' +
-        'list_exercises for the exact vocabulary.',
+        'e.g. "Bench Press". Partial or Japanese names resolve; an unknown name returns candidates.',
     },
     from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Optional.' },
     to: { type: 'string', description: 'Inclusive end date, ISO YYYY-MM-DD. Optional.' },
@@ -124,13 +121,12 @@ const EXERCISE_HISTORY_ARGS: Record<string, unknown> = {
 const EXERCISE_LIST_ARGS: Record<string, unknown> = {
   type: 'object',
   properties: {
-    muscle: {
-      type: 'string',
-      description: 'Restrict to one muscle group, e.g. "Chest". Optional; omit for every exercise.',
-    },
+    muscle: { type: 'string', description: 'Restrict to one muscle group, e.g. "Chest". Optional.' },
   },
   additionalProperties: false,
 };
+
+const PLAN_ID_ARG = { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' };
 
 /**
  * The plan read is four lookups behind one tool: the arguments are mutually
@@ -139,16 +135,10 @@ const EXERCISE_LIST_ARGS: Record<string, unknown> = {
 const PLAN_READ_ARGS: Record<string, unknown> = {
   type: 'object',
   properties: {
-    planId: { type: 'string', description: 'Which program. Optional; defaults to the only one, "upper-lower".' },
-    version: { type: 'integer', description: 'A specific version number. Optional; omit for the current one.' },
-    date: {
-      type: 'string',
-      description: 'ISO YYYY-MM-DD — return the version that was in force that day. Optional.',
-    },
-    history: {
-      type: 'boolean',
-      description: 'True to list every version as metadata only (no session detail). Optional.',
-    },
+    planId: PLAN_ID_ARG,
+    version: { type: 'integer', description: 'A specific version. Optional.' },
+    date: { type: 'string', description: 'ISO YYYY-MM-DD: the version in force that day. Optional.' },
+    history: { type: 'boolean', description: 'True to list every version as metadata only. Optional.' },
   },
   additionalProperties: false,
 };
@@ -158,23 +148,28 @@ const MUSCLE_VOLUME_ARGS: Record<string, unknown> = {
   properties: {
     window: {
       type: 'integer',
-      description:
-        'Length of the trailing window in days, ending now. Optional; defaults to 7. The weekly ' +
-        'targets are scaled to it, so a 14-day window is judged against a fortnight\'s worth.',
+      description: 'Trailing window in days, ending now. Optional; defaults to 7. Targets are scaled to it.',
     },
-    planId: { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' },
+    planId: PLAN_ID_ARG,
   },
   additionalProperties: false,
 };
 
-/** A full-document write tool input: the document itself, validated server-side. */
-const documentArgs = (label: string): Record<string, unknown> => ({
-  type: 'object',
+/**
+ * The four site documents share one read and one write tool, keyed by `doc`.
+ * Each was its own pair of tools once; eight near-identical entries in
+ * tools/list cost every conversation context for no extra capability. mcp.ts
+ * maps each name to its own handler, so validation is unchanged.
+ */
+export const CONTENT_DOCS = ['cv', 'projects', 'blog', 'home'] as const;
+
+const CONTENT_DOC_ARG = {
+  type: 'string',
+  enum: [...CONTENT_DOCS],
   description:
-    `The complete ${label} document, same shape returned by the matching get_ tool. ` +
-    'Send the whole document, never a partial diff — it replaces the stored one.',
-  additionalProperties: true,
-});
+    'cv: personal info, summary, skills, experience, education. projects: the project list. ' +
+    'blog: every post with its markdown. home: hero mottoes and background photos.',
+};
 
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const writeAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -182,44 +177,29 @@ const writeAnnotations = { readOnlyHint: false, destructiveHint: false, idempote
 // is refused rather than absorbed — not idempotent, and not destructive either.
 const appendAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
+/** A weekly set target as the plan stores it; shared by the whole-plan and edit forms. */
+const WEEKLY_SET_TARGET_SHAPE =
+  '{muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null, maintenanceSets: number|null}';
+
 export const TOOL_SPECS: readonly McpToolSpec[] = [
   {
-    name: 'get_cv',
-    title: 'Get CV',
-    description: "Read the portfolio owner's CV document (personal info, summary, skills, experience, qualifications, education).",
+    name: 'get_content',
+    title: 'Get site content',
+    description: 'Read one of the public site documents.',
     requiresAuth: false,
-    inputSchema: NO_ARGS,
-    annotations: readAnnotations,
-  },
-  {
-    name: 'get_projects',
-    title: 'Get projects',
-    description: 'Read the projects document (the portfolio project list).',
-    requiresAuth: false,
-    inputSchema: NO_ARGS,
-    annotations: readAnnotations,
-  },
-  {
-    name: 'get_blog',
-    title: 'Get blog',
-    description: 'Read the blog document (all blog posts with their markdown content).',
-    requiresAuth: false,
-    inputSchema: NO_ARGS,
-    annotations: readAnnotations,
-  },
-  {
-    name: 'get_home',
-    title: 'Get home',
-    description: 'Read the home-page document (the hero mottoes and background photos).',
-    requiresAuth: false,
-    inputSchema: NO_ARGS,
+    inputSchema: {
+      type: 'object',
+      properties: { doc: CONTENT_DOC_ARG },
+      required: ['doc'],
+      additionalProperties: false,
+    },
     annotations: readAnnotations,
   },
   {
     name: 'get_workout',
     title: 'Get workout summary',
     description:
-      'Read the aggregated workout/strength summary: per-day volume, per-muscle sets, top exercises and estimated-1RM progression over an optional date range.',
+      'Aggregated training summary: per-day volume, per-muscle sets, top exercises and estimated-1RM progression.',
     requiresAuth: false,
     inputSchema: DATE_RANGE_ARGS,
     annotations: readAnnotations,
@@ -228,7 +208,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_activity',
     title: 'Get activity feed',
     description:
-      'Read the merged activity feed (GitHub contributions, blog posts and gym sessions) for the home-page calendar, with a one-line AI summary on each day\'s GitHub entry per repository, over an optional date range.',
+      'The home-page calendar feed: GitHub contributions (with a one-line AI summary per repository), blog posts and gym sessions.',
     requiresAuth: false,
     inputSchema: DATE_RANGE_ARGS,
     annotations: readAnnotations,
@@ -236,7 +216,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
   {
     name: 'list_media',
     title: 'List media',
-    description: 'List the media asset catalogue (uploaded images and their metadata). Admin only.',
+    description: 'The uploaded media catalogue and its metadata. Admin only.',
     requiresAuth: true,
     inputSchema: NO_ARGS,
     annotations: readAnnotations,
@@ -245,9 +225,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_workout_sets',
     title: 'Get workout sets',
     description:
-      'The individual logged sets for a day (or a span of at most 31 days): per-set exercise, ' +
-      'weight, reps, volume, muscle group and free-text note. This is the raw training detail ' +
-      'behind the aggregates get_workout returns. Admin only.',
+      'Every logged set for a day or span: exercise, weight, reps, volume, muscle and note. Admin only.',
     requiresAuth: true,
     inputSchema: SETS_RANGE_ARGS,
     annotations: readAnnotations,
@@ -256,9 +234,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'list_exercises',
     title: 'List exercises',
     description:
-      'The training log\'s exercise vocabulary: every movement ever logged, with its muscle group, ' +
-      'set and session counts, date range and all-time bests, most-trained first. Call this to ' +
-      'learn the exact names get_exercise_history expects. Admin only.',
+      'Every exercise ever logged, with muscle group, set and session counts, date range and all-time bests. Admin only.',
     requiresAuth: true,
     inputSchema: EXERCISE_LIST_ARGS,
     annotations: readAnnotations,
@@ -267,10 +243,8 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_exercise_history',
     title: 'Get exercise history',
     description:
-      'Every logged set of a single exercise, in date order, with that lift\'s all-time bests. ' +
-      'This is the tool for progression questions about one movement ("how has my bench moved ' +
-      'this year") — get_workout_sets answers the same question only by returning every ' +
-      'exercise on every day in the span. Admin only.',
+      'Every logged set of one exercise in date order, with its all-time bests. Use for progression ' +
+      'questions about a single lift. Admin only.',
     requiresAuth: true,
     inputSchema: EXERCISE_HISTORY_ARGS,
     annotations: readAnnotations,
@@ -279,15 +253,10 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_workout_plan',
     title: 'Get training plan',
     description:
-      'Read the training program: the prescribed sessions, exercise slots, set/rep/RPE ranges and ' +
-      'weekly set targets. This is the plan, not the log — get_workout_sets returns what was ' +
-      'actually lifted. Returns the current version by default; pass `version` for a specific one, ' +
-      '`date` for whichever was in force that day, or `history: true` to list all versions. ' +
-      'The menu and the weekly set targets are versioned separately and composed here into one ' +
-      'document; `targetsVersion` says which target set was used. Each weekly set target is ' +
-      '{muscles, sets: {min, max}, bonusWeekSets, maintenanceSets}: `sets` is the hypertrophy range, ' +
-      'and `maintenanceSets` is the maintenance floor, which runs up to `sets.min`; it is null, or ' +
-      'absent on target sets stored before it existed, where no floor is declared. Admin only.',
+      'The training program (the plan, not the log): sessions, exercise slots, set/rep/RPE ranges and ' +
+      `weekly set targets, each ${WEEKLY_SET_TARGET_SHAPE}. \`sets\` is the hypertrophy range; ` +
+      '`maintenanceSets` is the floor below it (null when none). The menu and targets are versioned ' +
+      'separately; `targetsVersion` names the target set used. Admin only.',
     requiresAuth: true,
     inputSchema: PLAN_READ_ARGS,
     annotations: readAnnotations,
@@ -296,16 +265,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_muscle_volume_status',
     title: 'Get muscle volume status',
     description:
-      'Whether each muscle is under, maintaining, in range or over its target training volume right now. ' +
-      '"maintenance" means at or above the target\'s maintenance floor but below its hypertrophy range; ' +
-      'targets without a floor report "under" there instead. This ' +
-      'is the one place that judgement is computed: it rolls the logged sets up over a trailing ' +
-      'window (7 days by default, ending at the moment of the call) and compares them against the ' +
-      'CURRENT plan version\'s weekly set targets, read fresh on every call. Prefer it to working ' +
-      'the answer out from get_workout and get_workout_plan — done by hand those two disagree ' +
-      'about the window and, historically, about the targets themselves. The response carries ' +
-      '`asOf` because a trailing window moves: two calls an hour apart legitimately differ, and ' +
-      '`asOf` is how they are reconciled. Admin only.',
+      'Whether each muscle is under, maintenance, in range or over its weekly set target, over a ' +
+      'trailing window ending now and against the current plan\'s targets. Use this rather than ' +
+      'comparing get_workout with get_workout_plan yourself. `asOf` is when the window ended. Admin only.',
     requiresAuth: true,
     inputSchema: MUSCLE_VOLUME_ARGS,
     annotations: readAnnotations,
@@ -314,27 +276,16 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_readiness',
     title: 'Get training readiness',
     description:
-      'Whether today should be a "push", "normal" or "easy" training day, judged from last night\'s ' +
-      'sleep, HRV and resting heart rate against the owner\'s own trailing 28-day baseline. The ' +
-      'signals are read live from the Google Health API at the moment of the call, never from a ' +
-      'stored copy, because they only exist once the watch has synced after waking. For the same ' +
-      'reason an older night is never used in place of last night: when today\'s data has not ' +
-      'arrived, `status` is "not_synced" (no night ending today yet — ask the owner to open the ' +
-      'Fitbit / Google Health app and sync) or "pending" (synced but still processing — try again ' +
-      'in a few minutes), `verdict` is null, and `missing` lists each absent signal with the newest ' +
-      'date it does have. Do not substitute a verdict of your own in that case. "insufficient_baseline" ' +
-      'means under 7 days of HRV history. When `status` is "ready", `reasons` explains the verdict ' +
-      'and every signal carries the date it was measured on. Combine with get_muscle_volume_status ' +
-      'to decide what to train as well as how hard. `date` (ISO YYYY-MM-DD, the owner\'s local day) ' +
-      'defaults to today in the owner\'s time zone; pass an earlier one to look back. Admin only.',
+      'Whether today is a "push", "normal" or "easy" day, from last night\'s sleep, HRV and resting ' +
+      'heart rate against a 28-day baseline, read live from Google Health. An older night is never ' +
+      'substituted: `status` "not_synced" means ask the owner to sync the Fitbit app, "pending" means ' +
+      'try again in a few minutes, and "insufficient_baseline" means under 7 days of HRV. In those ' +
+      'cases `verdict` is null; do not make one up. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
-        date: {
-          type: 'string',
-          description: 'The local day to judge, ISO YYYY-MM-DD. Optional; defaults to today in the owner\'s time zone.',
-        },
+        date: { type: 'string', description: 'The owner\'s local day, ISO YYYY-MM-DD. Optional; defaults to today.' },
       },
       additionalProperties: false,
     },
@@ -342,22 +293,30 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: { ...readAnnotations, openWorldHint: true },
   },
   {
+    name: 'get_training_recommendation',
+    title: 'Get today\'s training recommendation',
+    description:
+      'What to train today and how hard: the plan session that best covers muscles behind on volume ' +
+      '(`alternatives` ranks the rest), with each slot restated for today\'s readiness. It never ' +
+      'prescribes more than the plan. When readiness has no verdict, `prescription` is null; do not ' +
+      'fill it in. `restSuggested` is true on an easy day with nothing behind. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: { planId: PLAN_ID_ARG },
+      additionalProperties: false,
+    },
+    // Reaches the Google Health API through its readiness half.
+    annotations: { ...readAnnotations, openWorldHint: true },
+  },
+  {
     name: 'get_weight_trend',
     title: 'Get bodyweight trend',
     description:
-      'The owner\'s bodyweight over time from their smart scale, read live from the Google Health API ' +
-      '(nothing is stored). Raw readings swing 1-2 kg a day on water and food, so do not read ' +
-      'meaning into one reading: use `latest.trendKg`/`trendLb` (a 7-day mean of daily readings, ' +
-      'each day\'s earliest weigh-in) and `rate` (a least-squares fit over the last 28 days, in ' +
-      'kg, lb and % of bodyweight per week, with a descriptive `pace`: stable under 0.1 %/week, ' +
-      '"slowly" under 0.5, "fast" above). `rate` carries a `reason` instead when there are too few ' +
-      'weigh-ins. `bodyFat` is included when the scale measures it (its rate is in percentage ' +
-      'points per week). `latest.stale` is true when the newest weigh-in is over 7 days old: say ' +
-      'so rather than presenting it as current. Pass `exercise` (e.g. "Bench Press"; partial or ' +
-      'Japanese names resolve as in get_exercise_history) to get `relativeStrength`: each ' +
-      'session\'s best estimated 1RM over the bodyweight trend that day, and the change in both ' +
-      'and in the ratio across the window — whether the owner got stronger or just heavier. ' +
-      'The training log is in lb; weights here are given in both kg and lb. Admin only.',
+      'Bodyweight from the smart scale, read live from Google Health. Daily readings swing 1-2 kg, so ' +
+      'report `latest.trendKg`/`trendLb` (7-day mean) and `rate` (28-day fit per week, with `pace`), ' +
+      'not a single reading. If `latest.stale` is true, say the data is old. `bodyFat` is included ' +
+      'when measured. Pass `exercise` for `relativeStrength` (estimated 1RM over bodyweight). Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
@@ -366,12 +325,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
           type: 'integer',
           minimum: 14,
           maximum: 365,
-          description: 'Window length in days, ending today in the owner\'s time zone. Optional; defaults to 90.',
+          description: 'Window in days, ending today. Optional; defaults to 90.',
         },
-        exercise: {
-          type: 'string',
-          description: 'A lift to compare against bodyweight, e.g. "Bench Press". Optional.',
-        },
+        exercise: { type: 'string', description: 'A lift to compare against bodyweight, e.g. "Bench Press". Optional.' },
       },
       additionalProperties: false,
     },
@@ -379,201 +335,88 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: { ...readAnnotations, openWorldHint: true },
   },
   {
-    name: 'get_training_recommendation',
-    title: 'Get today\'s training recommendation',
+    name: 'update_content',
+    title: 'Update site content',
     description:
-      'Which session of the current plan to run today, and how hard — get_readiness joined with ' +
-      'get_muscle_volume_status and the plan, so the answer to "what should I do today?" is ' +
-      'computed once rather than re-derived in conversation. The SESSION is chosen from volume ' +
-      'alone: each session is scored by the status of the muscles it trains (under +2, ' +
-      'maintenance +1, in range 0, over -1, each muscle counted once), ties broken by rotation ' +
-      'order; `alternatives` lists the rest, best first. The INTENSITY comes from readiness: ' +
-      '`prescription` restates each slot for today — "top" (push day: top of the set range), ' +
-      '"as_planned", "reduced" (easy day: about two-thirds of the minimum sets, RPE one lower; ' +
-      'or a muscle already over target held to its minimum), or "skip" (an over-target muscle ' +
-      'on an easy day). It never prescribes more than the plan does. When readiness has no ' +
-      'verdict yet (watch not synced) or cannot be read, the session is still returned but ' +
-      '`prescription` is null — do not fill it in yourself; `readiness` says why. ' +
-      '`restSuggested` is true on an easy day when nothing any session trains is behind. ' +
-      'Admin only.',
+      'Replace one site document. Send the whole document, as get_content returns it; it is validated ' +
+      'and an invalid one is rejected unchanged. A home background is {url, caption, alt?}, with url ' +
+      'a media asset\'s w2560 variant from list_media. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
-        planId: { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' },
+        doc: CONTENT_DOC_ARG,
+        document: { type: 'object', description: 'The complete document.', additionalProperties: true },
       },
+      required: ['doc', 'document'],
       additionalProperties: false,
     },
-    // Reaches the Google Health API through its readiness half.
-    annotations: { ...readAnnotations, openWorldHint: true },
-  },
-  {
-    name: 'update_cv',
-    title: 'Update CV',
-    description: 'Replace the CV document. Admin only. Validated server-side; an invalid document is rejected unchanged.',
-    requiresAuth: true,
-    inputSchema: documentArgs('CV'),
-    annotations: writeAnnotations,
-  },
-  {
-    name: 'update_projects',
-    title: 'Update projects',
-    description: 'Replace the projects document. Admin only. Validated server-side.',
-    requiresAuth: true,
-    inputSchema: documentArgs('projects'),
-    annotations: writeAnnotations,
-  },
-  {
-    name: 'update_blog',
-    title: 'Update blog',
-    description: 'Replace the blog document. Admin only. Validated server-side.',
-    requiresAuth: true,
-    inputSchema: documentArgs('blog'),
-    annotations: writeAnnotations,
-  },
-  {
-    name: 'update_home',
-    title: 'Update home',
-    description: 'Replace the home-page document (hero mottoes and background photos). Admin only. Validated server-side. ' +
-      'Each background is { url, caption, alt? }: url is a media asset URL (prefer its w2560 variant, from list_media), ' +
-      'caption is shown on the hero (usually where the photo was taken), alt describes the image.',
-    requiresAuth: true,
-    inputSchema: documentArgs('home'),
     annotations: writeAnnotations,
   },
   {
     name: 'update_media',
     title: 'Update media metadata',
-    description:
-      'Edit the alt text, title and/or category of an existing media asset. Admin only. Requires assetId plus at least one field to change.',
+    description: 'Edit the alt text, title and/or category of a media asset. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
-        assetId: { type: 'string', description: 'The assetId of the media row to edit.' },
-        alt: { type: 'string', description: 'Alt text. Optional.' },
-        title: { type: 'string', description: 'Display title. Optional.' },
-        category: { type: 'string', enum: ['blog', 'project', 'general'], description: 'Asset category. Optional.' },
+        assetId: { type: 'string' },
+        alt: { type: 'string' },
+        title: { type: 'string' },
+        category: { type: 'string', enum: ['blog', 'project', 'general'] },
       },
       required: ['assetId'],
       additionalProperties: false,
     },
     annotations: writeAnnotations,
   },
-  {
-    name: 'update_workout_plan',
-    title: 'Publish training plan version',
-    description:
-      'Publish a NEW version of the training program. Versions are immutable: this appends, it ' +
-      'never edits or replaces an existing one, so the plan a past session was run under stays ' +
-      'readable. Call get_workout_plan first, send the whole document back with `version` set to ' +
-      'the next number, and omit `createdAt` (the server stamps it). Re-sending an existing ' +
-      'version is refused with the next free number. Admin only; validated server-side.',
-    requiresAuth: true,
-    /**
-     * Unlike the other document writes, this one names its fields and their
-     * types. Those writes take free-form documents whose shape only the server
-     * knows, so a loose schema costs nothing. A plan version does not: it is
-     * strongly typed server-side, and a client that has only been told "an
-     * object" has no way to know `version` is a number and `sessions` an array.
-     * A client that guessed strings had its publish rejected field by field with
-     * nothing written — a round trip wasted on a shape we could simply state.
-     */
-    inputSchema: {
-      type: 'object',
-      description:
-        'A complete plan-version document, same shape get_workout_plan returns, with `version` ' +
-        'incremented. Partial documents are rejected — this is a whole-version publish. This ' +
-        'publishes the MENU only: any `weeklySetTargets` sent is ignored (the response says so), ' +
-        'because targets are versioned separately — use revise_workout_plan with a set-target ' +
-        'edit. The menu is refused if its sessions would prescribe more weekly volume than the ' +
-        'current targets allow.',
-      properties: {
-        planId: { type: 'string', description: 'Lower-kebab slug, e.g. "upper-lower".' },
-        version: { type: 'integer', description: 'The next version number; publishing an existing one is refused.' },
-        name: { type: 'string' },
-        sessionsPerWeek: { type: 'integer', description: 'Sessions the rotation assumes per week, excluding bonus sessions.' },
-        rotation: { type: 'array', items: { type: 'string' }, description: 'Session ids in performed order.' },
-        bonusSessions: { type: 'array', items: { type: 'string' }, description: 'Session ids added only on weeks allowing an extra visit.' },
-        sessions: { type: 'array', items: { type: 'object' }, description: 'The prescribed sessions, each with its exercise slots.' },
-        weeklySetTargets: {
-          type: 'array',
-          description:
-            'Declared sets per muscle per week: [{muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null, maintenanceSets: number|null}]. ' +
-            'These are what get_muscle_volume_status judges actual volume against, so they are the ' +
-            'canonical target ranges — no consumer should keep its own copy. IGNORED on this ' +
-            'tool: change them with revise_workout_plan instead.',
-          items: { type: 'object' },
-        },
-        effectiveFrom: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null for open-ended.' },
-        effectiveTo: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null while current.' },
-        notes: { type: 'string' },
-        changeNote: { type: 'string', description: 'Why this version differs from the one before it.' },
-      },
-      required: ['planId', 'version', 'name', 'sessionsPerWeek', 'rotation', 'bonusSessions', 'sessions'],
-      additionalProperties: true,
-    },
-    annotations: appendAnnotations,
-  },
+  /**
+   * One tool for both ways of publishing a plan version: `edits` against the
+   * current version, or a whole `plan` document. They were two tools, and the
+   * whole-document one was rarely right; keeping it as an argument here halves
+   * the plan-writing surface in tools/list. mcp.ts routes `plan` to the
+   * whole-version handler, so both paths keep their own validation.
+   *
+   * The `plan` schema still names its fields and types: a plan version is
+   * strongly typed server-side, and a client told only "an object" once guessed
+   * strings and had its publish rejected field by field.
+   */
   {
     name: 'revise_workout_plan',
     title: 'Revise training plan',
     description:
-      'Change specific exercise slots, or the weekly set targets, in the current training program without resending the whole ' +
-      'document. Reads the current version, applies the edits, and publishes the result as the next ' +
-      'version — nothing already stored is modified. Each edit is {op: "patch"|"add"|"remove", ' +
-      'session, order} where `session` is a session id (e.g. "upper-a") and `order` is the slot\'s ' +
-      'position; a patch carries only the fields to change. Use {op: "set-target", target: {...}} to ' +
-      'set a weekly set target and {op: "remove-target", muscles: [...]} to drop one — the targets are ' +
-      'what get_muscle_volume_status judges against, so changing one here is how that judgement changes ' +
-      'everywhere at once. The two op families write two separately-versioned documents (the menu and ' +
-      'the targets) and a revision carrying both is applied as one transaction; the response reports ' +
-      '`version` and `targetsVersion` for whichever halves changed. A revision is refused if it would ' +
-      'leave the menu prescribing more volume than the targets allow. `changeNote` is required. Pass ' +
-      '`baseVersion` (from get_workout_plan) so the edits are refused if the plan moved underneath ' +
-      'them. Use update_workout_plan instead to publish a whole new program. Admin only.',
+      'Publish the next version of the training program; stored versions are never modified. Send ' +
+      '`edits` to change slots or weekly set targets in the current version, or `plan` to publish a ' +
+      'whole new program, not both. A version is refused if its menu prescribes more volume than ' +
+      'the targets allow. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
-        planId: { type: 'string', description: 'Which program. Optional; defaults to "upper-lower".' },
-        baseVersion: {
-          type: 'integer',
-          description: 'The menu version these edits were written against. Optional but recommended: the revision is refused if the current version differs.',
-        },
-        baseTargetsVersion: {
-          type: 'integer',
-          description: 'The targets version these edits were written against, from get_workout_plan\'s `targetsVersion`. Optional; 0 means "no target set published yet". Same guard as baseVersion, on the targets\' own sequence.',
-        },
-        changeNote: { type: 'string', description: 'Required. What changed and why — this is the version history.' },
-        name: { type: 'string', description: 'Rename the program. Optional.' },
-        effectiveFrom: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null. Optional; carried over when omitted.' },
-        effectiveTo: { type: ['string', 'null'], description: 'ISO YYYY-MM-DD, or null. Optional; carried over when omitted.' },
+        changeNote: { type: 'string', description: 'What changed and why. This is the version history.' },
         edits: {
           type: 'array',
           minItems: 1,
-          description: 'Applied in order; any edit that does not resolve rejects the whole revision.',
+          description: 'Applied in order; if any edit does not resolve, nothing is written.',
           items: {
             type: 'object',
             properties: {
               op: { type: 'string', enum: ['patch', 'add', 'remove', 'set-target', 'remove-target'] },
-              session: { type: 'string', description: 'Session id, e.g. "upper-a". Required for patch, add and remove; not used by the target ops.' },
-              order: { type: 'integer', description: 'Slot position. Required for patch and remove.' },
-              changes: { type: 'object', description: 'For patch: only the slot fields to change (sets, reps, rpe, options, muscle, notes).' },
-              exercise: { type: 'object', description: 'For add: the complete new slot, including the order to insert it at. Slots at or after that position shift down.' },
+              session: { type: 'string', description: 'Session id, e.g. "upper-a". For patch, add and remove.' },
+              order: { type: 'integer', description: 'Slot position. For patch and remove.' },
+              changes: { type: 'object', description: 'patch: only the slot fields to change (sets, reps, rpe, options, muscle, notes).' },
+              exercise: { type: 'object', description: 'add: the complete new slot, including its order. Later slots shift down.' },
               target: {
                 type: 'object',
                 description:
-                  'For set-target: a weekly set target, {muscles: [...], sets: {min, max}, bonusWeekSets: {min, max}|null, maintenanceSets: number|null}. ' +
-                  '`sets` is the hypertrophy range; `maintenanceSets` is the maintenance floor, which must be below `sets.min` ' +
-                  '(maintenance runs from it up to where hypertrophy begins). ' +
-                  'Replaces the entry covering exactly those muscles, or adds one. `bonusWeekSets` and `maintenanceSets` may be omitted for null. ' +
-                  'An entry spanning several muscles (e.g. glutes + hamstrings) is addressed by naming all of them.',
+                  `set-target: ${WEEKLY_SET_TARGET_SHAPE}. Replaces the entry for exactly those muscles, or adds one. ` +
+                  '`maintenanceSets` must be below `sets.min`.',
                 properties: {
                   muscles: { type: 'array', items: { type: 'string' }, minItems: 1 },
                   sets: { type: 'object', properties: { min: { type: 'number' }, max: { type: 'number' } }, required: ['min', 'max'] },
                   bonusWeekSets: { type: ['object', 'null'], properties: { min: { type: 'number' }, max: { type: 'number' } } },
-                  maintenanceSets: { type: ['number', 'null'], description: 'Weekly maintenance floor; must be below sets.min.' },
+                  maintenanceSets: { type: ['number', 'null'] },
                 },
                 required: ['muscles', 'sets'],
               },
@@ -581,14 +424,47 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
                 type: 'array',
                 items: { type: 'string' },
                 minItems: 1,
-                description: 'For remove-target: the exact muscle set of the entry to drop.',
+                description: 'remove-target: the exact muscle set of the entry to drop.',
               },
             },
             required: ['op'],
           },
         },
+        planId: PLAN_ID_ARG,
+        baseVersion: {
+          type: 'integer',
+          description: 'With edits: the menu version they were written against; refused if the plan has moved.',
+        },
+        baseTargetsVersion: {
+          type: 'integer',
+          description: 'With edits: the `targetsVersion` they were written against (0 if none yet). Same guard.',
+        },
+        name: { type: 'string', description: 'With edits: rename the program.' },
+        effectiveFrom: { type: ['string', 'null'], description: 'With edits: ISO YYYY-MM-DD or null. Carried over when omitted.' },
+        effectiveTo: { type: ['string', 'null'], description: 'With edits: ISO YYYY-MM-DD or null. Carried over when omitted.' },
+        plan: {
+          type: 'object',
+          description:
+            'A complete plan version, as get_workout_plan returns it, with `version` set to the next ' +
+            'number and no `createdAt`. This publishes the menu only: its `weeklySetTargets` are ' +
+            'ignored, so change targets with set-target edits.',
+          properties: {
+            planId: { type: 'string' },
+            version: { type: 'integer' },
+            name: { type: 'string' },
+            sessionsPerWeek: { type: 'integer', description: 'Excluding bonus sessions.' },
+            rotation: { type: 'array', items: { type: 'string' }, description: 'Session ids in performed order.' },
+            bonusSessions: { type: 'array', items: { type: 'string' } },
+            sessions: { type: 'array', items: { type: 'object' } },
+            effectiveFrom: { type: ['string', 'null'] },
+            effectiveTo: { type: ['string', 'null'] },
+            notes: { type: 'string' },
+          },
+          required: ['planId', 'version', 'name', 'sessionsPerWeek', 'rotation', 'bonusSessions', 'sessions'],
+          additionalProperties: true,
+        },
       },
-      required: ['changeNote', 'edits'],
+      required: ['changeNote'],
       additionalProperties: false,
     },
     annotations: appendAnnotations,
@@ -597,26 +473,22 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'list_reflections',
     title: 'List reflection notes',
     description:
-      'Read the owner\'s private reflection notes, newest first. `type` is "workout" (how a ' +
-      'training session went) or "life" (higher-level notes on how things are going generally); ' +
-      'omit it to read both. Call this BEFORE add_reflection — read the last few notes of the ' +
-      'same type so the new one can build on them (recurring themes, what changed since) rather ' +
-      'than starting cold. Also the tool for "what patterns keep coming up?": read a window and ' +
-      'look across the notes. A workout note\'s `date` is the session day, so it lines up with ' +
-      'get_workout_sets for that date. Admin only.',
+      'The owner\'s private reflection notes, newest first: "workout" (a session) or "life" (how ' +
+      'things are going). Read the last few of the same type before add_reflection so the new note ' +
+      'builds on them. A workout note\'s `date` is the session day. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: [...REFLECTION_TYPES], description: 'Which kind. Optional; omit for all.' },
+        type: { type: 'string', enum: [...REFLECTION_TYPES], description: 'Optional; omit for both.' },
         from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Optional.' },
         to: { type: 'string', description: 'Inclusive end date, ISO YYYY-MM-DD. Optional.' },
-        theme: { type: 'string', description: 'Only notes tagged with this theme, an English tag such as "sleep". Optional.' },
+        theme: { type: 'string', description: 'Only notes with this theme tag, e.g. "sleep". Optional.' },
         limit: {
           type: 'integer',
           minimum: 1,
           maximum: REFLECTION_LIST_MAX_LIMIT,
-          description: `Most notes to return. Optional; defaults to ${REFLECTION_LIST_DEFAULT_LIMIT}.`,
+          description: `Optional; defaults to ${REFLECTION_LIST_DEFAULT_LIMIT}.`,
         },
       },
       additionalProperties: false,
@@ -627,34 +499,21 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'add_reflection',
     title: 'Add reflection note',
     description:
-      'Save a reflection note from the current conversation. Always appends a new note; it never ' +
-      'replaces one, so call it once per reflection. Write `body` as a concise summary in the ' +
-      'owner\'s own framing, in the language the conversation was held in — keep one or two of ' +
-      'their actual phrases verbatim and untranslated, since a summary cannot be un-summarised ' +
-      'later. Put the recurring threads in `themes` as short lowercase ENGLISH tags whatever the ' +
-      'body\'s language (e.g. "sleep", "shoulder", "work-stress"; never "睡眠"), reusing tags from ' +
-      'earlier notes where they fit so they can be followed over time — a non-English tag is ' +
-      'refused. `date` is the day the note is about, in ' +
-      'the owner\'s local calendar (for a workout, the session day). Call list_reflections first. ' +
-      'PUBLIC SUMMARY: every "workout" note is distilled into a one-line summary shown under that ' +
-      'day\'s gym session on the public site. Keep a workout note to the training itself — ' +
-      'exercises, weights, technique, how the session went — and put nothing private in it: no ' +
-      'health or medical details, injuries, mood, work, relationships or other personal life. ' +
-      'Anything like that belongs in a "life" note, which is never published. ' +
-      'Admin only.',
+      'Save a new reflection note from this conversation; it always appends. Write `body` as a concise ' +
+      'summary in the conversation\'s language, keeping one or two of the owner\'s own phrases ' +
+      'verbatim. `themes` are short lowercase ENGLISH tags whatever the language (e.g. "sleep", ' +
+      '"work-stress"); reuse earlier tags where they fit. Non-English tags are refused. `date` is ' +
+      'the day the note is about, in the owner\'s calendar. A "workout" note is summarised in one ' +
+      'line on the PUBLIC site, so keep it to the training itself; health, injuries, mood, work and ' +
+      'personal life go in a "life" note, which is never published. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: [...REFLECTION_TYPES], description: '"workout" or "life".' },
-        date: { type: 'string', description: 'ISO YYYY-MM-DD, the day the note is about.' },
-        body: { type: 'string', maxLength: REFLECTION_BODY_MAX, description: 'The reflection itself.' },
-        themes: {
-          type: 'array',
-          items: { type: 'string' },
-          maxItems: REFLECTION_THEMES_MAX,
-          description: 'Short lowercase English tags for the recurring threads, e.g. "sleep", "lower-back". Optional.',
-        },
+        type: { type: 'string', enum: [...REFLECTION_TYPES] },
+        date: { type: 'string', description: 'ISO YYYY-MM-DD.' },
+        body: { type: 'string', maxLength: REFLECTION_BODY_MAX },
+        themes: { type: 'array', items: { type: 'string' }, maxItems: REFLECTION_THEMES_MAX },
       },
       required: ['type', 'date', 'body'],
       additionalProperties: false,
@@ -665,23 +524,21 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'update_reflection',
     title: 'Correct reflection note',
     description:
-      'Correct the body and/or themes of an existing reflection, addressed by `type` and the `id` ' +
-      'list_reflections returned. For fixing a note, not for adding to it — a new thought is a ' +
-      'new note via add_reflection. The type and date cannot change. Correcting a "workout" note ' +
-      'refreshes its day\'s public one-line summary, so the same rule as add_reflection applies: ' +
-      'nothing private in a workout note. Admin only.',
+      'Correct the body and/or themes of an existing note, by `type` and the `id` from ' +
+      'list_reflections. A new thought is a new note, not a correction. Type and date cannot ' +
+      'change. The add_reflection rule on workout notes applies. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
         type: { type: 'string', enum: [...REFLECTION_TYPES] },
-        id: { type: 'string', description: 'The note\'s id, exactly as list_reflections returned it.' },
+        id: { type: 'string' },
         body: { type: 'string', maxLength: REFLECTION_BODY_MAX, description: 'Replacement body. Optional.' },
         themes: {
           type: 'array',
           items: { type: 'string' },
           maxItems: REFLECTION_THEMES_MAX,
-          description: 'Replacement themes (the whole list), lowercase English tags. Optional.',
+          description: 'Replacement list of tags. Optional.',
         },
       },
       required: ['type', 'id'],

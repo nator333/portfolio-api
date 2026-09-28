@@ -138,7 +138,7 @@ it('should 404 when the plan has never been published', async () => {
   const { statusCode, body } = await call(PATCH);
 
   expect(statusCode).toBe(404);
-  expect(body.message).toContain('update_workout_plan');
+  expect(body.message).toContain('revise_workout_plan a whole');
 });
 
 it('should require a change note', async () => {

@@ -16,14 +16,17 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
   with `application/json` (no SSE; a Lambda behind a REST API has no long-lived
   connection to stream over). Implements `initialize`, `tools/list`,
   `tools/call` and `ping`.
-* **Public read tools** — `get_cv`, `get_projects`, `get_blog`, `get_home`,
-  `get_workout`, `get_activity`: the same data the site already serves.
+* **Public read tools** — `get_content` (the `cv`, `projects`, `blog` or `home`
+  document), `get_workout`, `get_activity`: the same data the site already serves.
 * **Admin tools** — `get_workout_sets` (the private per-set training log),
-  `get_exercise_history`, `list_exercises`, `get_workout_plan`, `get_readiness`,
-  `get_training_recommendation`, `list_media`,
-  and every `update_`/`revise_` tool. Each is refused with `401` and a
-  `WWW-Authenticate` challenge unless the request carries an access token issued
-  by this user pool, for this resource, bearing the `mcp/admin` scope.
+  `get_exercise_history`, `list_exercises`, `get_workout_plan`,
+  `get_muscle_volume_status`, `get_readiness`, `get_training_recommendation`,
+  `get_weight_trend`, `list_media`, `list_reflections`, and every write:
+  `update_content`, `update_media`, `revise_workout_plan` (edits, or a whole new
+  version via `plan`), `add_reflection`, `update_reflection`. Each is refused with
+  `401` and a `WWW-Authenticate` challenge unless the request carries an access
+  token issued by this user pool, for this resource, bearing the `mcp/admin`
+  scope.
 
 ### Reading the training log by exercise
 
@@ -106,6 +109,15 @@ in-process rather than repeating their queries, so it cannot drift from them.
   connected), the session is still returned but `prescription` is `null`.
 * `restSuggested` is true on an easy day when nothing any session trains is
   behind.
+
+### Keeping the tool list small
+
+Every tool's name, description and schema go into the context of every
+conversation that has the connector on, whether or not the tool is used. So a
+new capability goes in as an argument of an existing tool where one fits
+(`get_content`'s `doc`, `revise_workout_plan`'s `plan`) rather than as another
+tool, and descriptions say what the model needs to act correctly, not how the
+answer is computed. That belongs in the code and in this README.
 
 ### Why there is no dynamic client registration
 

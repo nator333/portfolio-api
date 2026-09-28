@@ -9,6 +9,10 @@ jest.mock('../lambda/get-cv', () => ({ handler: mockGetCv }));
 jest.mock('../lambda/update-cv', () => ({ handler: mockUpdateCv }));
 const mockListReflections = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
 jest.mock('../lambda/list-reflections', () => ({ handler: mockListReflections }));
+const mockRevisePlan = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
+const mockUpdatePlan = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
+jest.mock('../lambda/revise-workout-plan', () => ({ handler: mockRevisePlan }));
+jest.mock('../lambda/update-workout-plan', () => ({ handler: mockUpdatePlan }));
 
 // Stub the Cognito access-token verifier: create() hands back an object whose
 // verify each test drives to accept or reject.
@@ -51,6 +55,8 @@ beforeEach(() => {
   mockGetCv.mockReset();
   mockUpdateCv.mockReset();
   mockListReflections.mockReset();
+  mockRevisePlan.mockReset();
+  mockUpdatePlan.mockReset();
   mockVerify.mockReset();
 });
 
@@ -76,14 +82,14 @@ test('the initialized notification is acknowledged with 202 and no body', async 
 
 test('tools/list advertises every tool in the catalogue', async () => {
   const { json } = await call({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-  expect(json.result.tools).toHaveLength(25);
-  expect(json.result.tools.map((t: { name: string }) => t.name)).toContain('get_cv');
+  expect(json.result.tools).toHaveLength(18);
+  expect(json.result.tools.map((t: { name: string }) => t.name)).toContain('get_content');
 });
 
 test('a public read tool delegates to its handler and returns the body verbatim', async () => {
   mockGetCv.mockResolvedValue({ statusCode: 200, body: JSON.stringify({ summary: 'hi' }) } as APIGatewayProxyResult);
 
-  const { json } = await call({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_cv' } });
+  const { json } = await call({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_content', arguments: { doc: 'cv' } } });
 
   expect(mockGetCv).toHaveBeenCalledTimes(1);
   expect(json.result.isError).toBe(false);
@@ -92,7 +98,7 @@ test('a public read tool delegates to its handler and returns the body verbatim'
 
 test('an admin tool with no bearer token returns 401 with a discovery challenge', async () => {
   const result = await handler(
-    rpcEvent({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'update_cv', arguments: { summary: 'new' } } }),
+    rpcEvent({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'update_content', arguments: { doc: 'cv', document: { summary: 'new' } } } }),
   );
 
   expect(mockUpdateCv).not.toHaveBeenCalled();
@@ -144,7 +150,7 @@ test('an admin tool is refused with 401 when the token fails verification', asyn
 
   const result = await handler(
     rpcEvent(
-      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'update_cv', arguments: { summary: 'new' } } },
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'update_content', arguments: { doc: 'cv', document: { summary: 'new' } } } },
       { Authorization: 'Bearer nonsense' },
     ),
   );
@@ -161,7 +167,7 @@ test('a token minted for another client is refused even though it verifies', asy
 
   const result = await handler(
     rpcEvent(
-      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'update_cv', arguments: { summary: 'new' } } },
+      { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'update_content', arguments: { doc: 'cv', document: { summary: 'new' } } } },
       { Authorization: 'Bearer valid-but-foreign' },
     ),
   );
@@ -176,7 +182,7 @@ test('a token without the admin scope is refused as insufficient_scope', async (
 
   const result = await handler(
     rpcEvent(
-      { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'update_cv', arguments: { summary: 'new' } } },
+      { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'update_content', arguments: { doc: 'cv', document: { summary: 'new' } } } },
       { Authorization: 'Bearer no-scope' },
     ),
   );
@@ -193,7 +199,7 @@ test('an aud claim naming this resource is accepted even without a known client_
   mockUpdateCv.mockResolvedValue({ statusCode: 200, body: JSON.stringify({ summary: 'new' }) } as APIGatewayProxyResult);
 
   const { statusCode } = await call(
-    { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'update_cv', arguments: { summary: 'new' } } },
+    { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'update_content', arguments: { doc: 'cv', document: { summary: 'new' } } } },
     { Authorization: 'Bearer resource-bound' },
   );
 
@@ -201,12 +207,12 @@ test('an aud claim naming this resource is accepted even without a known client_
   expect(mockUpdateCv).toHaveBeenCalledTimes(1);
 });
 
-test('an admin tool runs for a verified admin and passes the arguments through as the body', async () => {
+test('an admin tool runs for a verified admin and passes the document through as the body', async () => {
   mockVerify.mockResolvedValue(adminPayload());
   mockUpdateCv.mockResolvedValue({ statusCode: 200, body: JSON.stringify({ summary: 'new' }) } as APIGatewayProxyResult);
 
   const { json } = await call(
-    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'update_cv', arguments: { summary: 'new' } } },
+    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'update_content', arguments: { doc: 'cv', document: { summary: 'new' } } } },
     { Authorization: 'Bearer good' },
   );
 
@@ -216,10 +222,67 @@ test('an admin tool runs for a verified admin and passes the arguments through a
   expect(json.result.isError).toBe(false);
 });
 
+test('get_content refuses a doc it does not know, including prototype names', async () => {
+  for (const doc of ['resume', 'constructor']) {
+    const { json } = await call({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'get_content', arguments: { doc } } });
+    expect(json.result.isError).toBe(true);
+    expect(json.result.content[0].text).toMatch(/Unknown doc/);
+  }
+  expect(mockGetCv).not.toHaveBeenCalled();
+});
+
+describe('revise_workout_plan', () => {
+  const ok = { statusCode: 201, body: '{}' } as APIGatewayProxyResult;
+  const revise = (args: Record<string, unknown>) =>
+    call(
+      { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'revise_workout_plan', arguments: args } },
+      { Authorization: 'Bearer good' },
+    );
+
+  beforeEach(() => {
+    mockVerify.mockResolvedValue(adminPayload());
+    mockRevisePlan.mockResolvedValue(ok);
+    mockUpdatePlan.mockResolvedValue(ok);
+  });
+
+  test('edits go to the revise handler unchanged', async () => {
+    const args = { changeNote: 'swap', baseVersion: 2, edits: [{ op: 'remove', session: 'upper-a', order: 3 }] };
+    await revise(args);
+
+    expect(mockUpdatePlan).not.toHaveBeenCalled();
+    expect(JSON.parse(mockRevisePlan.mock.calls[0][0].body ?? '')).toEqual(args);
+  });
+
+  test('a whole plan is published as a new version, carrying the changeNote into it', async () => {
+    await revise({ changeNote: 'new block', plan: { planId: 'upper-lower', version: 4 } });
+
+    expect(mockRevisePlan).not.toHaveBeenCalled();
+    expect(JSON.parse(mockUpdatePlan.mock.calls[0][0].body ?? '')).toEqual({
+      planId: 'upper-lower',
+      version: 4,
+      changeNote: 'new block',
+    });
+  });
+
+  test("the plan's own changeNote wins over the tool's", async () => {
+    await revise({ changeNote: 'outer', plan: { version: 4, changeNote: 'inner' } });
+    expect(JSON.parse(mockUpdatePlan.mock.calls[0][0].body ?? '').changeNote).toBe('inner');
+  });
+
+  test('a plan sent with edits is refused and nothing is written', async () => {
+    const { json } = await revise({ changeNote: 'both', plan: { version: 4 }, edits: [{ op: 'remove' }] });
+
+    expect(json.result.isError).toBe(true);
+    expect(json.result.content[0].text).toMatch(/not both; drop edits/);
+    expect(mockRevisePlan).not.toHaveBeenCalled();
+    expect(mockUpdatePlan).not.toHaveBeenCalled();
+  });
+});
+
 test('a delegated handler error surfaces as an MCP tool error, not a crash', async () => {
   mockGetCv.mockResolvedValue({ statusCode: 404, body: JSON.stringify({ message: 'CV data not found' }) } as APIGatewayProxyResult);
 
-  const { json } = await call({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'get_cv' } });
+  const { json } = await call({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'get_content', arguments: { doc: 'cv' } } });
 
   expect(json.result.isError).toBe(true);
   expect(json.result.content[0].text).toMatch(/not found/);

@@ -127,7 +127,7 @@ export const handler = async (
       statusCode: 404,
       headers,
       body: JSON.stringify({
-        message: `No plan "${planId}" has been published; use update_workout_plan to create version 1`,
+        message: `No plan "${planId}" has been published; publish version 1 by sending revise_workout_plan a whole \`plan\``,
       }),
     };
   }

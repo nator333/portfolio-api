@@ -33,6 +33,7 @@ import {
   MCP_SERVER_INFO,
   TOOL_SPECS,
   TOOL_SPECS_BY_NAME,
+  CONTENT_DOCS,
   jsonRpcRequestSchema,
 } from './mcp-schema';
 import { corsHeaders } from './cors';
@@ -87,10 +88,10 @@ function proxyEvent(opts: {
  * expects. `args` is the client-supplied `arguments` object from `tools/call`.
  */
 const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGatewayProxyResult>> = {
-  get_cv: () => getCv(proxyEvent({})),
-  get_projects: () => getProjects(proxyEvent({})),
-  get_blog: () => getBlog(proxyEvent({})),
-  get_home: () => getHome(proxyEvent({})),
+  get_content: (args) => {
+    const read = CONTENT_READERS.get(String(args.doc));
+    return read ? read(proxyEvent({})) : Promise.resolve(unknownDoc(args.doc));
+  },
   get_workout: (args) => getWorkout(proxyEvent({ query: dateRange(args) })),
   get_activity: (args) => getActivity(proxyEvent({ query: dateRange(args) })),
   list_media: () => listMedia(proxyEvent({})),
@@ -114,12 +115,11 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
         },
       }),
     ),
-  update_cv: (args) => updateCv(proxyEvent({ body: args })),
-  update_projects: (args) => updateProjects(proxyEvent({ body: args })),
-  update_blog: (args) => updateBlog(proxyEvent({ body: args })),
-  update_home: (args) => updateHome(proxyEvent({ body: args })),
-  update_workout_plan: (args) => updateWorkoutPlan(proxyEvent({ body: args })),
-  revise_workout_plan: (args) => reviseWorkoutPlan(proxyEvent({ body: args })),
+  update_content: (args) => {
+    const write = CONTENT_WRITERS.get(String(args.doc));
+    return write ? write(proxyEvent({ body: args.document })) : Promise.resolve(unknownDoc(args.doc));
+  },
+  revise_workout_plan: (args) => revisePlan(args),
   list_reflections: (args) => listReflections(proxyEvent({ query: reflectionQuery(args) })),
   add_reflection: (args) => addReflection(proxyEvent({ body: args })),
   update_reflection: (args) => updateReflection(proxyEvent({ body: args })),
@@ -128,6 +128,58 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
     return updateMedia(proxyEvent({ path: { id: String(assetId ?? '') }, body: rest }));
   },
 };
+
+/**
+ * get_content and update_content route on `doc` to the handler each document
+ * always had. A Map rather than an object literal, so a `doc` such as
+ * "constructor" finds nothing instead of a prototype member.
+ */
+const CONTENT_READERS = new Map<string, ProxyHandler>([
+  ['cv', getCv],
+  ['projects', getProjects],
+  ['blog', getBlog],
+  ['home', getHome],
+]);
+
+const CONTENT_WRITERS = new Map<string, ProxyHandler>([
+  ['cv', updateCv],
+  ['projects', updateProjects],
+  ['blog', updateBlog],
+  ['home', updateHome],
+]);
+
+const badRequest = (message: string): APIGatewayProxyResult => ({
+  statusCode: 400,
+  body: JSON.stringify({ message }),
+});
+
+const unknownDoc = (doc: unknown) =>
+  badRequest(`Unknown doc ${JSON.stringify(doc)}; expected one of ${CONTENT_DOCS.join(', ')}`);
+
+/** Arguments that only mean something against the current version's edits. */
+const EDIT_ONLY_ARGS = ['edits', 'planId', 'baseVersion', 'baseTargetsVersion', 'name', 'effectiveFrom', 'effectiveTo'];
+
+/**
+ * revise_workout_plan publishes either edits or a whole `plan`. The whole-plan
+ * form goes to the handler that used to back update_workout_plan, with the
+ * tool's `changeNote` carried into the document unless it already has one.
+ * Sending both forms is refused rather than guessed at: dropping either half
+ * silently would publish something the caller did not ask for.
+ */
+function revisePlan(args: Record<string, unknown>): Promise<APIGatewayProxyResult> {
+  const { plan, changeNote, ...rest } = args;
+  if (plan === undefined) return reviseWorkoutPlan(proxyEvent({ body: args }));
+
+  const mixed = EDIT_ONLY_ARGS.filter((key) => rest[key] !== undefined);
+  if (mixed.length > 0) {
+    return Promise.resolve(badRequest(`Send either \`plan\` or \`edits\`, not both; drop ${mixed.join(', ')}`));
+  }
+  const body =
+    plan && typeof plan === 'object' && !Array.isArray(plan)
+      ? { changeNote, ...(plan as Record<string, unknown>) }
+      : plan;
+  return updateWorkoutPlan(proxyEvent({ body }));
+}
 
 /**
  * The plan read takes numbers and booleans, but a delegated handler only ever
