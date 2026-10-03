@@ -621,15 +621,16 @@ test('GET /muscle-volume-status reads the plan and the log, and writes neither',
     PathPart: 'muscle-volume-status',
   });
 
-  // The only function pointed at both tables. It needs the plan to know the
-  // targets and the summaries to know what was lifted, and nothing more: the
-  // status is a read, and the plan's sole writer stays the admin publish path.
+  // It needs the plan to know the targets and the summaries to know what was
+  // lifted, and nothing more: the status is a read, and the plan's sole writer
+  // stays the admin publish path.
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
   const statusPolicy = policies.filter((p) => {
     const resources = JSON.stringify(p.Properties.PolicyDocument.Statement.map(
       (s: { Resource?: unknown }) => s.Resource,
     ));
     return (
+      String(p.Properties.PolicyName).startsWith('GetMuscleVolumeStatusFunction') &&
       resources.includes('table/portfolio-workout-plan') &&
       resources.includes('table/portfolio-workout-summary')
     );
@@ -640,6 +641,22 @@ test('GET /muscle-volume-status reads the plan and the log, and writes neither',
     (s: { Action?: string | string[] }) => (Array.isArray(s.Action) ? s.Action : [s.Action]),
   );
   expect(actions).toEqual(['dynamodb:Query']);
+});
+
+test('GET /workout may query the plan table, and nothing more', () => {
+  const template = synthStack();
+
+  // The public summary reads the plan to choose which lifts the strength chart
+  // follows. It is anonymous, so its grant on the plan stays a bare Query.
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const workoutPolicy = policies.find((p) =>
+    String(p.Properties.PolicyName).startsWith('GetWorkoutFunction'),
+  );
+  const planStatements = (
+    workoutPolicy!.Properties.PolicyDocument.Statement as Array<{ Resource?: unknown; Action?: unknown }>
+  ).filter((s) => JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-plan'));
+  expect(planStatements).toHaveLength(1);
+  expect([planStatements[0].Action].flat()).toEqual(['dynamodb:Query']);
 });
 
 test('the MCP role may write the plan table and only read the training log', () => {

@@ -2,6 +2,8 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { META_SK, SOURCE_WEIGHT_UNIT, SUMMARY_PK } from './workout-schema';
+import { PLAN_VERSION_PREFIX, versionInEffect, type PlanVersion } from './workout-plan-schema';
+import { selectStrengthLifts } from './strength-lifts';
 import { corsHeaders } from './cors';
 
 /**
@@ -18,8 +20,10 @@ const DEFAULT_WINDOW_DAYS = 365;
 const TOP_EXERCISES = 10;
 /** ISO weeks of sets-per-muscle history returned (~1 year). */
 const WEEKS_RETURNED = 52;
-/** Lifts returned in the strength-progression series. */
+/** Lifts returned in the strength-progression series when no plan is readable. */
 const TOP_LIFTS = 8;
+/** The program the strength chart follows; mirrors get-workout-plan.ts. */
+const PLAN_ID = 'upper-lower';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
@@ -45,14 +49,16 @@ export const handler = async (
     from = isoDate(d);
   }
 
-  const [dayItems, muscleItems, exerciseItems, weekItems, e1rmItems, metaItem] = await Promise.all([
-    queryRange(tableName, SUMMARY_PK.day, from, to),
-    queryAll(tableName, SUMMARY_PK.muscle),
-    queryAll(tableName, SUMMARY_PK.exercise),
-    queryAll(tableName, SUMMARY_PK.week),
-    queryAll(tableName, SUMMARY_PK.exerciseMonth),
-    ddb.send(new GetCommand({ TableName: tableName, Key: { pk: SUMMARY_PK.meta, sk: META_SK } })),
-  ]);
+  const [dayItems, muscleItems, exerciseItems, weekItems, e1rmItems, metaItem, planVersions] =
+    await Promise.all([
+      queryRange(tableName, SUMMARY_PK.day, from, to),
+      queryAll(tableName, SUMMARY_PK.muscle),
+      queryAll(tableName, SUMMARY_PK.exercise),
+      queryAll(tableName, SUMMARY_PK.week),
+      queryAll(tableName, SUMMARY_PK.exerciseMonth),
+      ddb.send(new GetCommand({ TableName: tableName, Key: { pk: SUMMARY_PK.meta, sk: META_SK } })),
+      readPlanVersions(),
+    ]);
 
   // Volumes and weights are served in both the export's unit and kilograms
   // (`*Kg`), so the front end can present either without a conversion of its own.
@@ -85,19 +91,38 @@ export const handler = async (
     .slice(-WEEKS_RETURNED)
     .map((w) => ({ week: w.sk, sets: w.sets, sessions: w.sessions, muscles: w.muscles ?? {} }));
 
-  // Strength progression: best estimated 1RM per lift, most-trained lifts first.
-  const lifts = exerciseItems
-    .filter((e) => typeof e.bestE1rm === 'number' && (e.bestE1rm as number) > 0)
-    .sort((a, b) => (b.sets as number) - (a.sets as number))
-    .slice(0, TOP_LIFTS)
-    .map((e) => ({
-      name: e.sk,
+  // Strength progression: the strength-range lifts of the plan in force on
+  // `to`, then a few long-history lifts no longer logged (see strength-lifts.ts).
+  const plan = versionInEffect(planVersions, to);
+  const selected = selectStrengthLifts(
+    plan,
+    exerciseItems.map((e) => ({
+      name: String(e.sk),
+      sets: Number(e.sets ?? 0),
+      lastDate: String(e.lastDate ?? ''),
+      bestE1rmKg: Number(e.bestE1rmKg ?? 0),
+    })),
+    e1rmItems.map((m) => ({
+      exercise: String(m.exercise),
+      month: String(m.month),
+      sets: Number(m.sets ?? 0),
+    })),
+    to,
+    TOP_LIFTS,
+  );
+  const exerciseByName = new Map(exerciseItems.map((e) => [e.sk as string, e]));
+  const lifts = selected.map(({ name, tracked }) => {
+    const e = exerciseByName.get(name)!;
+    return {
+      name,
       muscle: e.muscle,
       sets: e.sets,
       bestE1rm: e.bestE1rm,
       bestE1rmKg: e.bestE1rmKg,
       bestE1rmDate: e.bestE1rmDate,
-    }));
+      tracked,
+    };
+  });
 
   // Strength-over-time: the monthly estimated-1RM series per lift, for exactly
   // the lifts surfaced above. Restricting to those keeps the payload bounded
@@ -117,6 +142,7 @@ export const handler = async (
   const strengthSeries = lifts.map((l) => ({
     name: l.name,
     muscle: l.muscle,
+    tracked: l.tracked,
     points: (seriesByLift.get(l.name as string) ?? []).sort((a, b) => a.month.localeCompare(b.month)),
   }));
 
@@ -149,12 +175,50 @@ export const handler = async (
       weeks,
       lifts,
       strengthSeries,
+      // When each plan version took effect, for marking block changes on the
+      // strength chart. Version numbers and dates only: the program itself
+      // stays behind the admin-gated MCP tools.
+      planChanges: planVersions
+        .filter((v) => v.effectiveFrom !== null)
+        .map((v) => ({ version: v.version, effectiveFrom: v.effectiveFrom }))
+        .sort((a, b) => a.version - b.version),
       muscles,
       topExercises,
       totals,
     }),
   };
 };
+
+/**
+ * Every version of the program, for choosing the strength lifts and marking
+ * block changes. Best-effort: this is the public endpoint, and a plan table
+ * that is unconfigured or unreachable should cost the chart its plan-awareness,
+ * not cost the page its data — the selection falls back to all-time ranking.
+ */
+async function readPlanVersions(): Promise<PlanVersion[]> {
+  const planTable = process.env.WORKOUT_PLAN_TABLE_NAME;
+  if (!planTable) return [];
+  try {
+    const items: PlanVersion[] = [];
+    let lastKey: Record<string, unknown> | undefined;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: planTable,
+          KeyConditionExpression: 'planId = :p AND begins_with(sk, :prefix)',
+          ExpressionAttributeValues: { ':p': PLAN_ID, ':prefix': PLAN_VERSION_PREFIX },
+          ExclusiveStartKey: lastKey,
+        }),
+      );
+      items.push(...((page.Items ?? []) as PlanVersion[]));
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey);
+    return items;
+  } catch (err) {
+    console.error('Reading the workout plan failed; strength lifts fall back to all-time ranking', err);
+    return [];
+  }
+}
 
 async function queryRange(
   tableName: string,
