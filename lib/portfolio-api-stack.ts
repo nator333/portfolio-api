@@ -418,6 +418,9 @@ export class PortfolioApiStack extends cdk.Stack {
       environment: {
         ...lambdaDefaults.environment,
         WORKOUT_SUMMARY_TABLE_NAME: workoutSummaryTable,
+        // Read to pick the strength-chart lifts from the plan in force; only
+        // version numbers and effective dates leave this function.
+        WORKOUT_PLAN_TABLE_NAME: workoutPlanTable,
         WORKOUT_REGION,
       },
     });
@@ -425,6 +428,12 @@ export class PortfolioApiStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:BatchGetItem'],
         resources: [workoutSummaryArn],
+      }),
+    );
+    getWorkoutFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: [workoutPlanArn],
       }),
     );
 
