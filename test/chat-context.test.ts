@@ -115,3 +115,29 @@ test('a long activity feed keeps the newest whole entries', () => {
   expect(prompt).not.toContain('[truncated]');
   expect(prompt.length).toBeLessThan(CHAT_MAX_ACTIVITY_CHARS + 2_000);
 });
+
+test('the training page adds workout reflections, newest first, capped at whole notes', () => {
+  const prompt = buildSystemPrompt('workout', {
+    workoutPlan: { name: 'Upper/Lower' },
+    reflections: [
+      { date: '2026-10-09', body: 'Bench felt strong.', themes: ['bench', 'energy'] },
+      { date: '2026-10-07', body: 'Short on sleep.' },
+    ],
+  });
+  expect(prompt).toContain('Training reflections');
+  expect(prompt).toContain('2026-10-09 [bench, energy]: Bench felt strong.');
+  expect(prompt).toContain('2026-10-07: Short on sleep.');
+
+  const long = Array.from({ length: 50 }, (_, i) => ({ date: '2026-01-01', body: `note-${i} ${'x'.repeat(1000)}` }));
+  const capped = buildSystemPrompt('workout', { reflections: long });
+  expect(capped).toContain('note-0 ');
+  expect(capped).not.toContain('note-49 ');
+  expect(buildSystemPrompt('workout', {})).toContain('Training reflections: none recently.');
+});
+
+test('reflections never reach any page but training', () => {
+  const reflections = [{ date: '2026-10-09', body: 'secret-ish note' }];
+  for (const page of ['home', 'profile', 'projects', 'blog', 'blog-post'] as const) {
+    expect(buildSystemPrompt(page, { reflections })).not.toContain('secret-ish note');
+  }
+});

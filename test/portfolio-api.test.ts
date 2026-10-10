@@ -728,10 +728,11 @@ test('the MCP role may write the plan table and only read the training log', () 
   expect(writable).not.toContain('portfolio-workout-summary-test');
 });
 
-test('the reflections table is written by the MCP Lambda alone, read by the gym summariser, never deletable', () => {
+test('the reflections table is written by the MCP Lambda alone, read by the gym summariser and chat, never deletable', () => {
   // Private writing, not site content: no REST route and no other function —
-  // above all not the anonymous /chat and /agent — may hold a grant on it. The
-  // one exception is the gym summariser, which may only read it.
+  // above all not the anonymous /agent — may hold a grant on it. The gym
+  // summariser may only read it; the anonymous /chat may only Query the
+  // workout partition.
   const template = synthStackWithMcp();
 
   const tables = template.findResources('AWS::DynamoDB::Table', {
@@ -749,26 +750,37 @@ test('the reflections table is written by the MCP Lambda alone, read by the gym 
   const withTableEnv = Object.entries(functions).filter(([, f]) =>
     JSON.stringify(f.Properties?.Environment?.Variables ?? {}).includes(tableId),
   );
-  expect(withTableEnv).toHaveLength(2);
-  const [mcpFn, gymFn] = [
+  expect(withTableEnv).toHaveLength(3);
+  const [mcpFn, gymFn, chatFn] = [
     withTableEnv.find(([, f]) => 'MCP_CLIENT_IDS' in f.Properties.Environment.Variables),
     withTableEnv.find(([, f]) => 'SUMMARY_MODEL_ID' in f.Properties.Environment.Variables),
+    withTableEnv.find(([, f]) => 'CHAT_MODEL_ID' in f.Properties.Environment.Variables),
   ];
   expect(mcpFn).toBeDefined();
   expect(gymFn).toBeDefined();
+  expect(chatFn).toBeDefined();
 
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
   const granting = policies.filter((p) => JSON.stringify(p.Properties.PolicyDocument).includes(tableId));
-  expect(granting).toHaveLength(2);
+  expect(granting).toHaveLength(3);
   for (const policy of granting) {
     const isGym = JSON.stringify(policy.Properties.Roles).includes(gymFn![1].Properties.Role['Fn::GetAtt'][0]);
+    const isChat = JSON.stringify(policy.Properties.Roles).includes(chatFn![1].Properties.Role['Fn::GetAtt'][0]);
     for (const statement of policy.Properties.PolicyDocument.Statement as Array<{
       Action?: string | string[];
       Resource?: unknown;
+      Condition?: unknown;
     }>) {
       if (!JSON.stringify(statement.Resource ?? '').includes(tableId)) continue;
       const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
       expect(actions).not.toContain('dynamodb:DeleteItem');
+      if (isChat) {
+        // Workout notes only: "life" notes must stay unreachable from /chat.
+        expect(actions).toEqual(['dynamodb:Query']);
+        expect(statement.Condition).toEqual({
+          'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': ['workout'] },
+        });
+      }
       if (isGym) {
         // Query plus the stream reads CDK grants for the event source; no write.
         expect(actions).not.toContain('dynamodb:PutItem');

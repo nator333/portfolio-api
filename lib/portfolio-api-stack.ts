@@ -805,10 +805,11 @@ export class PortfolioApiStack extends cdk.Stack {
 
       // Reflection notes: the owner's private after-session and life write-ups.
       // Declared here rather than beside the content tables because the MCP
-      // server is their only writer — no REST route, and no grant to any other
-      // function, least of all the anonymous /chat and /agent. The admin gate in
-      // lambda/mcp.ts covers the reads as well as the writes. The one other
-      // reader is the gym summariser below, read-only.
+      // server is their only writer — no REST route, and no grant to the
+      // anonymous /agent. The admin gate in lambda/mcp.ts covers the reads as
+      // well as the writes. The other readers are the gym summariser below and
+      // the training page's chat assistant, both read-only and both confined
+      // to workout notes.
       const reflectionsTable = new dynamodb.Table(this, 'ReflectionsTable', {
         partitionKey: { name: 'type', type: dynamodb.AttributeType.STRING },
         sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
@@ -826,6 +827,20 @@ export class PortfolioApiStack extends cdk.Stack {
         new iam.PolicyStatement({
           actions: ['dynamodb:Query', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
           resources: [reflectionsTable.tableArn],
+        }),
+      );
+
+      // The training page's chat assistant reads recent *workout* notes. Query
+      // only, and the LeadingKeys condition pins it to the `workout` partition,
+      // so "life" notes cannot be reached however a visitor words a prompt.
+      chatFn.addEnvironment('REFLECTIONS_TABLE_NAME', reflectionsTable.tableName);
+      chatFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:Query'],
+          resources: [reflectionsTable.tableArn],
+          conditions: {
+            'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': ['workout'] },
+          },
         }),
       );
 

@@ -15,6 +15,7 @@ export const CHAT_MAX_POST_CHARS = 20_000;
 export const CHAT_MAX_CONTEXT_CHARS = 40_000;
 // Below the context cap, so the feed always ends on a whole entry.
 export const CHAT_MAX_ACTIVITY_CHARS = 30_000;
+export const CHAT_MAX_REFLECTION_CHARS = 20_000;
 
 export interface ChatContextData {
   cv?: unknown;
@@ -24,6 +25,14 @@ export interface ChatContextData {
   workoutPlan?: unknown;
   /** The public activity feed, newest first, as GET /activity serves it. */
   activity?: { range: { from: string; to: string }; entries: ActivityEntry[] };
+  /** The owner's *workout* reflection notes, newest first; never "life" notes. */
+  reflections?: ChatReflection[];
+}
+
+export interface ChatReflection {
+  date: string;
+  body: string;
+  themes?: string[];
 }
 
 interface PageProfile {
@@ -63,8 +72,8 @@ export const PAGE_PROFILES: Record<ChatPage, PageProfile> = {
   },
   workout: {
     where: 'the training page',
-    focus: 'Answer questions about his current training program: the sessions, exercises, sets and reps, and weekly set targets. Do not give medical advice.',
-    needs: ['workoutPlan'],
+    focus: "Answer questions about his current training program — the sessions, exercises, sets and reps, and weekly set targets — and about how his recent sessions went, from his own training reflections. Summarise the reflections in your own words rather than quoting them at length. Do not give medical advice.",
+    needs: ['workoutPlan', 'reflections'],
   },
 };
 
@@ -131,6 +140,26 @@ function dataBlocks(page: ChatPage, data: ChatContextData, slug: string | undefi
           feed && lines.length > 0
             ? `Activity feed (${feed.range.from} to ${feed.range.to}, newest first):\n${lines.join('\n')}`
             : 'Activity feed: no recent activity is available.',
+        );
+        break;
+      }
+      case 'reflections': {
+        // Newest first and capped at whole notes, like the activity feed.
+        const notes: string[] = [];
+        let length = 0;
+        for (const note of data.reflections ?? []) {
+          const themes = note.themes?.length ? ` [${note.themes.join(', ')}]` : '';
+          const line = `${note.date}${themes}: ${note.body}`;
+          length += line.length + 1;
+          if (length > CHAT_MAX_REFLECTION_CHARS) {
+            break;
+          }
+          notes.push(line);
+        }
+        blocks.push(
+          notes.length > 0
+            ? `Training reflections (his notes on recent sessions, newest first):\n${notes.join('\n')}`
+            : 'Training reflections: none recently.',
         );
         break;
       }
