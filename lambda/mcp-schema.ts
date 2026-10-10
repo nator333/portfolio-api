@@ -320,7 +320,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     title: 'Update site content',
     description:
       'Replace one site document. Send the whole document, as get_content returns it; it is validated ' +
-      'and an invalid one is rejected unchanged. A home background is {url, caption, alt?}; backgroundsHidden: true keeps the saved photos but shows the plain black background. Admin only.',
+      'and an invalid one is rejected unchanged. A home background is {url, caption, alt?, dim?} where dim is the overlay darkness as an integer percentage 0-100 (omitted = site default 55); backgroundsHidden: true keeps the saved photos but shows the plain black background. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
