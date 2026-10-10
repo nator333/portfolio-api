@@ -31,6 +31,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => {
 });
 
 import { handler as getPlan, DEFAULT_PLAN_ID } from '../lambda/get-workout-plan';
+import { handler as getPublicPlan } from '../lambda/get-public-workout-plan';
 import { handler as updatePlan } from '../lambda/update-workout-plan';
 import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
 import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
@@ -171,6 +172,25 @@ describe('reading the plan', () => {
 
     expect(mockSend).toHaveBeenCalledTimes(2);
     expect(body.version).toBe(2);
+  });
+});
+
+describe('reading the plan publicly', () => {
+  it('should serve the current version and ignore every lookup parameter', async () => {
+    mockSend.mockResolvedValueOnce({ Items: [stored(3)] });
+
+    const result = await getPublicPlan(
+      readEvent({ version: '1', date: '2020-01-01', history: 'true', planId: 'other' }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body).version).toBe(3);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(lastInput()).toMatchObject({
+      ExpressionAttributeValues: { ':p': DEFAULT_PLAN_ID, ':prefix': 'V#' },
+      ScanIndexForward: false,
+      Limit: 1,
+    });
   });
 });
 

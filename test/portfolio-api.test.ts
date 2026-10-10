@@ -65,10 +65,11 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   // admin blog reader behind /blog/all (22); get-muscle-volume-status, the
   // only function that reads the plan and the log together (23); and the
   // get/update pair behind the weekly-set-target editor (25); and get-bodyweight,
-  // which serves the monthly bodyweight snapshot (26). The MCP server's
+  // which serves the monthly bodyweight snapshot (26); and get-public-workout-plan,
+  // which serves the current program to the Training page (27). The MCP server's
   // functions, and the bodyweight ingest that needs its Google grant, are not
   // here: they are only declared when MCP options are supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 26);
+  template.resourceCountIs('AWS::Lambda::Function', 27);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -113,15 +114,15 @@ test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => 
   for (const pathPart of ['cv', 'projects', 'blog', 'home']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Eight public GETs (key only): cv, projects, blog, home, workout, activity,
-  // muscle-volume-status and bodyweight; and four Cognito-guarded PUTs across the content
+  // Nine public GETs (key only): cv, projects, blog, home, workout, activity,
+  // muscle-volume-status, bodyweight and workout-plan; and four Cognito-guarded PUTs across the content
   // resources, plus the weekly set targets, which are Cognito-gated both ways.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(8);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(9);
   expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(5);
 });
 
@@ -573,8 +574,7 @@ test('the weekly set targets are Cognito-gated both ways and touch only the plan
   template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'targets' });
 
   // No API key anywhere on this resource: an editor is admin-only, and the ID
-  // token is the authority. A key-gated read would expose the training intent
-  // to anything holding the site key.
+  // token is the authority. The public read of the plan is GET /workout-plan.
   const targetsResourceId = Object.entries(
     template.findResources('AWS::ApiGateway::Resource'),
   ).find(([, r]) => r.Properties.PathPart === 'targets')?.[0];
@@ -612,6 +612,30 @@ test('the weekly set targets are Cognito-gated both ways and touch only the plan
     expect(resources).not.toContain('table/portfolio-workout-sets');
     expect(resources).not.toContain('table/portfolio-workout-summary');
   }
+});
+
+test('GET /workout-plan is public (API key only) and may only query the plan table', () => {
+  const template = synthStack();
+
+  const planResourceId = Object.entries(template.findResources('AWS::ApiGateway::Resource')).find(
+    ([, r]) => r.Properties.PathPart === 'workout-plan',
+  )?.[0];
+  expect(planResourceId).toBeDefined();
+  template.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'GET',
+    ApiKeyRequired: true,
+    AuthorizationType: 'NONE',
+    ResourceId: { Ref: planResourceId },
+  });
+
+  // Anonymous, so a bare Query on the plan and nothing on the training log.
+  const policy = Object.values(template.findResources('AWS::IAM::Policy')).find((p) =>
+    String(p.Properties.PolicyName).startsWith('GetPublicWorkoutPlanFunction'),
+  );
+  const statements = policy!.Properties.PolicyDocument.Statement as Array<{ Resource?: unknown; Action?: unknown }>;
+  expect(statements).toHaveLength(1);
+  expect([statements[0].Action].flat()).toEqual(['dynamodb:Query']);
+  expect(JSON.stringify(statements[0].Resource)).toContain('table/portfolio-workout-plan');
 });
 
 test('GET /muscle-volume-status reads the plan and the log, and writes neither', () => {

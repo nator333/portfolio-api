@@ -400,10 +400,11 @@ export class PortfolioApiStack extends cdk.Stack {
     // training log the public summaries deliberately aggregate away.
     const workoutSetsTable = workoutSetsTableName(props.stage);
     const workoutSetsArn = `arn:aws:dynamodb:${WORKOUT_REGION}:${this.account}:table/${workoutSetsTable}`;
-    // The training program, beside them in us-west-2 (WorkoutIngestStack). Also
-    // MCP-only and admin-gated, and the one workout table this API *writes*:
-    // publishing a plan version is an admin tool, so the grant below is split
-    // from the read-only one to keep PutItem scoped to this table alone.
+    // The training program, beside them in us-west-2 (WorkoutIngestStack). Its
+    // current version is public via GET /workout-plan; it is also the one
+    // workout table this API *writes*: publishing a plan version is an admin
+    // tool, so the grant below is split from the read-only one to keep PutItem
+    // scoped to this table alone.
     const workoutPlanTable = workoutPlanTableName(props.stage);
     const workoutPlanArn = `arn:aws:dynamodb:${WORKOUT_REGION}:${this.account}:table/${workoutPlanTable}`;
     const getWorkoutFn = new lambdaNode.NodejsFunction(this, 'GetWorkoutFunction', {
@@ -469,10 +470,33 @@ export class PortfolioApiStack extends cdk.Stack {
       }),
     );
 
+    // The current program for the public Training page. Reads only, and only
+    // the newest menu and target set: the handler drops every query parameter,
+    // so version, date and history lookups stay on the MCP tools.
+    const getPublicWorkoutPlanFn = new lambdaNode.NodejsFunction(
+      this,
+      'GetPublicWorkoutPlanFunction',
+      {
+        entry: path.join(__dirname, '..', 'lambda', 'get-public-workout-plan.ts'),
+        ...lambdaDefaults,
+        // Two small cross-region queries; same headroom as the other readers
+        // of this table rather than the 3s default.
+        timeout: cdk.Duration.seconds(15),
+        environment: {
+          ...lambdaDefaults.environment,
+          WORKOUT_PLAN_TABLE_NAME: workoutPlanTable,
+          WORKOUT_REGION,
+        },
+      },
+    );
+    getPublicWorkoutPlanFn.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ['dynamodb:Query'], resources: [workoutPlanArn] }),
+    );
+
     // The weekly set targets, read and written by the admin editor page. These
-    // are the only functions outside the MCP server that touch the plan table's
-    // target items, and the only REST surface the plan has at all — the menu
-    // stays MCP-only, since editing sessions is not something the site does.
+    // are the only functions outside the MCP server that write the plan table's
+    // target items. The menu is edited through MCP alone, since editing
+    // sessions is not something the site does.
     const targetsEnv = {
       ...lambdaDefaults.environment,
       WORKOUT_PLAN_TABLE_NAME: workoutPlanTable,
@@ -1119,11 +1143,10 @@ export class PortfolioApiStack extends cdk.Stack {
     });
 
     // Muscle-volume status: key only, on the same public posture as /workout.
-    // It reads the otherwise admin-only plan table, but returns only that plan's
-    // weekly set targets and the rolled-up counts already visible in /workout —
-    // not the session and exercise detail that makes the plan document admin
-    // only. The progress page has always shown these ranges; what changes is
-    // that it now shows the plan's rather than its own copy of them.
+    // It reads the plan table, but returns only that plan's weekly set targets
+    // and the rolled-up counts already visible in /workout. The progress page
+    // has always shown these ranges; what changes is that it now shows the
+    // plan's rather than its own copy of them.
     const muscleVolumeResource = api.root.addResource('muscle-volume-status');
     muscleVolumeResource.addMethod(
       'GET',
@@ -1145,10 +1168,16 @@ export class PortfolioApiStack extends cdk.Stack {
       apiKeyRequired: true,
     });
 
-    // The weekly set targets: Cognito-gated both ways, like the other admin
-    // surfaces. No API key — the ID token is the authority, same posture as
-    // /media and /uploads.
+    // The weekly set targets editor: Cognito-gated both ways, like the other
+    // admin surfaces. No API key — the ID token is the authority, same posture
+    // as /media and /uploads.
     const workoutPlanResource = api.root.addResource('workout-plan');
+    // The current program itself is public (key only), like the rest of the
+    // Training page: sessions, exercise slots and weekly targets. Only the
+    // targets editor below needs Cognito.
+    workoutPlanResource.addMethod('GET', new apigateway.LambdaIntegration(getPublicWorkoutPlanFn), {
+      apiKeyRequired: true,
+    });
     const workoutTargetsResource = workoutPlanResource.addResource('targets');
     workoutTargetsResource.addMethod(
       'GET',
