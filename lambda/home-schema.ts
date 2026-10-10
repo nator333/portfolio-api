@@ -34,6 +34,10 @@ export const homeDataSchema = z.object({
   mottoesHidden: z.boolean().optional(),
   // Omitted (or empty) keeps the plain black hero.
   backgrounds: z.array(backgroundPhotoSchema).max(MAX_BACKGROUND_COUNT).optional(),
+  // When true the site shows its plain black background even though the saved
+  // photos are preserved, so they can be switched off and back on without
+  // re-adding them. Omitted rather than false, like mottoesHidden.
+  backgroundsHidden: z.boolean().optional(),
 });
 
 export type HomeData = z.infer<typeof homeDataSchema>;

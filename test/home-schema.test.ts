@@ -50,6 +50,16 @@ test('accepts background photos', () => {
   expect(homeDataSchema.safeParse(data).success).toBe(true);
 });
 
+test('keeps the backgroundsHidden flag alongside the saved photos', () => {
+  const result = homeDataSchema.safeParse({ mottoes: [], backgrounds: [photo], backgroundsHidden: true });
+  expect(result.success).toBe(true);
+  expect(result.data).toEqual({ mottoes: [], backgrounds: [photo], backgroundsHidden: true });
+});
+
+test('rejects a non-boolean backgroundsHidden', () => {
+  expect(homeDataSchema.safeParse({ mottoes: [], backgroundsHidden: 'yes' }).success).toBe(false);
+});
+
 test('rejects more background photos than the cap', () => {
   const data = { mottoes: [], backgrounds: Array.from({ length: MAX_BACKGROUND_COUNT + 1 }, () => photo) };
   expect(homeDataSchema.safeParse(data).success).toBe(false);
