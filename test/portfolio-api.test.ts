@@ -289,8 +289,16 @@ test('chat Lambda reads the workout tables for the training and home pages, with
     .flatMap((p) => p.Properties.PolicyDocument.Statement as { Action: string | string[]; Resource: unknown }[])
     .filter((s) => /portfolio-workout-(plan|summary)/.test(JSON.stringify(s.Resource)));
   expect(planStatements.length).toBeGreaterThan(0);
+  // Query everywhere, plus GetItem for the summary totals GET /workout reads;
+  // GetItem is confined to the summary table and nothing may write.
   for (const statement of planStatements) {
-    expect([statement.Action].flat()).toEqual(['dynamodb:Query']);
+    const actions = [statement.Action].flat();
+    if (actions.includes('dynamodb:GetItem')) {
+      expect(actions).toEqual(['dynamodb:GetItem']);
+      expect(JSON.stringify(statement.Resource)).not.toContain('portfolio-workout-plan');
+    } else {
+      expect(actions).toEqual(['dynamodb:Query']);
+    }
   }
 });
 

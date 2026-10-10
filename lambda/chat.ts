@@ -19,6 +19,8 @@ import {
 import { GYM_REFLECTION_TYPE } from './gym-summary-schema';
 import { handler as getWorkoutPlan } from './get-workout-plan';
 import { handler as getActivity } from './get-activity';
+import { handler as getWorkout } from './get-workout';
+import { handler as getMuscleVolumeStatus } from './get-muscle-volume-status';
 import { corsHeaders } from './cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -87,6 +89,17 @@ export const handler = async (
     needs.includes('reflections') &&
       loadReflections().then((reflections) => {
         data.reflections = reflections;
+      }),
+    needs.includes('progress') &&
+      loadPublic(getWorkout, event).then((progress) => {
+        data.progress = progress as ChatContextData['progress'];
+      }),
+    needs.includes('weeklyProgress') &&
+      loadPublic(getMuscleVolumeStatus, event).then((status) => {
+        if (status !== undefined) {
+          const { window, sessions, bonusWindow, muscles, untargeted } = status as Record<string, unknown>;
+          data.weeklyProgress = { window, sessions, bonusWindow, muscles, untargeted };
+        }
       }),
     needs.includes('workoutPlan') &&
       loadWorkoutPlan(event).then((plan) => {
@@ -187,6 +200,24 @@ async function loadReflections(): Promise<ChatReflection[] | undefined> {
     return (result.Items ?? []) as ChatReflection[];
   } catch (error) {
     console.warn('chat: reflections unavailable', error);
+    return undefined;
+  }
+}
+
+/**
+ * A public endpoint's answer, read in-process with its default parameters —
+ * exactly what the page itself shows. Undefined on any failure, so one dead
+ * source costs the assistant that block, not the whole reply.
+ */
+async function loadPublic(
+  read: (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult>,
+  event: APIGatewayProxyEvent,
+): Promise<unknown> {
+  try {
+    const result = await read({ ...event, queryStringParameters: null });
+    return result.statusCode === 200 ? JSON.parse(result.body) : undefined;
+  } catch (error) {
+    console.warn('chat: training source unavailable', error);
     return undefined;
   }
 }
