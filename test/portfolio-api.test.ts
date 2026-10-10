@@ -55,7 +55,7 @@ test('Cognito user pool created without self sign-up', () => {
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
 });
 
-test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup Lambdas created', () => {
+test('cv, projects, blog, home, places, chat, agent, workout, activity and pre-signup Lambdas created', () => {
   const template = synthStack();
 
   // get/update pairs for cv, projects, blog, home, plus chat, agent, get-workout,
@@ -66,10 +66,11 @@ test('cv, projects, blog, home, chat, agent, workout, activity and pre-signup La
   // only function that reads the plan and the log together (23); and the
   // get/update pair behind the weekly-set-target editor (25); and get-bodyweight,
   // which serves the monthly bodyweight snapshot (26); and get-public-workout-plan,
-  // which serves the current program to the Training page (27). The MCP server's
+  // which serves the current program to the Training page (27); and the
+  // get/update pair behind the Places page (29). The MCP server's
   // functions, and the bodyweight ingest that needs its Google grant, are not
   // here: they are only declared when MCP options are supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 27);
+  template.resourceCountIs('AWS::Lambda::Function', 29);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -108,22 +109,22 @@ test('REST API exposes GET /cv (key only) and PUT /cv (key + Cognito auth)', () 
   });
 });
 
-test('REST API exposes GET and PUT for /cv, /projects, /blog, and /home', () => {
+test('REST API exposes GET and PUT for /cv, /projects, /blog, /home and /places', () => {
   const template = synthStack();
 
-  for (const pathPart of ['cv', 'projects', 'blog', 'home']) {
+  for (const pathPart of ['cv', 'projects', 'blog', 'home', 'places']) {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
   }
-  // Nine public GETs (key only): cv, projects, blog, home, workout, activity,
-  // muscle-volume-status, bodyweight and workout-plan; and four Cognito-guarded PUTs across the content
+  // Ten public GETs (key only): cv, projects, blog, home, places, workout, activity,
+  // muscle-volume-status, bodyweight and workout-plan; and five Cognito-guarded PUTs across the content
   // resources, plus the weekly set targets, which are Cognito-gated both ways.
   const methods = template.findResources('AWS::ApiGateway::Method');
   const byAuth = Object.values(methods).map((m) => ({
     http: m.Properties.HttpMethod,
     auth: m.Properties.AuthorizationType,
   }));
-  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(9);
-  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(5);
+  expect(byAuth.filter((m) => m.http === 'GET' && m.auth === 'NONE').length).toBe(10);
+  expect(byAuth.filter((m) => m.http === 'PUT' && m.auth === 'COGNITO_USER_POOLS').length).toBe(6);
 });
 
 test('GET /blog/all returns drafts and is Cognito-gated with no API key', () => {

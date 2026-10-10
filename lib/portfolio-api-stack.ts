@@ -344,6 +344,20 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantWriteData(updateHomeFn);
 
+    // The Places page: five pixel-art hometown maps with the owner's memories
+    // pinned on them. One document in the CV table, like home and projects.
+    const getPlacesFn = new lambdaNode.NodejsFunction(this, 'GetPlacesFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-places.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantReadData(getPlacesFn);
+
+    const updatePlacesFn = new lambdaNode.NodejsFunction(this, 'UpdatePlacesFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'update-places.ts'),
+      ...lambdaDefaults,
+    });
+    cvTable.grantWriteData(updatePlacesFn);
+
     // Public visitor Q&A: read-only by IAM design — this function never gets a
     // write grant, so no prompt injection can mutate the table.
     const chatFn = new lambdaNode.NodejsFunction(this, 'ChatFunction', {
@@ -1118,6 +1132,16 @@ export class PortfolioApiStack extends cdk.Stack {
       apiKeyRequired: true,
     });
     homeResource.addMethod('PUT', new apigateway.LambdaIntegration(updateHomeFn), {
+      apiKeyRequired: true,
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    const placesResource = api.root.addResource('places');
+    placesResource.addMethod('GET', new apigateway.LambdaIntegration(getPlacesFn), {
+      apiKeyRequired: true,
+    });
+    placesResource.addMethod('PUT', new apigateway.LambdaIntegration(updatePlacesFn), {
       apiKeyRequired: true,
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
