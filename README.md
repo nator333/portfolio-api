@@ -208,6 +208,16 @@ reflection text reaches the public site, so the boundary is kept narrow:
 * **Backfill** notes written before this existed by invoking
   `GymSummaryFunction` by hand with `{ "backfillDays": 90 }`.
 
+## Places
+
+`GET /places` (site key) serves the Places page document — the owner's
+memories pinned on five hometown maps, plus per-town facts — and `PUT /places`
+(Cognito) replaces it, the same single-document shape as `/home` and
+`/projects` in the CV table (`lambda/places-schema.ts`). The maps themselves
+are drawn by the front; the API only validates that a memory points at one of
+the five towns, keeps photo and map links to https, and caps the document so
+it stays one DynamoDB item.
+
 ## Useful commands
 
 * `npm run build`        compile TypeScript to JS
