@@ -31,6 +31,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => {
 });
 
 import { handler as getPlan, DEFAULT_PLAN_ID } from '../lambda/get-workout-plan';
+import { handler as getPublicPlan, VERSIONS_BACK } from '../lambda/get-public-workout-plan';
 import { handler as updatePlan } from '../lambda/update-workout-plan';
 import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
 import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
@@ -171,6 +172,77 @@ describe('reading the plan', () => {
 
     expect(mockSend).toHaveBeenCalledTimes(2);
     expect(body.version).toBe(2);
+  });
+});
+
+describe('reading the plan publicly', () => {
+  const readPublic = async (query: Record<string, string> = {}) => {
+    const result = await getPublicPlan(readEvent(query));
+    return { statusCode: result.statusCode, body: JSON.parse(result.body) };
+  };
+
+  it('should serve the current version and ignore every other lookup parameter', async () => {
+    mockSend.mockResolvedValueOnce({ Items: [stored(3)] });
+
+    const { statusCode, body } = await readPublic({
+      date: '2020-01-01',
+      history: 'true',
+      planId: 'other',
+    });
+
+    expect(statusCode).toBe(200);
+    expect(body.version).toBe(3);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(lastInput()).toMatchObject({
+      ExpressionAttributeValues: { ':p': DEFAULT_PLAN_ID, ':prefix': 'V#' },
+      ScanIndexForward: false,
+      Limit: 1,
+    });
+  });
+
+  it(`should serve a version up to ${VERSIONS_BACK} before the current one`, async () => {
+    mockSend
+      .mockResolvedValueOnce({ Items: [stored(9)] })
+      .mockResolvedValueOnce({ Item: stored(9 - VERSIONS_BACK) });
+
+    const { statusCode, body } = await readPublic({ version: String(9 - VERSIONS_BACK) });
+
+    expect(statusCode).toBe(200);
+    expect(body.version).toBe(9 - VERSIONS_BACK);
+    expect(lastInput()).toMatchObject({ Key: { planId: DEFAULT_PLAN_ID, sk: 'V#0004' } });
+  });
+
+  it('should refuse a version older than that, or newer than the current one', async () => {
+    for (const version of [String(8 - VERSIONS_BACK), '10']) {
+      mockSend.mockReset();
+      mockSend.mockResolvedValueOnce({ Items: [stored(9)] });
+
+      const { statusCode, body } = await readPublic({ version });
+
+      expect(statusCode).toBe(404);
+      expect(body.message).toBe('Only versions 4-9 of the plan are public');
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('should answer for the current version without a second read', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Items: [stored(9)] })
+      .mockResolvedValueOnce({ Items: [stored(9)] });
+
+    const { statusCode, body } = await readPublic({ version: '9' });
+
+    expect(statusCode).toBe(200);
+    expect(body.version).toBe(9);
+    expect(mockSend.mock.calls.every(([c]) => c.input.Limit === 1)).toBe(true);
+  });
+
+  it('should reject a version that is not a positive integer before reading anything', async () => {
+    for (const version of ['0', '-1', '2.5', 'abc', '']) {
+      const { statusCode } = await readPublic({ version });
+      expect(statusCode).toBe(400);
+    }
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });
 

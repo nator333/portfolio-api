@@ -153,7 +153,7 @@ function respond(
 }
 
 /** The newest version: one descending Query, which is what the padded sk buys. */
-async function latestStoredVersion(
+export async function latestStoredVersion(
   tableName: string,
   planId: string,
 ): Promise<PlanVersionItem | null> {
