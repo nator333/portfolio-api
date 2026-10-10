@@ -11,6 +11,7 @@ import { BLOG_TABLE_ITEM_ID, visiblePosts, type BlogPost } from './blog-schema';
 import { chatRequestSchema } from './chat-schema';
 import { buildSystemPrompt, PAGE_PROFILES, resolvePage, type ChatContextData } from './chat-context';
 import { handler as getWorkoutPlan } from './get-workout-plan';
+import { handler as getActivity } from './get-activity';
 import { corsHeaders } from './cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -67,6 +68,10 @@ export const handler = async (
     needs.includes('posts') &&
       ddb.send(new GetCommand({ TableName: tableName, Key: { id: BLOG_TABLE_ITEM_ID } })).then((r) => {
         data.posts = visiblePosts((r.Item as { posts?: BlogPost[] } | undefined)?.posts, false);
+      }),
+    needs.includes('activity') &&
+      loadActivity(event).then((activity) => {
+        data.activity = activity;
       }),
     needs.includes('workoutPlan') &&
       loadWorkoutPlan(event).then((plan) => {
@@ -126,5 +131,15 @@ async function loadWorkoutPlan(event: APIGatewayProxyEvent): Promise<unknown> {
     return undefined;
   }
   const result = await getWorkoutPlan({ ...event, queryStringParameters: null });
+  return result.statusCode === 200 ? JSON.parse(result.body) : undefined;
+}
+
+/**
+ * The home page's activity feed, exactly as the public GET /activity serves
+ * it (default one-year window). Undefined on failure, so the assistant says
+ * there is nothing to report instead of failing the chat.
+ */
+async function loadActivity(event: APIGatewayProxyEvent): Promise<ChatContextData['activity']> {
+  const result = await getActivity({ ...event, queryStringParameters: null });
   return result.statusCode === 200 ? JSON.parse(result.body) : undefined;
 }

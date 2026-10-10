@@ -474,12 +474,17 @@ export class PortfolioApiStack extends cdk.Stack {
     // the five before it. Reads only; the handler drops every other query
     // parameter, so date and history lookups stay on the MCP tools.
     // The training page's chat assistant reads the same current program the
-    // public endpoint serves. Query only: the newest menu and target set.
+    // public endpoint serves, and the home page's assistant the same activity
+    // feed GET /activity serves. Reads only: Query on the cross-region plan
+    // and summary tables, read on the GitHub summaries.
     chatFn.addEnvironment('WORKOUT_PLAN_TABLE_NAME', workoutPlanTable);
+    chatFn.addEnvironment('WORKOUT_SUMMARY_TABLE_NAME', workoutSummaryTable);
+    chatFn.addEnvironment('GITHUB_SUMMARY_TABLE_NAME', gitHubSummaryTable.tableName);
     chatFn.addEnvironment('WORKOUT_REGION', WORKOUT_REGION);
     chatFn.addToRolePolicy(
-      new iam.PolicyStatement({ actions: ['dynamodb:Query'], resources: [workoutPlanArn] }),
+      new iam.PolicyStatement({ actions: ['dynamodb:Query'], resources: [workoutPlanArn, workoutSummaryArn] }),
     );
+    gitHubSummaryTable.grantReadData(chatFn);
 
     const getPublicWorkoutPlanFn = new lambdaNode.NodejsFunction(
       this,

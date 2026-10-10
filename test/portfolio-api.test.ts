@@ -271,7 +271,7 @@ test('chat Lambda may invoke Bedrock models but only read the table', () => {
   });
 });
 
-test('chat Lambda reads the workout plan table for the training page, without write access', () => {
+test('chat Lambda reads the workout tables for the training and home pages, without write access', () => {
   const template = synthStack();
 
   const functions = template.findResources('AWS::Lambda::Function');
@@ -279,6 +279,7 @@ test('chat Lambda reads the workout plan table for the training page, without wr
   expect(chat).toBeDefined();
   const [, chatFn] = chat!;
   expect(chatFn.Properties.Environment.Variables.WORKOUT_PLAN_TABLE_NAME).toContain('portfolio-workout-plan');
+  expect(chatFn.Properties.Environment.Variables.WORKOUT_SUMMARY_TABLE_NAME).toContain('portfolio-workout-summary');
 
   const roleId = chatFn.Properties.Role['Fn::GetAtt'][0];
   const policies = Object.values(template.findResources('AWS::IAM::Policy')).filter((p) =>
@@ -286,7 +287,7 @@ test('chat Lambda reads the workout plan table for the training page, without wr
   );
   const planStatements = policies
     .flatMap((p) => p.Properties.PolicyDocument.Statement as { Action: string | string[]; Resource: unknown }[])
-    .filter((s) => JSON.stringify(s.Resource).includes('portfolio-workout-plan'));
+    .filter((s) => /portfolio-workout-(plan|summary)/.test(JSON.stringify(s.Resource)));
   expect(planStatements.length).toBeGreaterThan(0);
   for (const statement of planStatements) {
     expect([statement.Action].flat()).toEqual(['dynamodb:Query']);
@@ -308,10 +309,10 @@ test('GET /activity is public and merges sources server-side', () => {
         (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:Query'),
     ),
   );
-  // get-workout, get-activity and get-muscle-volume-status each read it with a
-  // Query; the MCP server adds a fourth reader, but only on a deployment where
-  // it is declared.
-  expect(activityPolicy.length).toBe(3);
+  // get-workout, get-activity, get-muscle-volume-status and chat (for the home
+  // page's activity feed) each read it with a Query; the MCP server adds a
+  // fifth reader, but only on a deployment where it is declared.
+  expect(activityPolicy.length).toBe(4);
 });
 
 test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
@@ -549,8 +550,8 @@ test('the MCP role may query the exercise index, not just the sets table', () =>
 });
 
 test('every reader of the workout table is cross-region and read-only', () => {
-  // get-workout, get-activity, get-muscle-volume-status and the MCP server all
-  // read it; none may ever write, since the only writer is the ingest Lambda in
+  // get-workout, get-activity, get-muscle-volume-status, chat (the home page's
+  // activity feed) and the MCP server all read it; none may ever write, since the only writer is the ingest Lambda in
   // us-west-2. Synthesised with MCP enabled so every reader is covered.
   const template = synthStackWithMcp('prod');
 
@@ -560,7 +561,7 @@ test('every reader of the workout table is cross-region and read-only', () => {
       JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
     ),
   );
-  expect(workoutPolicies.length).toBe(4);
+  expect(workoutPolicies.length).toBe(5);
 
   for (const policy of workoutPolicies) {
     const crossRegion = policy.Properties.PolicyDocument.Statement.filter(

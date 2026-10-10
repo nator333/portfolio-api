@@ -1,5 +1,6 @@
 import type { ChatPage } from './chat-schema';
 import type { BlogPost } from './blog-schema';
+import type { ActivityEntry } from './activity-schema';
 
 /**
  * Per-page grounding for the visitor chat. Each page of the site gets an
@@ -12,6 +13,8 @@ import type { BlogPost } from './blog-schema';
 // caps in chat-schema.ts they bound the input tokens of a call.
 export const CHAT_MAX_POST_CHARS = 20_000;
 export const CHAT_MAX_CONTEXT_CHARS = 40_000;
+// Below the context cap, so the feed always ends on a whole entry.
+export const CHAT_MAX_ACTIVITY_CHARS = 30_000;
 
 export interface ChatContextData {
   cv?: unknown;
@@ -19,6 +22,8 @@ export interface ChatContextData {
   /** Published posts only — drafts must never reach this module. */
   posts?: BlogPost[];
   workoutPlan?: unknown;
+  /** The public activity feed, newest first, as GET /activity serves it. */
+  activity?: { range: { from: string; to: string }; entries: ActivityEntry[] };
 }
 
 interface PageProfile {
@@ -32,9 +37,9 @@ interface PageProfile {
 
 export const PAGE_PROFILES: Record<ChatPage, PageProfile> = {
   home: {
-    where: 'the home page',
-    focus: 'Give a friendly overview of who Masahiro is and help the visitor find what they are looking for on the site (profile, projects, blog, training).',
-    needs: ['cv', 'projects'],
+    where: 'the home page, which shows his recent activity: GitHub work, blog posts, and gym sessions',
+    focus: 'Answer questions about what he has been doing recently — when, how often, and on what — from the activity feed alone.',
+    needs: ['activity'],
   },
   profile: {
     where: 'the profile (CV) page',
@@ -106,6 +111,27 @@ function dataBlocks(page: ChatPage, data: ChatContextData, slug: string | undefi
               : 'The post the visitor is reading could not be found; answer from the post list above.',
           );
         }
+        break;
+      }
+      case 'activity': {
+        const feed = data.activity;
+        // One compact line per entry, newest first, so the length cap drops
+        // the oldest days rather than cutting the feed mid-entry.
+        const lines: string[] = [];
+        let length = 0;
+        for (const entry of feed?.entries ?? []) {
+          const line = `${entry.date} ${entry.type}: ${entry.title}${entry.summary ? ` — ${entry.summary}` : ''}`;
+          length += line.length + 1;
+          if (length > CHAT_MAX_ACTIVITY_CHARS) {
+            break;
+          }
+          lines.push(line);
+        }
+        blocks.push(
+          feed && lines.length > 0
+            ? `Activity feed (${feed.range.from} to ${feed.range.to}, newest first):\n${lines.join('\n')}`
+            : 'Activity feed: no recent activity is available.',
+        );
         break;
       }
       case 'workoutPlan':

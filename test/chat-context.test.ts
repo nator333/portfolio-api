@@ -1,5 +1,6 @@
 import {
   buildSystemPrompt,
+  CHAT_MAX_ACTIVITY_CHARS,
   CHAT_MAX_POST_CHARS,
   findPost,
   PAGE_PROFILES,
@@ -78,4 +79,39 @@ test('every page declares the data it needs', () => {
   for (const profile of Object.values(PAGE_PROFILES)) {
     expect(profile.needs.length).toBeGreaterThan(0);
   }
+});
+
+test('the home page is grounded in the activity feed alone', () => {
+  const prompt = buildSystemPrompt('home', {
+    cv,
+    projects,
+    activity: {
+      range: { from: '2025-10-10', to: '2026-10-10' },
+      entries: [
+        { date: '2026-10-09', type: 'github', title: 'nator333/portfolio-api', summary: 'Added page-aware chat' },
+        { date: '2026-10-08', type: 'gym', title: 'Upper A' },
+      ],
+    },
+  });
+  expect(prompt).toContain('2026-10-09 github: nator333/portfolio-api — Added page-aware chat');
+  expect(prompt).toContain('2026-10-08 gym: Upper A');
+  expect(prompt).not.toContain('CV data');
+  expect(prompt).not.toContain('Projects data');
+});
+
+test('the home page says so when there is no activity', () => {
+  expect(buildSystemPrompt('home', {})).toContain('no recent activity');
+});
+
+test('a long activity feed keeps the newest whole entries', () => {
+  const entries = Array.from({ length: 2000 }, (_, i) => ({
+    date: `2026-01-${String((i % 28) + 1).padStart(2, '0')}`,
+    type: 'github' as const,
+    title: `repo-${i}`,
+  }));
+  const prompt = buildSystemPrompt('home', { activity: { range: { from: 'a', to: 'b' }, entries } });
+  expect(prompt).toContain(': repo-0\n');
+  expect(prompt).not.toContain('repo-1999');
+  expect(prompt).not.toContain('[truncated]');
+  expect(prompt.length).toBeLessThan(CHAT_MAX_ACTIVITY_CHARS + 2_000);
 });
