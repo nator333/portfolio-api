@@ -10,7 +10,10 @@ import { z } from 'zod';
  * (gym-summary.ts), which turns each day's *workout* notes into a public line of
  * at most 75 characters about the training alone; "life" notes never leave the
  * table. That is why add_reflection tells the writer to keep workout notes free
- * of private matters. No other function in the stack holds a grant on it.
+ * of private matters. The training page's visitor chat (chat.ts) also reads
+ * recent workout notes, read-only and confined to the `workout` partition by
+ * an IAM LeadingKeys condition. No other function in the stack holds a grant
+ * on it.
  *
  * ## Storage shape
  *

@@ -271,6 +271,29 @@ test('chat Lambda may invoke Bedrock models but only read the table', () => {
   });
 });
 
+test('chat Lambda reads the workout tables for the training and home pages, without write access', () => {
+  const template = synthStack();
+
+  const functions = template.findResources('AWS::Lambda::Function');
+  const chat = Object.entries(functions).find(([, f]) => 'CHAT_MODEL_ID' in (f.Properties?.Environment?.Variables ?? {}));
+  expect(chat).toBeDefined();
+  const [, chatFn] = chat!;
+  expect(chatFn.Properties.Environment.Variables.WORKOUT_PLAN_TABLE_NAME).toContain('portfolio-workout-plan');
+  expect(chatFn.Properties.Environment.Variables.WORKOUT_SUMMARY_TABLE_NAME).toContain('portfolio-workout-summary');
+
+  const roleId = chatFn.Properties.Role['Fn::GetAtt'][0];
+  const policies = Object.values(template.findResources('AWS::IAM::Policy')).filter((p) =>
+    JSON.stringify(p.Properties.Roles).includes(roleId),
+  );
+  const planStatements = policies
+    .flatMap((p) => p.Properties.PolicyDocument.Statement as { Action: string | string[]; Resource: unknown }[])
+    .filter((s) => /portfolio-workout-(plan|summary)/.test(JSON.stringify(s.Resource)));
+  expect(planStatements.length).toBeGreaterThan(0);
+  for (const statement of planStatements) {
+    expect([statement.Action].flat()).toEqual(['dynamodb:Query']);
+  }
+});
+
 test('GET /activity is public and merges sources server-side', () => {
   const template = synthStack();
 
@@ -286,10 +309,10 @@ test('GET /activity is public and merges sources server-side', () => {
         (Array.isArray(s.Action) ? s.Action : [s.Action]).includes('dynamodb:Query'),
     ),
   );
-  // get-workout, get-activity and get-muscle-volume-status each read it with a
-  // Query; the MCP server adds a fourth reader, but only on a deployment where
-  // it is declared.
-  expect(activityPolicy.length).toBe(3);
+  // get-workout, get-activity, get-muscle-volume-status and chat (for the home
+  // page's activity feed) each read it with a Query; the MCP server adds a
+  // fifth reader, but only on a deployment where it is declared.
+  expect(activityPolicy.length).toBe(4);
 });
 
 test('GitHub activity is snapshotted on a schedule, not proxied per request', () => {
@@ -527,8 +550,8 @@ test('the MCP role may query the exercise index, not just the sets table', () =>
 });
 
 test('every reader of the workout table is cross-region and read-only', () => {
-  // get-workout, get-activity, get-muscle-volume-status and the MCP server all
-  // read it; none may ever write, since the only writer is the ingest Lambda in
+  // get-workout, get-activity, get-muscle-volume-status, chat (the home page's
+  // activity feed) and the MCP server all read it; none may ever write, since the only writer is the ingest Lambda in
   // us-west-2. Synthesised with MCP enabled so every reader is covered.
   const template = synthStackWithMcp('prod');
 
@@ -538,7 +561,7 @@ test('every reader of the workout table is cross-region and read-only', () => {
       JSON.stringify(s.Resource ?? '').includes('table/portfolio-workout-summary'),
     ),
   );
-  expect(workoutPolicies.length).toBe(4);
+  expect(workoutPolicies.length).toBe(5);
 
   for (const policy of workoutPolicies) {
     const crossRegion = policy.Properties.PolicyDocument.Statement.filter(
@@ -705,10 +728,11 @@ test('the MCP role may write the plan table and only read the training log', () 
   expect(writable).not.toContain('portfolio-workout-summary-test');
 });
 
-test('the reflections table is written by the MCP Lambda alone, read by the gym summariser, never deletable', () => {
+test('the reflections table is written by the MCP Lambda alone, read by the gym summariser and chat, never deletable', () => {
   // Private writing, not site content: no REST route and no other function —
-  // above all not the anonymous /chat and /agent — may hold a grant on it. The
-  // one exception is the gym summariser, which may only read it.
+  // above all not the anonymous /agent — may hold a grant on it. The gym
+  // summariser may only read it; the anonymous /chat may only Query the
+  // workout partition.
   const template = synthStackWithMcp();
 
   const tables = template.findResources('AWS::DynamoDB::Table', {
@@ -726,26 +750,37 @@ test('the reflections table is written by the MCP Lambda alone, read by the gym 
   const withTableEnv = Object.entries(functions).filter(([, f]) =>
     JSON.stringify(f.Properties?.Environment?.Variables ?? {}).includes(tableId),
   );
-  expect(withTableEnv).toHaveLength(2);
-  const [mcpFn, gymFn] = [
+  expect(withTableEnv).toHaveLength(3);
+  const [mcpFn, gymFn, chatFn] = [
     withTableEnv.find(([, f]) => 'MCP_CLIENT_IDS' in f.Properties.Environment.Variables),
     withTableEnv.find(([, f]) => 'SUMMARY_MODEL_ID' in f.Properties.Environment.Variables),
+    withTableEnv.find(([, f]) => 'CHAT_MODEL_ID' in f.Properties.Environment.Variables),
   ];
   expect(mcpFn).toBeDefined();
   expect(gymFn).toBeDefined();
+  expect(chatFn).toBeDefined();
 
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
   const granting = policies.filter((p) => JSON.stringify(p.Properties.PolicyDocument).includes(tableId));
-  expect(granting).toHaveLength(2);
+  expect(granting).toHaveLength(3);
   for (const policy of granting) {
     const isGym = JSON.stringify(policy.Properties.Roles).includes(gymFn![1].Properties.Role['Fn::GetAtt'][0]);
+    const isChat = JSON.stringify(policy.Properties.Roles).includes(chatFn![1].Properties.Role['Fn::GetAtt'][0]);
     for (const statement of policy.Properties.PolicyDocument.Statement as Array<{
       Action?: string | string[];
       Resource?: unknown;
+      Condition?: unknown;
     }>) {
       if (!JSON.stringify(statement.Resource ?? '').includes(tableId)) continue;
       const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
       expect(actions).not.toContain('dynamodb:DeleteItem');
+      if (isChat) {
+        // Workout notes only: "life" notes must stay unreachable from /chat.
+        expect(actions).toEqual(['dynamodb:Query']);
+        expect(statement.Condition).toEqual({
+          'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': ['workout'] },
+        });
+      }
       if (isGym) {
         // Query plus the stream reads CDK grants for the event source; no write.
         expect(actions).not.toContain('dynamodb:PutItem');
