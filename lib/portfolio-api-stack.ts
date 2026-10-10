@@ -470,9 +470,9 @@ export class PortfolioApiStack extends cdk.Stack {
       }),
     );
 
-    // The current program for the public Training page. Reads only, and only
-    // the newest menu and target set: the handler drops every query parameter,
-    // so version, date and history lookups stay on the MCP tools.
+    // The program for the public Training page: the current version, or one of
+    // the five before it. Reads only; the handler drops every other query
+    // parameter, so date and history lookups stay on the MCP tools.
     const getPublicWorkoutPlanFn = new lambdaNode.NodejsFunction(
       this,
       'GetPublicWorkoutPlanFunction',
@@ -490,7 +490,8 @@ export class PortfolioApiStack extends cdk.Stack {
       },
     );
     getPublicWorkoutPlanFn.addToRolePolicy(
-      new iam.PolicyStatement({ actions: ['dynamodb:Query'], resources: [workoutPlanArn] }),
+      // GetItem for a past version, Query for the newest menu and target set.
+      new iam.PolicyStatement({ actions: ['dynamodb:GetItem', 'dynamodb:Query'], resources: [workoutPlanArn] }),
     );
 
     // The weekly set targets, read and written by the admin editor page. These
@@ -1172,9 +1173,9 @@ export class PortfolioApiStack extends cdk.Stack {
     // admin surfaces. No API key — the ID token is the authority, same posture
     // as /media and /uploads.
     const workoutPlanResource = api.root.addResource('workout-plan');
-    // The current program itself is public (key only), like the rest of the
-    // Training page: sessions, exercise slots and weekly targets. Only the
-    // targets editor below needs Cognito.
+    // The program itself is public (key only), like the rest of the Training
+    // page: sessions, exercise slots and weekly targets, for the current
+    // version and the five before it. Only the targets editor below needs Cognito.
     workoutPlanResource.addMethod('GET', new apigateway.LambdaIntegration(getPublicWorkoutPlanFn), {
       apiKeyRequired: true,
     });

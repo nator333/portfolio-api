@@ -614,7 +614,7 @@ test('the weekly set targets are Cognito-gated both ways and touch only the plan
   }
 });
 
-test('GET /workout-plan is public (API key only) and may only query the plan table', () => {
+test('GET /workout-plan is public (API key only) and may only read the plan table', () => {
   const template = synthStack();
 
   const planResourceId = Object.entries(template.findResources('AWS::ApiGateway::Resource')).find(
@@ -628,13 +628,13 @@ test('GET /workout-plan is public (API key only) and may only query the plan tab
     ResourceId: { Ref: planResourceId },
   });
 
-  // Anonymous, so a bare Query on the plan and nothing on the training log.
+  // Anonymous, so reads on the plan and nothing on the training log.
   const policy = Object.values(template.findResources('AWS::IAM::Policy')).find((p) =>
     String(p.Properties.PolicyName).startsWith('GetPublicWorkoutPlanFunction'),
   );
   const statements = policy!.Properties.PolicyDocument.Statement as Array<{ Resource?: unknown; Action?: unknown }>;
   expect(statements).toHaveLength(1);
-  expect([statements[0].Action].flat()).toEqual(['dynamodb:Query']);
+  expect([statements[0].Action].flat()).toEqual(['dynamodb:GetItem', 'dynamodb:Query']);
   expect(JSON.stringify(statements[0].Resource)).toContain('table/portfolio-workout-plan');
 });
 
