@@ -473,6 +473,14 @@ export class PortfolioApiStack extends cdk.Stack {
     // The program for the public Training page: the current version, or one of
     // the five before it. Reads only; the handler drops every other query
     // parameter, so date and history lookups stay on the MCP tools.
+    // The training page's chat assistant reads the same current program the
+    // public endpoint serves. Query only: the newest menu and target set.
+    chatFn.addEnvironment('WORKOUT_PLAN_TABLE_NAME', workoutPlanTable);
+    chatFn.addEnvironment('WORKOUT_REGION', WORKOUT_REGION);
+    chatFn.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ['dynamodb:Query'], resources: [workoutPlanArn] }),
+    );
+
     const getPublicWorkoutPlanFn = new lambdaNode.NodejsFunction(
       this,
       'GetPublicWorkoutPlanFunction',

@@ -271,6 +271,28 @@ test('chat Lambda may invoke Bedrock models but only read the table', () => {
   });
 });
 
+test('chat Lambda reads the workout plan table for the training page, without write access', () => {
+  const template = synthStack();
+
+  const functions = template.findResources('AWS::Lambda::Function');
+  const chat = Object.entries(functions).find(([, f]) => 'CHAT_MODEL_ID' in (f.Properties?.Environment?.Variables ?? {}));
+  expect(chat).toBeDefined();
+  const [, chatFn] = chat!;
+  expect(chatFn.Properties.Environment.Variables.WORKOUT_PLAN_TABLE_NAME).toContain('portfolio-workout-plan');
+
+  const roleId = chatFn.Properties.Role['Fn::GetAtt'][0];
+  const policies = Object.values(template.findResources('AWS::IAM::Policy')).filter((p) =>
+    JSON.stringify(p.Properties.Roles).includes(roleId),
+  );
+  const planStatements = policies
+    .flatMap((p) => p.Properties.PolicyDocument.Statement as { Action: string | string[]; Resource: unknown }[])
+    .filter((s) => JSON.stringify(s.Resource).includes('portfolio-workout-plan'));
+  expect(planStatements.length).toBeGreaterThan(0);
+  for (const statement of planStatements) {
+    expect([statement.Action].flat()).toEqual(['dynamodb:Query']);
+  }
+});
+
 test('GET /activity is public and merges sources server-side', () => {
   const template = synthStack();
 
