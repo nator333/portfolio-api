@@ -82,3 +82,17 @@ test('rejects a background caption over the length limit', () => {
   };
   expect(homeDataSchema.safeParse(data).success).toBe(false);
 });
+
+test('accepts a background dim percentage from 0 to 100', () => {
+  for (const dim of [0, 55, 100]) {
+    const data = { mottoes: [], backgrounds: [{ ...photo, dim }] };
+    expect(homeDataSchema.safeParse(data).success).toBe(true);
+  }
+});
+
+test('rejects a background dim outside 0-100 or fractional', () => {
+  for (const dim of [-1, 101, 0.55]) {
+    const data = { mottoes: [], backgrounds: [{ ...photo, dim }] };
+    expect(homeDataSchema.safeParse(data).success).toBe(false);
+  }
+});

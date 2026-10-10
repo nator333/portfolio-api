@@ -15,11 +15,17 @@ export const MAX_BACKGROUND_COUNT = 12;
 export const MAX_BACKGROUND_CAPTION_LENGTH = 80;
 export const MAX_BACKGROUND_ALT_LENGTH = 200;
 
+// How dark the overlay over a photo is, as a whole percentage (0 = the photo
+// as is, 100 = solid black). Omitted means the site default, so bright and
+// dark photos can each be tuned to keep text legible.
+export const MAX_BACKGROUND_DIM = 100;
+
 export const backgroundPhotoSchema = z.object({
   // Served straight into an <img src>, so only https URLs are accepted.
   url: z.string().url().max(2048).startsWith('https://'),
   caption: z.string().max(MAX_BACKGROUND_CAPTION_LENGTH),
   alt: z.string().max(MAX_BACKGROUND_ALT_LENGTH).optional(),
+  dim: z.number().int().min(0).max(MAX_BACKGROUND_DIM).optional(),
 });
 
 export type BackgroundPhoto = z.infer<typeof backgroundPhotoSchema>;
