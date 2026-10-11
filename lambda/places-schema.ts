@@ -96,3 +96,29 @@ export const placesDataSchema = z
   });
 
 export type PlacesData = z.infer<typeof placesDataSchema>;
+
+/**
+ * Folds a seed document into what is already stored, for the seed script.
+ * Town facts are merged per town (the seed's towns replace the stored ones,
+ * other towns are kept). Memories are precious — they are typed in by hand
+ * through the editor — so the stored list is kept unless the seed carries
+ * memories of its own and `replaceMemories` is set; a seed with memories
+ * against a non-empty store without the flag is refused.
+ */
+export function mergePlacesDocuments(
+  existing: PlacesData | null,
+  seed: PlacesData,
+  options: { replaceMemories?: boolean } = {},
+): PlacesData {
+  const storedMemories = existing?.memories ?? [];
+  let memories = storedMemories;
+  if (seed.memories.length > 0) {
+    if (storedMemories.length > 0 && !options.replaceMemories) {
+      throw new Error(
+        `The store already holds ${storedMemories.length} memories; pass --replace-memories to overwrite them with the seed's ${seed.memories.length}.`,
+      );
+    }
+    memories = seed.memories;
+  }
+  return { memories, cities: { ...existing?.cities, ...seed.cities } };
+}

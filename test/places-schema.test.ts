@@ -2,11 +2,13 @@ import {
   MAX_MEMORIES,
   MAX_MEMORY_PHOTOS,
   MAX_MEMORY_TEXT_LENGTH,
+  Memory,
   memorySchema,
+  mergePlacesDocuments,
   placesDataSchema,
 } from '../lambda/places-schema';
 
-const memory = {
+const memory: Memory = {
   id: 'm_01',
   city: 'hachioji',
   x: 0.58,
@@ -94,4 +96,35 @@ test('rejects facts for a town that has no map', () => {
 test('rejects more memories than one document holds', () => {
   const memories = Array.from({ length: MAX_MEMORIES + 1 }, (_, i) => ({ ...memory, id: `m_${i}` }));
   expect(placesDataSchema.safeParse({ memories }).success).toBe(false);
+});
+
+describe('mergePlacesDocuments', () => {
+  const stored = {
+    memories: [memory],
+    cities: { hachioji: { summary: 'Old summary', period: '2005–2008' }, vancouver: { summary: 'Rain.' } },
+  };
+
+  test('seeds an empty store', () => {
+    const seed = { memories: [], cities: { hachioji: { summary: 'New' } } };
+    expect(mergePlacesDocuments(null, seed)).toEqual({ memories: [], cities: { hachioji: { summary: 'New' } } });
+  });
+
+  test('keeps stored memories and replaces only the towns the seed carries', () => {
+    const seed = { memories: [], cities: { hachioji: { summary: 'New summary' } } };
+    expect(mergePlacesDocuments(stored, seed)).toEqual({
+      memories: [memory],
+      cities: { hachioji: { summary: 'New summary' }, vancouver: { summary: 'Rain.' } },
+    });
+  });
+
+  test('refuses to overwrite memories without the flag', () => {
+    const seed = { memories: [{ ...memory, id: 'm_02' }], cities: {} };
+    expect(() => mergePlacesDocuments(stored, seed)).toThrow(/--replace-memories/);
+  });
+
+  test('replaces memories with the flag, or when the store has none', () => {
+    const seed = { memories: [{ ...memory, id: 'm_02' }], cities: {} };
+    expect(mergePlacesDocuments(stored, seed, { replaceMemories: true }).memories).toEqual(seed.memories);
+    expect(mergePlacesDocuments({ memories: [], cities: {} }, seed).memories).toEqual(seed.memories);
+  });
 });
