@@ -7,6 +7,7 @@
     "test": "jest",
     "publish:plan": "ts-node --prefer-ts-exts scripts/publish-workout-plan.ts",
     "health:auth": "ts-node --prefer-ts-exts scripts/google-health-auth.ts",
+    "seed:places": "ts-node --prefer-ts-exts scripts/seed-places.ts",
     "cdk": "cdk",
     "deploy:dev": "cdk deploy PortfolioApiStack-dev --context stage=dev --require-approval never",
     "deploy:prod": "cdk deploy PortfolioApiStack-prod --context stage=prod --require-approval never",

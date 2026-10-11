@@ -218,6 +218,20 @@ are drawn by the front; the API only validates that a memory points at one of
 the five towns, keeps photo and map links to https, and caps the document so
 it stays one DynamoDB item.
 
+The per-town text (summary, population, "known for", local food, with the
+Wikipedia source) is seeded from `scripts/places-seed.json` rather than typed
+into the editor. With AWS credentials for the stack's account:
+
+```bash
+npm run seed:places -- --stage=prod            # merge the seed into the stored document
+npm run seed:places -- --stage=prod --dry-run  # show the merged document, write nothing
+```
+
+The script validates the file with the same zod schema as `PUT /places`,
+finds the stage's CV table, and merges: the seed's towns replace the stored
+facts for those towns, other towns and every stored memory are kept. A seed
+that carries memories only overwrites existing ones with `--replace-memories`.
+
 ## Useful commands
 
 * `npm run build`        compile TypeScript to JS
