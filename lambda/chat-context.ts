@@ -1,6 +1,7 @@
 import type { ChatPage } from './chat-schema';
 import type { BlogPost } from './blog-schema';
 import type { ActivityEntry } from './activity-schema';
+import { PLACE_CITY_IDS, type CityInfo, type Memory, type PlaceCityId } from './places-schema';
 
 /**
  * Per-page grounding for the visitor chat. Each page of the site gets an
@@ -23,6 +24,18 @@ export const CHAT_PROGRESS_RECENT_DAYS = 14;
 export const CHAT_PROGRESS_WEEKS = 8;
 export const CHAT_PROGRESS_MONTHS = 6;
 
+// The Places page: the open town's memories in full, the other towns' as a
+// one-line list, all capped at whole lines.
+export const CHAT_MAX_PLACES_CHARS = 30_000;
+
+const CITY_NAMES: Record<PlaceCityId, string> = {
+  minamiuonuma: 'Minamiuonuma (Niigata, Japan)',
+  hachioji: 'Hachioji (Tokyo, Japan)',
+  ichikawa: 'Ichikawa (Chiba, Japan)',
+  vancouver: 'Vancouver (Canada)',
+  montreal: 'Montreal (Canada)',
+};
+
 export interface ChatContextData {
   cv?: unknown;
   projects?: unknown;
@@ -37,6 +50,11 @@ export interface ChatContextData {
   progress?: ChatProgress;
   /** Sets done vs. weekly target per muscle, as GET /muscle-volume-status serves it. */
   weeklyProgress?: unknown;
+  /**
+   * The Places document *as the public GET /places serves it* (see
+   * publicPlacesData); only names, periods, captions and town facts are used.
+   */
+  places?: { memories: Memory[] | null; cities?: Partial<Record<PlaceCityId, CityInfo>> };
 }
 
 /** The parts of the GET /workout payload the training assistant reads. */
@@ -101,6 +119,11 @@ export const PAGE_PROFILES: Record<ChatPage, PageProfile> = {
     focus: "Answer questions about his current training program (sessions, exercises, sets and reps, weekly set targets), his progress (recent sessions, weekly set counts, and estimated one-rep-max trends of his main lifts), this week's sets against target per muscle, and how his recent sessions went, from his own training reflections. Summarise the reflections in your own words rather than quoting them at length. Weights are in kilograms. Do not give medical advice.",
     needs: ['workoutPlan', 'weeklyProgress', 'progress', 'reflections'],
   },
+  places: {
+    where: 'the Places page: pixel-art maps of the five towns he has lived in, with his memories pinned on them',
+    focus: "Answer questions about the towns he has lived in and the memories he has pinned there — what he did, when, and what the towns are like. Never guess or reveal exact addresses or locations beyond what a memory says.",
+    needs: ['places'],
+  },
 };
 
 /** The page the request names, or the general profile scope. */
@@ -120,7 +143,7 @@ export function findPost(posts: BlogPost[] | undefined, slug: string | undefined
   return posts?.find((post) => post.url === `/blog/${slug}`);
 }
 
-function dataBlocks(page: ChatPage, data: ChatContextData, slug: string | undefined): string[] {
+function dataBlocks(page: ChatPage, data: ChatContextData, { slug, city }: ChatFocus): string[] {
   const blocks: string[] = [];
   for (const need of PAGE_PROFILES[page].needs) {
     switch (need) {
@@ -189,6 +212,9 @@ function dataBlocks(page: ChatPage, data: ChatContextData, slug: string | undefi
         );
         break;
       }
+      case 'places':
+        blocks.push(placesBlock(data.places, city));
+        break;
       case 'progress':
         blocks.push(progressBlock(data.progress));
         break;
@@ -211,7 +237,14 @@ function dataBlocks(page: ChatPage, data: ChatContextData, slug: string | undefi
   return blocks.map((block) => truncate(block, CHAT_MAX_CONTEXT_CHARS));
 }
 
-export function buildSystemPrompt(page: ChatPage, data: ChatContextData, slug?: string): string {
+export interface ChatFocus {
+  /** The open blog post's `:url` segment. */
+  slug?: string;
+  /** The town tab open on the Places page. */
+  city?: PlaceCityId;
+}
+
+export function buildSystemPrompt(page: ChatPage, data: ChatContextData, focus: ChatFocus = {}): string {
   const profile = PAGE_PROFILES[page];
   return [
     "You are the portfolio assistant on Masahiro Nakamata's personal website.",
@@ -222,7 +255,7 @@ export function buildSystemPrompt(page: ChatPage, data: ChatContextData, slug?: 
     'Keep answers concise: a few sentences unless the visitor asks for detail.',
     'Write plain text only — no markdown formatting such as **bold**, headings, or bullet syntax; the chat window renders your reply verbatim.',
     '',
-    ...dataBlocks(page, data, slug),
+    ...dataBlocks(page, data, focus),
   ].join('\n');
 }
 
@@ -287,4 +320,54 @@ export function progressBlock(progress: ChatProgress | undefined): string {
     }
   }
   return lines.length > 1 ? lines.join('\n') : 'Training progress: no sessions logged.';
+}
+
+/**
+ * Town facts and memories for the Places page. Each memory contributes only its
+ * name, kind, period, seasons and caption — never its pin, coordinates, Google
+ * Maps link or photos. The open town goes first with full captions; the other
+ * towns follow with names only, and the cap drops whole lines from the end.
+ */
+export function placesBlock(places: ChatContextData['places'], openCity: PlaceCityId | undefined): string {
+  if (!places) {
+    return 'Places: not available.';
+  }
+  const memories = places.memories ?? [];
+  const order = openCity ? [openCity, ...PLACE_CITY_IDS.filter((c) => c !== openCity)] : [...PLACE_CITY_IDS];
+  const lines: string[] = [];
+  for (const city of order) {
+    const info = places.cities?.[city] ?? {};
+    const isOpen = city === openCity;
+    lines.push(`## ${CITY_NAMES[city]}${isOpen ? ' — the town the visitor is looking at' : ''}`);
+    const facts = [
+      info.period && `He lived here: ${info.period}`,
+      info.note && `His note: ${info.note}`,
+      info.summary && `About: ${info.summary}`,
+      info.population && `Population: ${info.population}`,
+      info.knownFor?.length && `Known for: ${info.knownFor.join(', ')}`,
+      info.food?.length && `Food: ${info.food.join(', ')}`,
+    ].filter(Boolean) as string[];
+    lines.push(...facts);
+    const townMemories = memories
+      .filter((m) => m.city === city)
+      .sort((a, b) => a.createdAt - b.createdAt);
+    if (townMemories.length === 0) {
+      lines.push('Memories: none pinned yet.');
+    }
+    for (const m of townMemories) {
+      const when = [m.period, m.seasons.length ? m.seasons.join('/') : ''].filter(Boolean).join(', ');
+      const head = `- ${m.name} (${m.kind}${when ? `, ${when}` : ''})`;
+      lines.push(isOpen || !openCity ? `${head}${m.text ? `: ${m.text}` : ''}` : head);
+    }
+  }
+  const kept: string[] = [];
+  let length = 0;
+  for (const line of lines) {
+    length += line.length + 1;
+    if (length > CHAT_MAX_PLACES_CHARS) {
+      break;
+    }
+    kept.push(line);
+  }
+  return `Places (towns he has lived in, and his memories there):\n${kept.join('\n')}`;
 }
