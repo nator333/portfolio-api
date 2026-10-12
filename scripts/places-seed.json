@@ -1,0 +1,94 @@
+{
+  "memories": [],
+  "cities": {
+    "minamiuonuma": {
+      "population": "54,851 (2020 census)",
+      "area": "584.6 km²",
+      "knownFor": [
+        "Koshihikari rice paddies",
+        "Mt. Hakkai and the Echigo mountains",
+        "Heavy snow and ski resorts",
+        "Sake brewing"
+      ],
+      "food": [
+        "Uonuma Koshihikari rice",
+        "Hakkaisan sake",
+        "Hegi soba"
+      ],
+      "summary": "Minamiuonuma sits in the mountain basin of southern Niigata, where the Uono River runs between the Echigo ranges. It is one of Japan's heaviest snowfall areas and the heart of the Uonuma Koshihikari rice region, widely regarded as the country's finest rice. The city formed in 2004 from the merger of Muikamachi, Shiozawa and Yamato.",
+      "source": "https://en.wikipedia.org/wiki/Minamiuonuma",
+      "fetchedAt": "2026-10-10"
+    },
+    "hachioji": {
+      "population": "579,605 (2020 census)",
+      "area": "186.4 km²",
+      "knownFor": [
+        "Mt. Takao, 2.5 million hikers a year",
+        "Largest city in Tokyo outside the 23 wards",
+        "University town",
+        "Former silk-trade hub on the Koshu Kaido"
+      ],
+      "food": [
+        "Hachioji ramen (onion-topped shoyu)"
+      ],
+      "summary": "Hachioji lies about 40 km west of central Tokyo, in the foothills of the Okutama mountains. It is the most populous city in Tokyo outside the special wards and home to more than twenty universities. Mt. Takao, at the city's western edge, is one of the most-climbed mountains in the world.",
+      "source": "https://en.wikipedia.org/wiki/Hachi%C5%8Dji",
+      "fetchedAt": "2026-10-10"
+    },
+    "ichikawa": {
+      "population": "496,943 (2020 census)",
+      "area": "57.45 km²",
+      "knownFor": [
+        "Commuter city across the Edo River from Tokyo",
+        "Nashi pear orchards",
+        "Konodai bluffs and Mama Hills literary sites",
+        "Tokyo Bay waterfront at Gyotoku"
+      ],
+      "food": [
+        "Ichikawa nashi pears",
+        "Gyotoku nori seaweed"
+      ],
+      "summary": "Ichikawa faces Tokyo across the Edo River at the western edge of Chiba Prefecture, and most residents commute into the capital. The northern hills around Konodai have been settled since ancient times, while the south, around Gyotoku, is reclaimed land on Tokyo Bay. The city is known for its pear orchards and for the many writers who lived here.",
+      "source": "https://en.wikipedia.org/wiki/Ichikawa,_Chiba",
+      "fetchedAt": "2026-10-10"
+    },
+    "vancouver": {
+      "population": "662,248 (2021 census)",
+      "metro": "2,642,825 (2021 census)",
+      "area": "115 km²",
+      "knownFor": [
+        "Mountains and ocean on the doorstep",
+        "Stanley Park and the seawall",
+        "Film and tech industries",
+        "One of Canada's most diverse cities"
+      ],
+      "food": [
+        "Pacific salmon and seafood",
+        "Sushi",
+        "Japadog"
+      ],
+      "summary": "Vancouver is the largest city in British Columbia, set on a peninsula between the Burrard Inlet and the Fraser River with the North Shore mountains rising across the water. It is Canada's most densely populated city and one of its most multicultural, with more than half of residents from non-European backgrounds. Its port is the busiest in Canada.",
+      "source": "https://en.wikipedia.org/wiki/Vancouver",
+      "fetchedAt": "2026-10-10"
+    },
+    "montreal": {
+      "population": "1,762,949 (2021 census)",
+      "metro": "4,291,732 (2021 census)",
+      "area": "431 km²",
+      "knownFor": [
+        "Largest French-speaking city in the Americas",
+        "Mont Royal and Old Montréal",
+        "Festivals: Jazz Fest, Just for Laughs",
+        "Winter and the underground city"
+      ],
+      "food": [
+        "Montreal-style bagels",
+        "Smoked meat",
+        "Poutine"
+      ],
+      "summary": "Montréal sits on an island in the Saint Lawrence River, named for the hill of Mont Royal at its centre. It is the largest city in Québec and the second-largest in Canada, and French is its official language. Known for its festivals, its food and its long winters, it mixes 17th-century streets in the old port with a dense, lively downtown.",
+      "source": "https://en.wikipedia.org/wiki/Montreal",
+      "fetchedAt": "2026-10-10"
+    }
+  }
+}
