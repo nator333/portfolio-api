@@ -92,3 +92,11 @@ test('should reject a slug spanning path segments or over the length cap', () =>
     chatRequestSchema.safeParse({ messages, page: 'blog-post', slug: 'a'.repeat(CHAT_MAX_SLUG_CHARS + 1) }).success,
   ).toBe(false);
 });
+
+test('should accept a city only with the places page', () => {
+  const messages = [{ role: 'user', content: 'Hi' }];
+  expect(chatRequestSchema.safeParse({ messages, page: 'places' }).success).toBe(true);
+  expect(chatRequestSchema.safeParse({ messages, page: 'places', city: 'vancouver' }).success).toBe(true);
+  expect(chatRequestSchema.safeParse({ messages, page: 'places', city: 'tokyo' }).success).toBe(false);
+  expect(chatRequestSchema.safeParse({ messages, page: 'home', city: 'vancouver' }).success).toBe(false);
+});

@@ -1,5 +1,7 @@
 import {
   buildSystemPrompt,
+  CHAT_MAX_PLACES_CHARS,
+  placesBlock,
   CHAT_PROGRESS_RECENT_DAYS,
   progressBlock,
   CHAT_MAX_ACTIVITY_CHARS,
@@ -9,6 +11,7 @@ import {
   resolvePage,
 } from '../lambda/chat-context';
 import type { BlogPost } from '../lambda/blog-schema';
+import type { Memory } from '../lambda/places-schema';
 
 function post(slug: string, overrides: Partial<BlogPost> = {}): BlogPost {
   return {
@@ -47,20 +50,20 @@ test('the blog index lists posts without their bodies', () => {
 });
 
 test('a blog post page adds that post, and only that post, in full', () => {
-  const prompt = buildSystemPrompt('blog-post', { posts: [post('a'), post('b')] }, 'b');
+  const prompt = buildSystemPrompt('blog-post', { posts: [post('a'), post('b')] }, { slug: 'b' });
   expect(prompt).toContain('The post the visitor is reading — "Post b"');
   expect(prompt).toContain('Body of b');
   expect(prompt).not.toContain('Body of a');
 });
 
 test('a blog post page with an unknown slug says so', () => {
-  const prompt = buildSystemPrompt('blog-post', { posts: [post('a')] }, 'missing');
+  const prompt = buildSystemPrompt('blog-post', { posts: [post('a')] }, { slug: 'missing' });
   expect(prompt).toContain('could not be found');
 });
 
 test('a long post is truncated to the cap', () => {
   const content = 'x'.repeat(CHAT_MAX_POST_CHARS + 500);
-  const prompt = buildSystemPrompt('blog-post', { posts: [post('long', { content })] }, 'long');
+  const prompt = buildSystemPrompt('blog-post', { posts: [post('long', { content })] }, { slug: 'long' });
   expect(prompt).toContain('[truncated]');
   expect(prompt).not.toContain('x'.repeat(CHAT_MAX_POST_CHARS + 1));
 });
@@ -199,4 +202,73 @@ test('progress never reaches any page but training', () => {
       /progress-marker|weekly-marker/,
     );
   }
+});
+
+function memory(id: string, overrides: Partial<Memory> = {}): Memory {
+  return {
+    id,
+    city: 'hachioji',
+    x: 0.123456,
+    y: 0.654321,
+    name: `Memory ${id}`,
+    kind: 'school',
+    period: '2005-2008',
+    text: `Caption of ${id}`,
+    seasons: [],
+    photos: ['https://cdn.example.com/photo.webp'],
+    mapsUrl: 'https://maps.google.com/?q=35.1,139.2',
+    lat: 35.123456,
+    lng: 139.654321,
+    createdAt: 1,
+    ...overrides,
+  };
+}
+
+test('the places page puts the open town first with full captions', () => {
+  const prompt = buildSystemPrompt(
+    'places',
+    {
+      places: {
+        memories: [
+          memory('a'),
+          memory('b', { city: 'vancouver', name: 'Stanley Park', kind: 'play', seasons: ['summer'] }),
+        ],
+        cities: { vancouver: { period: '2015-2019', knownFor: ['mountains', 'seawall'] } },
+      },
+    },
+    { city: 'vancouver' },
+  );
+  const vancouver = prompt.indexOf('## Vancouver (Canada) — the town the visitor is looking at');
+  const hachioji = prompt.indexOf('## Hachioji');
+  expect(vancouver).toBeGreaterThan(-1);
+  expect(vancouver).toBeLessThan(hachioji);
+  expect(prompt).toContain('He lived here: 2015-2019');
+  expect(prompt).toContain('Known for: mountains, seawall');
+  expect(prompt).toContain('- Stanley Park (play, 2005-2008, summer): Caption of b');
+  // Other towns list names only.
+  expect(prompt).toContain('- Memory a (school, 2005-2008)\n');
+  expect(prompt).not.toContain('Caption of a');
+});
+
+test('places never leak pins, coordinates, map links or photos', () => {
+  const prompt = buildSystemPrompt('places', { places: { memories: [memory('a', { mapsPublic: true })] } });
+  for (const secret of ['35.12', '139.65', '0.1234', '0.6543', 'maps.google', 'cdn.example.com']) {
+    expect(prompt).not.toContain(secret);
+  }
+  expect(prompt).toContain('Caption of a');
+});
+
+test('places are capped at whole lines', () => {
+  const memories = Array.from({ length: 200 }, (_, i) => memory(`m${i}`, { text: 'x'.repeat(1000), createdAt: i }));
+  const block = placesBlock({ memories }, 'hachioji');
+  expect(block.length).toBeLessThan(CHAT_MAX_PLACES_CHARS + 200);
+  expect(block.endsWith('x') || block.endsWith(')')).toBe(true);
+});
+
+test('places never reach any other page', () => {
+  const places = { memories: [memory('a')] };
+  for (const page of ['home', 'profile', 'projects', 'blog', 'blog-post', 'workout'] as const) {
+    expect(buildSystemPrompt(page, { places })).not.toContain('Caption of a');
+  }
+  expect(buildSystemPrompt('places', {})).toContain('Places: not available.');
 });

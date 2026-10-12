@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PLACE_CITY_IDS } from './places-schema';
 
 // Request-shape caps that bound the worst-case Bedrock cost per call; together
 // with the gateway usage-plan quota they enforce the monthly spend budget.
@@ -15,7 +16,7 @@ const chatMessageSchema = z.object({
 // The site page the visitor is chatting from; the assistant loads that page's
 // data and focuses its answers on it. Omitted means the general profile scope
 // (CV and projects), which is also what older clients get.
-export const CHAT_PAGES = ['home', 'profile', 'projects', 'blog', 'blog-post', 'workout'] as const;
+export const CHAT_PAGES = ['home', 'profile', 'projects', 'blog', 'blog-post', 'workout', 'places'] as const;
 export type ChatPage = (typeof CHAT_PAGES)[number];
 
 // The `:url` segment of a /blog/:url route; only sent with page 'blog-post'.
@@ -25,6 +26,8 @@ export const chatRequestSchema = z
   .object({
     messages: z.array(chatMessageSchema).min(1).max(CHAT_MAX_MESSAGES),
     page: z.enum(CHAT_PAGES).optional(),
+    // The town tab open on the Places page; only sent with page 'places'.
+    city: z.enum(PLACE_CITY_IDS).optional(),
     slug: z
       .string()
       .min(1)
@@ -35,6 +38,10 @@ export const chatRequestSchema = z
   .refine((request) => request.slug === undefined || request.page === 'blog-post', {
     message: "slug is only accepted with page 'blog-post'",
     path: ['slug'],
+  })
+  .refine((request) => request.city === undefined || request.page === 'places', {
+    message: "city is only accepted with page 'places'",
+    path: ['city'],
   });
 
 export type ChatRequest = z.infer<typeof chatRequestSchema>;

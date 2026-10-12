@@ -8,6 +8,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { CV_TABLE_ITEM_ID } from './cv-schema';
 import { PROJECTS_TABLE_ITEM_ID } from './projects-schema';
 import { BLOG_TABLE_ITEM_ID, visiblePosts, type BlogPost } from './blog-schema';
+import { PLACES_TABLE_ITEM_ID, publicPlacesData, type Memory } from './places-schema';
 import { chatRequestSchema } from './chat-schema';
 import {
   buildSystemPrompt,
@@ -82,6 +83,15 @@ export const handler = async (
       ddb.send(new GetCommand({ TableName: tableName, Key: { id: BLOG_TABLE_ITEM_ID } })).then((r) => {
         data.posts = visiblePosts((r.Item as { posts?: BlogPost[] } | undefined)?.posts, false);
       }),
+    needs.includes('places') &&
+      ddb.send(new GetCommand({ TableName: tableName, Key: { id: PLACES_TABLE_ITEM_ID } })).then((r) => {
+        // Through the same filter as the public GET /places, so a link or
+        // coordinates the owner kept private never reach the prompt.
+        const item = r.Item as
+          | { memories?: Memory[] | null; cities?: NonNullable<ChatContextData['places']>['cities'] }
+          | undefined;
+        data.places = item ? publicPlacesData({ memories: item.memories ?? null, cities: item.cities }) : undefined;
+      }),
     needs.includes('activity') &&
       loadActivity(event).then((activity) => {
         data.activity = activity;
@@ -117,7 +127,7 @@ export const handler = async (
     const response = await bedrock.messages.create({
       model: modelId,
       max_tokens: MAX_REPLY_TOKENS,
-      system: buildSystemPrompt(page, data, parsed.data.slug),
+      system: buildSystemPrompt(page, data, { slug: parsed.data.slug, city: parsed.data.city }),
       messages: parsed.data.messages,
     });
 
