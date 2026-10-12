@@ -488,15 +488,20 @@ export class PortfolioApiStack extends cdk.Stack {
     // the five before it. Reads only; the handler drops every other query
     // parameter, so date and history lookups stay on the MCP tools.
     // The training page's chat assistant reads the same current program the
-    // public endpoint serves, and the home page's assistant the same activity
-    // feed GET /activity serves. Reads only: Query on the cross-region plan
-    // and summary tables, read on the GitHub summaries.
+    // public endpoint serves, plus the progress (GET /workout) and weekly
+    // progress (GET /muscle-volume-status) the page shows; the home page's
+    // assistant reads the same activity feed GET /activity serves. Reads only:
+    // Query on the cross-region plan and summary tables (plus GetItem for the
+    // summary totals), read on the GitHub summaries.
     chatFn.addEnvironment('WORKOUT_PLAN_TABLE_NAME', workoutPlanTable);
     chatFn.addEnvironment('WORKOUT_SUMMARY_TABLE_NAME', workoutSummaryTable);
     chatFn.addEnvironment('GITHUB_SUMMARY_TABLE_NAME', gitHubSummaryTable.tableName);
     chatFn.addEnvironment('WORKOUT_REGION', WORKOUT_REGION);
     chatFn.addToRolePolicy(
       new iam.PolicyStatement({ actions: ['dynamodb:Query'], resources: [workoutPlanArn, workoutSummaryArn] }),
+    );
+    chatFn.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ['dynamodb:GetItem'], resources: [workoutSummaryArn] }),
     );
     gitHubSummaryTable.grantReadData(chatFn);
 

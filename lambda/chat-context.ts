@@ -17,6 +17,12 @@ export const CHAT_MAX_CONTEXT_CHARS = 40_000;
 export const CHAT_MAX_ACTIVITY_CHARS = 30_000;
 export const CHAT_MAX_REFLECTION_CHARS = 20_000;
 
+// How much of the training log the training assistant sees: the page's own
+// GET /workout payload covers a year, which is far more than a chat needs.
+export const CHAT_PROGRESS_RECENT_DAYS = 14;
+export const CHAT_PROGRESS_WEEKS = 8;
+export const CHAT_PROGRESS_MONTHS = 6;
+
 export interface ChatContextData {
   cv?: unknown;
   projects?: unknown;
@@ -27,6 +33,26 @@ export interface ChatContextData {
   activity?: { range: { from: string; to: string }; entries: ActivityEntry[] };
   /** The owner's *workout* reflection notes, newest first; never "life" notes. */
   reflections?: ChatReflection[];
+  /** The training log summary, as GET /workout serves it (trimmed here). */
+  progress?: ChatProgress;
+  /** Sets done vs. weekly target per muscle, as GET /muscle-volume-status serves it. */
+  weeklyProgress?: unknown;
+}
+
+/** The parts of the GET /workout payload the training assistant reads. */
+export interface ChatProgress {
+  range?: { from: string; to: string };
+  totals?: Record<string, unknown>;
+  days?: { date: string; sets?: number; exerciseCount?: number }[];
+  weeks?: { week: string; sets?: number; sessions?: number }[];
+  lifts?: {
+    name: string;
+    muscle?: string;
+    bestE1rmKg?: number;
+    bestE1rmDate?: string;
+    tracked?: boolean;
+  }[];
+  strengthSeries?: { name: string; points?: { month: string; e1rmKg: number }[] }[];
 }
 
 export interface ChatReflection {
@@ -72,8 +98,8 @@ export const PAGE_PROFILES: Record<ChatPage, PageProfile> = {
   },
   workout: {
     where: 'the training page',
-    focus: "Answer questions about his current training program — the sessions, exercises, sets and reps, and weekly set targets — and about how his recent sessions went, from his own training reflections. Summarise the reflections in your own words rather than quoting them at length. Do not give medical advice.",
-    needs: ['workoutPlan', 'reflections'],
+    focus: "Answer questions about his current training program (sessions, exercises, sets and reps, weekly set targets), his progress (recent sessions, weekly set counts, and estimated one-rep-max trends of his main lifts), this week's sets against target per muscle, and how his recent sessions went, from his own training reflections. Summarise the reflections in your own words rather than quoting them at length. Weights are in kilograms. Do not give medical advice.",
+    needs: ['workoutPlan', 'weeklyProgress', 'progress', 'reflections'],
   },
 };
 
@@ -163,6 +189,16 @@ function dataBlocks(page: ChatPage, data: ChatContextData, slug: string | undefi
         );
         break;
       }
+      case 'progress':
+        blocks.push(progressBlock(data.progress));
+        break;
+      case 'weeklyProgress':
+        blocks.push(
+          data.weeklyProgress === undefined
+            ? 'Weekly progress: not available.'
+            : `Weekly progress — sets done in the trailing window against the weekly target, per muscle: ${JSON.stringify(data.weeklyProgress)}`,
+        );
+        break;
       case 'workoutPlan':
         blocks.push(
           data.workoutPlan === undefined
@@ -188,4 +224,67 @@ export function buildSystemPrompt(page: ChatPage, data: ChatContextData, slug?: 
     '',
     ...dataBlocks(page, data, slug),
   ].join('\n');
+}
+
+const round1 = (n: number): number => Math.round(n * 10) / 10;
+
+/**
+ * The training log, trimmed to what a chat answer needs: all-time totals, the
+ * last couple of weeks of sessions, the last few weeks' set counts, and each
+ * main lift's best and recent monthly estimated 1RM. One line per item.
+ */
+export function progressBlock(progress: ChatProgress | undefined): string {
+  if (!progress) {
+    return 'Training progress: not available.';
+  }
+  const lines: string[] = [];
+  if (progress.range) {
+    lines.push(`Training progress (log ${progress.range.from} to ${progress.range.to}):`);
+  } else {
+    lines.push('Training progress:');
+  }
+  if (progress.totals && Object.keys(progress.totals).length > 0) {
+    lines.push(`All-time totals: ${JSON.stringify(progress.totals)}`);
+  }
+
+  const days = [...(progress.days ?? [])]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, CHAT_PROGRESS_RECENT_DAYS);
+  if (days.length > 0) {
+    lines.push('Recent sessions, newest first:');
+    for (const day of days) {
+      lines.push(`- ${day.date}: ${day.sets ?? 0} sets, ${day.exerciseCount ?? 0} exercises`);
+    }
+  }
+
+  const weeks = [...(progress.weeks ?? [])]
+    .sort((a, b) => b.week.localeCompare(a.week))
+    .slice(0, CHAT_PROGRESS_WEEKS);
+  if (weeks.length > 0) {
+    lines.push('Sets per ISO week, newest first:');
+    for (const week of weeks) {
+      lines.push(`- ${week.week}: ${week.sets ?? 0} sets over ${week.sessions ?? 0} sessions`);
+    }
+  }
+
+  const series = new Map((progress.strengthSeries ?? []).map((s) => [s.name, s.points ?? []]));
+  if ((progress.lifts ?? []).length > 0) {
+    lines.push('Main lifts (estimated one-rep max, kg):');
+    for (const lift of progress.lifts ?? []) {
+      const best =
+        lift.bestE1rmKg !== undefined
+          ? `best ${round1(lift.bestE1rmKg)}${lift.bestE1rmDate ? ` on ${lift.bestE1rmDate}` : ''}`
+          : 'no best recorded';
+      const recent = [...(series.get(lift.name) ?? [])]
+        .sort((a, b) => a.month.localeCompare(b.month))
+        .slice(-CHAT_PROGRESS_MONTHS)
+        .map((p) => `${p.month} ${round1(p.e1rmKg)}`)
+        .join(', ');
+      const status = lift.tracked === false ? ' (no longer in the program)' : '';
+      lines.push(
+        `- ${lift.name}${lift.muscle ? ` (${lift.muscle})` : ''}${status}: ${best}${recent ? `; monthly best: ${recent}` : ''}`,
+      );
+    }
+  }
+  return lines.length > 1 ? lines.join('\n') : 'Training progress: no sessions logged.';
 }
