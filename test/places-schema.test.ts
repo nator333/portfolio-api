@@ -6,6 +6,8 @@ import {
   memorySchema,
   mergePlacesDocuments,
   placesDataSchema,
+  publicMemory,
+  publicPlacesData,
 } from '../lambda/places-schema';
 
 const memory: Memory = {
@@ -126,5 +128,40 @@ describe('mergePlacesDocuments', () => {
     const seed = { memories: [{ ...memory, id: 'm_02' }], cities: {} };
     expect(mergePlacesDocuments(stored, seed, { replaceMemories: true }).memories).toEqual(seed.memories);
     expect(mergePlacesDocuments({ memories: [], cities: {} }, seed).memories).toEqual(seed.memories);
+  });
+});
+
+describe('publicPlacesData', () => {
+  test('withholds the link and coordinates of a memory not opted in, and snaps its pin to a tile', () => {
+    const shown = publicMemory({ ...memory, x: 0.5833, y: 0.5312 });
+    expect(shown.mapsUrl).toBe('');
+    expect(shown.lat).toBeNull();
+    expect(shown.lng).toBeNull();
+    // 0.5833 * 48 = 27.99 -> tile 27 -> centre 27.5 / 48; 0.5312 * 32 = 16.99 -> tile 16 -> 16.5 / 32
+    expect(shown.x).toBeCloseTo(27.5 / 48, 4);
+    expect(shown.y).toBeCloseTo(16.5 / 32, 4);
+    expect(shown.name).toBe(memory.name);
+  });
+
+  test('keeps a memory the owner opted in as stored', () => {
+    const opted = { ...memory, mapsPublic: true };
+    expect(publicMemory(opted)).toEqual(opted);
+  });
+
+  test('keeps a snapped pin on the map at the far edge', () => {
+    const edge = publicMemory({ ...memory, x: 1, y: 1 });
+    expect(edge.x).toBeCloseTo(47.5 / 48, 4);
+    expect(edge.y).toBeCloseTo(31.5 / 32, 4);
+  });
+
+  test('leaves the town facts and an unsaved document alone', () => {
+    const doc = { memories: [memory], cities: { hachioji: { summary: 'x' } } };
+    expect(publicPlacesData(doc).cities).toEqual(doc.cities);
+    expect(publicPlacesData({ memories: null, cities: {} })).toEqual({ memories: null, cities: {} });
+  });
+
+  test('accepts the flag in the schema', () => {
+    expect(memorySchema.safeParse({ ...memory, mapsPublic: true }).success).toBe(true);
+    expect(memorySchema.safeParse({ ...memory, mapsPublic: 'yes' }).success).toBe(false);
   });
 });

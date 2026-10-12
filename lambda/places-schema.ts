@@ -57,11 +57,44 @@ export const memorySchema = z.object({
   // Real coordinates the pin is derived from; null when placed by hand.
   lat: z.number().min(-90).max(90).nullable(),
   lng: z.number().min(-180).max(180).nullable(),
+  // Whether the public page may show the "Open in Google Maps" link. Absent
+  // means no: the exact spot of a home stays with the owner (see
+  // publicPlacesData for what the public GET withholds).
+  mapsPublic: z.boolean().optional(),
   // Epoch milliseconds; orders the list.
   createdAt: z.number().int().nonnegative(),
 });
 
 export type Memory = z.infer<typeof memorySchema>;
+
+// The front draws every town on a 48×32 tile grid (pixel-map.ts there).
+export const MAP_TILES_X = 48;
+export const MAP_TILES_Y = 32;
+
+/**
+ * What a visitor may see of a memory. Unless the owner opted the link in
+ * (`mapsPublic`), the Google Maps link and the coordinates are withheld, and
+ * the pin is snapped to the centre of its map tile: the front's
+ * coordinate-to-map fit ships in the public bundle, so an exact pin position
+ * could otherwise be inverted back to the address. A tile is a few hundred
+ * metres to about a kilometre depending on the town, so the pin still sits in
+ * the right neighbourhood.
+ */
+export function publicMemory(memory: Memory): Memory {
+  if (memory.mapsPublic) {
+    return memory;
+  }
+  const snap = (v: number, tiles: number): number =>
+    Math.round(((Math.min(tiles - 1, Math.floor(v * tiles)) + 0.5) / tiles) * 10000) / 10000;
+  return {
+    ...memory,
+    x: snap(memory.x, MAP_TILES_X),
+    y: snap(memory.y, MAP_TILES_Y),
+    mapsUrl: '',
+    lat: null,
+    lng: null,
+  };
+}
 
 export const cityInfoSchema = z.object({
   // The owner's own lines.
@@ -121,4 +154,9 @@ export function mergePlacesDocuments(
     memories = seed.memories;
   }
   return { memories, cities: { ...existing?.cities, ...seed.cities } };
+}
+
+/** The document as the public GET serves it (see publicMemory). */
+export function publicPlacesData<T extends { memories: Memory[] | null }>(doc: T): T {
+  return { ...doc, memories: doc.memories?.map(publicMemory) ?? doc.memories };
 }
