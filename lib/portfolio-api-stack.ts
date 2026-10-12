@@ -352,6 +352,16 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     cvTable.grantReadData(getPlacesFn);
 
+    // Admin variant: same handler, but INCLUDE_PRIVATE returns the Google Maps
+    // links and exact coordinates the public read withholds. Behind the
+    // Cognito-gated /places/all, for the editor.
+    const getPlacesAdminFn = new lambdaNode.NodejsFunction(this, 'GetPlacesAdminFunction', {
+      entry: path.join(__dirname, '..', 'lambda', 'get-places.ts'),
+      ...lambdaDefaults,
+      environment: { ...lambdaDefaults.environment, INCLUDE_PRIVATE: 'true' },
+    });
+    cvTable.grantReadData(getPlacesAdminFn);
+
     const updatePlacesFn = new lambdaNode.NodejsFunction(this, 'UpdatePlacesFunction', {
       entry: path.join(__dirname, '..', 'lambda', 'update-places.ts'),
       ...lambdaDefaults,
@@ -1148,6 +1158,12 @@ export class PortfolioApiStack extends cdk.Stack {
     });
     placesResource.addMethod('PUT', new apigateway.LambdaIntegration(updatePlacesFn), {
       apiKeyRequired: true,
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    // Every memory as stored, private links included, for the editor. Cognito is
+    // the gate; no API key, the same posture as /blog/all.
+    placesResource.addResource('all').addMethod('GET', new apigateway.LambdaIntegration(getPlacesAdminFn), {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

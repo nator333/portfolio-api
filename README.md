@@ -213,7 +213,12 @@ reflection text reaches the public site, so the boundary is kept narrow:
 `GET /places` (site key) serves the Places page document — the owner's
 memories pinned on five hometown maps, plus per-town facts — and `PUT /places`
 (Cognito) replaces it, the same single-document shape as `/home` and
-`/projects` in the CV table (`lambda/places-schema.ts`). The maps themselves
+`/projects` in the CV table (`lambda/places-schema.ts`). A memory's Google Maps
+link is private unless its `mapsPublic` flag is set: the public `GET /places`
+then drops the link and the coordinates and snaps the pin to its map tile
+(the front's coordinate-to-map fit is public, so an exact pin could be
+inverted back to an address). The editor reads everything through the
+Cognito-gated `GET /places/all`. The maps themselves
 are drawn by the front; the API only validates that a memory points at one of
 the five towns, keeps photo and map links to https, and caps the document so
 it stays one DynamoDB item.

@@ -67,10 +67,11 @@ test('cv, projects, blog, home, places, chat, agent, workout, activity and pre-s
   // get/update pair behind the weekly-set-target editor (25); and get-bodyweight,
   // which serves the monthly bodyweight snapshot (26); and get-public-workout-plan,
   // which serves the current program to the Training page (27); and the
-  // get/update pair behind the Places page (29). The MCP server's
+  // get/update pair behind the Places page (29), plus its private-inclusive
+  // admin reader behind /places/all (30). The MCP server's
   // functions, and the bodyweight ingest that needs its Google grant, are not
   // here: they are only declared when MCP options are supplied.
-  template.resourceCountIs('AWS::Lambda::Function', 29);
+  template.resourceCountIs('AWS::Lambda::Function', 30);
 });
 
 test('Google is the only sign-in provider, via hosted domain with code + PKCE flow', () => {
@@ -141,6 +142,28 @@ test('GET /blog/all returns drafts and is Cognito-gated with no API key', () => 
   // Its handler is the shared blog reader flipped into draft-returning mode.
   template.hasResourceProperties('AWS::Lambda::Function', {
     Environment: { Variables: Match.objectLike({ INCLUDE_DRAFTS: 'true' }) },
+  });
+});
+
+test('GET /places/all returns private links and is Cognito-gated with no API key', () => {
+  const template = synthStack();
+
+  const resources = template.findResources('AWS::ApiGateway::Resource');
+  const placesId = Object.entries(resources).find(([, r]) => r.Properties.PathPart === 'places')?.[0];
+  expect(placesId).toBeDefined();
+  const placesAll = Object.entries(resources).find(
+    ([, r]) => r.Properties.PathPart === 'all' && r.Properties.ParentId?.Ref === placesId,
+  );
+  expect(placesAll).toBeDefined();
+  const [allId] = placesAll!;
+  const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).filter(
+    (m) => m.Properties.ResourceId?.Ref === allId && m.Properties.HttpMethod !== 'OPTIONS',
+  );
+  expect(methods).toHaveLength(1);
+  expect(methods[0].Properties).toMatchObject({ HttpMethod: 'GET', AuthorizationType: 'COGNITO_USER_POOLS' });
+  expect(methods[0].Properties.ApiKeyRequired).toBeUndefined();
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    Environment: { Variables: Match.objectLike({ INCLUDE_PRIVATE: 'true' }) },
   });
 });
 

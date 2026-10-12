@@ -1,10 +1,15 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { PLACES_TABLE_ITEM_ID } from './places-schema';
+import { Memory, PLACES_TABLE_ITEM_ID, publicPlacesData } from './places-schema';
 import { corsHeaders } from './cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+// The admin variant (INCLUDE_PRIVATE=true, wired behind the Cognito-gated
+// /places/all route) returns every memory as stored, for the editor. The public
+// /places withholds the links and coordinates the owner kept private.
+const includePrivate = process.env.INCLUDE_PRIVATE === 'true';
 
 export const handler = async (
   event: APIGatewayProxyEvent,
@@ -26,7 +31,8 @@ export const handler = async (
     return { statusCode: 200, headers, body: JSON.stringify({ memories: null, cities: {} }) };
   }
 
-  const { id, ...placesData } = result.Item;
+  const { id, ...placesData } = result.Item as { id: string; memories: Memory[] | null };
+  const body = includePrivate ? placesData : publicPlacesData(placesData);
 
-  return { statusCode: 200, headers, body: JSON.stringify(placesData) };
+  return { statusCode: 200, headers, body: JSON.stringify(body) };
 };
