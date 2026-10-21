@@ -62,7 +62,7 @@ describe('choosing the session', () => {
     expect(ranked[0].id).toBe('lower-a');
   });
 
-  test('the score counts behind muscles, not how far behind or over others are', () => {
+  test('the recovery-aware score counts behind muscles, not how far behind or over others are', () => {
     const ranked = rankSessions(
       sessions,
       new Map(volume({ Quads: 'under', Hamstrings: 'maintenance', Calves: 'over' }).map((r) => [r.muscle, r.status])),
@@ -72,10 +72,10 @@ describe('choosing the session', () => {
     expect(ranked.find((s) => s.id === 'lower-a')?.score).toBe(2);
   });
 
-  test('the volume-only ranking still weighs status, and over-target muscles count against a session', () => {
+  test('over-target muscles count against a session', () => {
     const result = recommend(ready('normal'), { Chest: 'over', Shoulders: 'over' });
-    expect(['upper-a', 'upper-b']).not.toContain(result.volumeOnly.session?.id);
-    expect(result.volumeOnly.session).not.toHaveProperty('recovery');
+    expect(['upper-a', 'upper-b']).not.toContain(result.session?.id);
+    expect(result.session).not.toHaveProperty('recovery');
   });
 
   test('with everything in range, the rotation order decides', () => {
@@ -240,8 +240,8 @@ describe('recovery', () => {
     expect(since.has('Abs')).toBe(false);
   });
 
-  test('2026-10-21: the session done yesterday is not the pick', () => {
-    const result = recommendOct21();
+  test('2026-10-21: with recovery, the session done yesterday is not the pick', () => {
+    const result = recommendOct21().recoveryAware;
     const all = [result.session!, ...result.alternatives];
     const byId = (id: string) => all.find((s) => s.id === id)!;
 
@@ -275,26 +275,30 @@ describe('recovery', () => {
     expect(result.notes.some((n) => n.startsWith('Lower B moved down'))).toBe(false);
   });
 
-  test('2026-10-21: the volume-only ranking is returned alongside, as it was', () => {
+  test('2026-10-21: the top level is unchanged, with the recovery-aware pick pointed to', () => {
     const result = recommendOct21();
     // What the tool answered that morning, before recovery was considered.
-    expect(result.volumeOnly.session).toMatchObject({ id: 'upper-b', score: 5 });
-    expect(result.volumeOnly.alternatives.map((s) => [s.id, s.score])).toEqual([
+    expect(result.session).toMatchObject({ id: 'upper-b', score: 5 });
+    expect(result.session).not.toHaveProperty('recovery');
+    expect(result.alternatives.map((s) => [s.id, s.score])).toEqual([
       ['lower-b', 5],
       ['upper-a', 4],
       ['lower-a', 4],
     ]);
-    expect(result.volumeOnly.prescription?.map((p) => p.muscle)).toEqual(
+    expect(result.prescription?.map((p) => p.muscle)).toEqual(
       V11_SESSIONS.find((s) => s.id === 'upper-b')!.exercises.map((e) => e.muscle),
     );
-    expect(result.volumeOnly.restSuggested).toBe(false);
-    expect(result.notes).toContain('The volume-only ranking, which ignores recovery, would pick Upper B (see volumeOnly).');
+    expect(result.restSuggested).toBe(false);
+    expect(result.notes).toEqual(['With recovery factored in, the pick is Lower B instead (see recoveryAware).']);
+    expect(result.recoveryAware.prescription?.map((p) => p.muscle)).toEqual(
+      V11_SESSIONS.find((s) => s.id === 'lower-b')!.exercises.map((e) => e.muscle),
+    );
   });
 
-  test('when both rankings agree, there is no note saying otherwise', () => {
+  test('when both picks agree, there is no note saying otherwise', () => {
     const result = recommendOct21({ trainingDays: [] });
-    expect(result.session?.id).toBe(result.volumeOnly.session?.id);
-    expect(result.notes.join(' ')).not.toMatch(/volume-only/);
+    expect(result.session?.id).toBe(result.recoveryAware.session?.id);
+    expect(result.notes.join(' ')).not.toMatch(/recoveryAware/);
   });
 
   test('a blocked session ranks below an unblocked one whatever its score', () => {
@@ -304,7 +308,7 @@ describe('recovery', () => {
       ...row,
       status: (['Shoulders', 'Calves'].includes(row.muscle) ? 'under' : 'in_range') as VolumeStatus,
     }));
-    const result = recommendOct21({ volume, sessions: V11_SESSIONS.filter((s) => s.id !== 'lower-b') });
+    const result = recommendOct21({ volume, sessions: V11_SESSIONS.filter((s) => s.id !== 'lower-b') }).recoveryAware;
     expect(result.session?.id).toBe('lower-a');
     expect(result.session?.score).toBe(1);
     expect(result.alternatives.find((s) => s.id === 'upper-b')).toMatchObject({ score: 2, recovery: { recoveryBlocked: true } });
@@ -312,10 +316,13 @@ describe('recovery', () => {
 
   test('every session blocked suggests rest, on any verdict', () => {
     const everything: TrainingDay = { date: '2026-10-20', muscles: OCT21_VOLUME.map((r) => r.muscle) };
-    const result = recommendOct21({ readiness: ready('push'), trainingDays: [everything] });
+    const full = recommendOct21({ readiness: ready('push'), trainingDays: [everything] });
+    const result = full.recoveryAware;
     expect([result.session!, ...result.alternatives].every((s) => s.recovery.recoveryBlocked)).toBe(true);
     expect(result.restSuggested).toBe(true);
     expect(result.notes.join(' ')).toMatch(/rest today/);
+    // The top level does not know about recovery.
+    expect(full.restSuggested).toBe(false);
   });
 
   test('on a tied score the more rested session wins', () => {
@@ -343,7 +350,7 @@ describe('recovery', () => {
   test('the recovery minimum is configurable per muscle', () => {
     // With shoulders and calves on the two-day default, Upper B's score drops
     // to zero on 2026-10-21.
-    const result = recommendOct21({ recovery: { defaultDays: 2, byMuscle: {} } });
+    const result = recommendOct21({ recovery: { defaultDays: 2, byMuscle: {} } }).recoveryAware;
     const upperB = [result.session!, ...result.alternatives].find((s) => s.id === 'upper-b')!;
     expect(upperB.score).toBe(0);
     expect(upperB.recovery.unrecoveredSetShare).toBe(1);

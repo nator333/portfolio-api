@@ -16,9 +16,10 @@ import type { ReadinessStatus, Verdict } from './readiness';
  *
  * Two decisions, kept apart on purpose:
  *
- *   which session   chosen from the volume status and recent training — the
- *                   plan's sessions ranked by how much of what they train is
- *                   behind *and* recovered since it was last trained
+ *   which session   chosen from the volume status — the plan's sessions
+ *                   ranked by how much of what they train is behind; and,
+ *                   under `recoveryAware`, by how much is behind *and*
+ *                   recovered since it was last trained
  *   how hard        from readiness alone — each slot of that session adjusted
  *                   by the verdict and by its own muscle's status
  *
@@ -32,8 +33,8 @@ import type { ReadinessStatus, Verdict } from './readiness';
  * workout-plan-compliance.ts), and an adjustment that added sets on good days
  * would quietly break that guarantee.
  *
- * Recovery is the reason the session choice needs the log and not only the
- * volume status. The status is a rolling seven-day count, so a muscle trained
+ * Recovery is why `recoveryAware` needs the log and not only the volume
+ * status. The status is a rolling seven-day count, so a muscle trained
  * yesterday can still read "behind": that is what recommended Upper B on
  * 2026-10-21, the day after Upper B. A behind muscle only argues for a session
  * once it has had its minimum days off (see RecoveryConfig).
@@ -43,7 +44,7 @@ import type { ReadinessStatus, Verdict } from './readiness';
 
 /**
  * How much each muscle status argues for training a session that hits it.
- * The volume-only score sums these (see rankSessionsByVolume); the
+ * The top-level score sums these (see rankSessionsByVolume); the
  * recovery-aware score counts behind muscles instead and uses them only to
  * order the `behind` list.
  */
@@ -147,28 +148,34 @@ export interface ReadinessSummary {
   readonly reasons: readonly string[];
 }
 
-/** A session as the volume-only ranking scores it: no recovery. */
+/** A session as the top-level, volume-only ranking scores it: no recovery. */
 export type VolumeSessionScore = Omit<SessionScore, 'recovery'>;
 
 /**
- * The recommendation as it was made before recovery was considered, kept
- * alongside the recovery-aware one so the two can be compared: where they
- * disagree, recovery is the reason.
+ * The same question answered with recovery: a session only gets credit for a
+ * behind muscle once that muscle has had its minimum days off, and a session
+ * mostly on unrecovered muscles ranks last. Where it disagrees with the top
+ * level, recovery (or the simpler count it scores by) is the reason.
  */
-export interface VolumeOnlyRecommendation {
-  readonly session: VolumeSessionScore | null;
-  readonly alternatives: readonly VolumeSessionScore[];
+export interface RecoveryAwareRecommendation {
+  readonly session: SessionScore | null;
+  readonly alternatives: readonly SessionScore[];
   readonly prescription: readonly SlotPrescription[] | null;
-  /** True on an easy day when this ranking's top session has nothing behind. */
+  /**
+   * True on an easy day when nothing is both behind and recovered, and,
+   * whatever the verdict, when every session is recovery-blocked.
+   */
   readonly restSuggested: boolean;
+  /** Recovery's own notes; readiness notes stay at the top level. */
+  readonly notes: readonly string[];
 }
 
 export interface TrainingRecommendation {
   readonly readiness: ReadinessSummary;
   /** The session to run; null only when the plan has no sessions at all. */
-  readonly session: SessionScore | null;
+  readonly session: VolumeSessionScore | null;
   /** Every other session, best first — the fallbacks if the gym is busy. */
-  readonly alternatives: readonly SessionScore[];
+  readonly alternatives: readonly VolumeSessionScore[];
   /**
    * Today's version of the chosen session, slot by slot. Null while readiness
    * has no verdict: the session is known, how hard to run it is not.
@@ -176,13 +183,12 @@ export interface TrainingRecommendation {
   readonly prescription: readonly SlotPrescription[] | null;
   /**
    * True on an easy day when no session trains anything that is behind:
-   * nothing to gain today that is worth the recovery it costs. Also true,
-   * whatever the verdict, when every session is recovery-blocked.
+   * nothing to gain today that is worth the recovery it costs.
    */
   readonly restSuggested: boolean;
   readonly notes: readonly string[];
-  /** The volume-only ranking, without recovery, for comparison. */
-  readonly volumeOnly: VolumeOnlyRecommendation;
+  /** The recommendation with days since each muscle was trained factored in. */
+  readonly recoveryAware: RecoveryAwareRecommendation;
 }
 
 export interface RecommendationInput {
@@ -325,7 +331,7 @@ export function rankSessions(
 }
 
 /**
- * The ranking as it was before recovery: each session scored by the status
+ * The top-level ranking, which ignores recovery: each session scored by the status
  * of the muscles it trains (STATUS_WEIGHT: under +2, maintenance +1, in range
  * 0, over -1), each muscle counted once however many slots hit it, ties going
  * to rotation order, then bonus sessions.
@@ -449,17 +455,6 @@ export function prescribeSlot(
 
 export function recommendTraining(input: RecommendationInput): TrainingRecommendation {
   const statusOf = new Map(input.volume.map((row) => [row.muscle, row.status] as const));
-  const config = input.recovery ?? DEFAULT_RECOVERY;
-  const daysSince = daysSinceTrained(input.trainingDays, input.today);
-  const ranked = rankSessions(input.sessions, statusOf, input.rotation, input.bonusSessions, { daysSince, config });
-  const [best, ...alternatives] = ranked;
-  const notes: string[] = recoveryNotes(
-    ranked,
-    rankSessions(input.sessions, statusOf, input.rotation, input.bonusSessions),
-    daysSince,
-    config,
-  );
-
   const verdict = input.readiness.status === 'ready' ? input.readiness.verdict : null;
   const prescribe = (id: string) => {
     const session = input.sessions.find((s) => s.id === id)!;
@@ -470,18 +465,9 @@ export function recommendTraining(input: RecommendationInput): TrainingRecommend
       : null;
   };
 
-  const [volumeBest, ...volumeAlternatives] = rankSessionsByVolume(
-    input.sessions,
-    statusOf,
-    input.rotation,
-    input.bonusSessions,
-  );
-  const volumeOnly: VolumeOnlyRecommendation = {
-    session: volumeBest ?? null,
-    alternatives: volumeAlternatives,
-    prescription: volumeBest ? prescribe(volumeBest.id) : null,
-    restSuggested: verdict === 'easy' && volumeBest !== undefined && volumeBest.score <= 0,
-  };
+  const recoveryAware = recommendWithRecovery(input, statusOf, verdict, prescribe);
+  const [best, ...alternatives] = rankSessionsByVolume(input.sessions, statusOf, input.rotation, input.bonusSessions);
+  const notes: string[] = [];
 
   if (!best) {
     return {
@@ -491,7 +477,7 @@ export function recommendTraining(input: RecommendationInput): TrainingRecommend
       prescription: null,
       restSuggested: false,
       notes: ['The plan has no sessions.'],
-      volumeOnly,
+      recoveryAware,
     };
   }
 
@@ -502,32 +488,57 @@ export function recommendTraining(input: RecommendationInput): TrainingRecommend
         : 'Readiness has no verdict yet (see readiness.status), so only the session is recommended. Ask again once the watch has synced for today\'s intensity.',
     );
   }
+  if (best.score <= 0) {
+    notes.push('Nothing any session trains is behind its weekly target; the top session is simply the least over.');
+  }
+
+  const restSuggested = verdict === 'easy' && best.score <= 0;
+  if (restSuggested) {
+    notes.push('Easy day with nothing behind: a rest day costs no progress. If you train anyway, run the session below.');
+  }
+  if (recoveryAware.session && recoveryAware.session.id !== best.id) {
+    notes.push(`With recovery factored in, the pick is ${recoveryAware.session.name} instead (see recoveryAware).`);
+  }
+
+  return { readiness: input.readiness, session: best, alternatives, prescription: prescribe(best.id), restSuggested, notes, recoveryAware };
+}
+
+/** The `recoveryAware` half of the answer. */
+function recommendWithRecovery(
+  input: RecommendationInput,
+  statusOf: ReadonlyMap<MuscleGroup, VolumeStatus>,
+  verdict: Verdict | null,
+  prescribe: (id: string) => SlotPrescription[] | null,
+): RecoveryAwareRecommendation {
+  const config = input.recovery ?? DEFAULT_RECOVERY;
+  const daysSince = daysSinceTrained(input.trainingDays, input.today);
+  const ranked = rankSessions(input.sessions, statusOf, input.rotation, input.bonusSessions, { daysSince, config });
+  const [best, ...alternatives] = ranked;
+  if (!best) {
+    return { session: null, alternatives: [], prescription: null, restSuggested: false, notes: ['The plan has no sessions.'] };
+  }
+
+  const notes = recoveryNotes(
+    ranked,
+    rankSessions(input.sessions, statusOf, input.rotation, input.bonusSessions),
+    daysSince,
+    config,
+  );
   const allBlocked = ranked.every((s) => s.recovery.recoveryBlocked);
+  const easyAndNothingBehind = verdict === 'easy' && best.score <= 0;
   if (allBlocked) {
     notes.push('Every session would put most of its sets on muscles still recovering: rest today. If you train anyway, run the session below.');
+  } else if (easyAndNothingBehind) {
+    notes.push('Easy day with nothing both behind and recovered: a rest day costs no progress. If you train anyway, run the session below.');
   } else if (best.score <= 0) {
     notes.push('Nothing any session trains is both behind its weekly target and recovered; the top session is simply the most rested.');
   }
 
-  const easyAndNothingBehind = verdict === 'easy' && best.score <= 0;
-  const restSuggested = allBlocked || easyAndNothingBehind;
-  if (easyAndNothingBehind && !allBlocked) {
-    notes.push('Easy day with nothing behind: a rest day costs no progress. If you train anyway, run the session below.');
-  }
-
-  if (volumeBest && volumeBest.id !== best.id) {
-    notes.push(
-      `The volume-only ranking, which ignores recovery, would pick ${volumeBest.name} (see volumeOnly).`,
-    );
-  }
-
   return {
-    readiness: input.readiness,
     session: best,
     alternatives,
     prescription: prescribe(best.id),
-    restSuggested,
+    restSuggested: allBlocked || easyAndNothingBehind,
     notes,
-    volumeOnly,
   };
 }
