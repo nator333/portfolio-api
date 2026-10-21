@@ -1,4 +1,4 @@
-import type { MuscleGroup } from './workout-muscles';
+import { MUSCLE_GROUPS, type MuscleGroup } from './workout-muscles';
 import type { MuscleVolumeRow, VolumeStatus } from './muscle-volume-status';
 import type { PlanExercise, PlanSession, Range } from './workout-plan-schema';
 import type { ReadinessStatus, Verdict } from './readiness';
@@ -16,8 +16,9 @@ import type { ReadinessStatus, Verdict } from './readiness';
  *
  * Two decisions, kept apart on purpose:
  *
- *   which session   chosen from the volume status alone — the plan's sessions
- *                   ranked by how much of what they train is behind
+ *   which session   chosen from the volume status and recent training — the
+ *                   plan's sessions ranked by how much of what they train is
+ *                   behind *and* recovered since it was last trained
  *   how hard        from readiness alone — each slot of that session adjusted
  *                   by the verdict and by its own muscle's status
  *
@@ -31,10 +32,20 @@ import type { ReadinessStatus, Verdict } from './readiness';
  * workout-plan-compliance.ts), and an adjustment that added sets on good days
  * would quietly break that guarantee.
  *
+ * Recovery is the reason the session choice needs the log and not only the
+ * volume status. The status is a rolling seven-day count, so a muscle trained
+ * yesterday can still read "behind": that is what recommended Upper B on
+ * 2026-10-21, the day after Upper B. A behind muscle only argues for a session
+ * once it has had its minimum days off (see RecoveryConfig).
+ *
  * Free of AWS SDK imports, like the modules it joins.
  */
 
-/** How much each muscle status argues for training a session that hits it. */
+/**
+ * How much each muscle status argues for training a session that hits it.
+ * Orders the `behind` list; the score itself counts behind muscles (see
+ * rankSessions).
+ */
 export const STATUS_WEIGHT: Readonly<Record<VolumeStatus, number>> = {
   under: 2,
   maintenance: 1,
@@ -53,6 +64,35 @@ export const EASY_SET_FRACTION = 2 / 3;
 export const EASY_RPE_DROP = 1;
 
 /**
+ * Minimum whole days between two sessions training the same muscle.
+ *
+ * Small, low-fatigue muscles are set to a single day: lateral raises are
+ * deliberately programmed in nearly every session, and a two-day rule would
+ * make every upper day "unrecovered" for shoulders by design.
+ */
+export interface RecoveryConfig {
+  readonly defaultDays: number;
+  readonly byMuscle: Readonly<Partial<Record<MuscleGroup, number>>>;
+}
+
+export const DEFAULT_RECOVERY: RecoveryConfig = {
+  defaultDays: 2,
+  byMuscle: { Shoulders: 1, Calves: 1, Forearms: 1, Abs: 1 },
+};
+
+/**
+ * How far back the log is read for "last trained". Past this a muscle is
+ * simply recovered, whatever the recovery minimum, and its daysSince is null.
+ */
+export const RECOVERY_LOOKBACK_DAYS = 14;
+
+/**
+ * A session whose planned sets fall more than this share on unrecovered
+ * muscles is ranked below every session that does not.
+ */
+export const RECOVERY_BLOCK_SHARE = 0.5;
+
+/**
  * - `top`: push day — the top of the prescribed set range, prescribed RPE.
  * - `as_planned`: the prescription unchanged.
  * - `reduced`: fewer sets and/or a lower RPE ceiling than prescribed.
@@ -60,13 +100,27 @@ export const EASY_RPE_DROP = 1;
  */
 export type SlotAction = 'top' | 'as_planned' | 'reduced' | 'skip';
 
+export interface SessionRecovery {
+  /**
+   * Whole days since each of the session's muscles was last trained, in the
+   * owner's time zone; null when not trained within RECOVERY_LOOKBACK_DAYS.
+   */
+  readonly daysSinceByMuscle: Readonly<Partial<Record<MuscleGroup, number | null>>>;
+  /** Share of the session's planned sets (top of each range) on unrecovered muscles, 0-1. */
+  readonly unrecoveredSetShare: number;
+  /** True when that share exceeds RECOVERY_BLOCK_SHARE; such a session ranks last. */
+  readonly recoveryBlocked: boolean;
+}
+
 export interface SessionScore {
   readonly id: string;
   readonly name: string;
+  /** How many of the `behind` muscles are also recovered. */
   readonly score: number;
-  /** The muscles that earned the score, with their status, strongest first. */
+  /** The muscles below their weekly target, with their status, strongest first. */
   readonly behind: readonly { muscle: MuscleGroup; status: VolumeStatus }[];
   readonly bonus: boolean;
+  readonly recovery: SessionRecovery;
 }
 
 export interface SlotPrescription {
@@ -105,7 +159,8 @@ export interface TrainingRecommendation {
   readonly prescription: readonly SlotPrescription[] | null;
   /**
    * True on an easy day when no session trains anything that is behind:
-   * nothing to gain today that is worth the recovery it costs.
+   * nothing to gain today that is worth the recovery it costs. Also true,
+   * whatever the verdict, when every session is recovery-blocked.
    */
   readonly restSuggested: boolean;
   readonly notes: readonly string[];
@@ -117,46 +172,174 @@ export interface RecommendationInput {
   readonly rotation: readonly string[];
   readonly bonusSessions: readonly string[];
   readonly sessions: readonly PlanSession[];
+  /** The owner's local date today, YYYY-MM-DD. */
+  readonly today: string;
+  /** Logged training days, each with the muscles it trained. Order does not matter. */
+  readonly trainingDays: readonly TrainingDay[];
+  /** Defaults to DEFAULT_RECOVERY. */
+  readonly recovery?: RecoveryConfig;
 }
 
+export interface TrainingDay {
+  /** YYYY-MM-DD, the owner's local date the sets were logged on. */
+  readonly date: string;
+  readonly muscles: readonly string[];
+}
+
+/** Whole calendar days from `from` to `to`, both YYYY-MM-DD. */
+const daysBetween = (from: string, to: string): number =>
+  Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+
 /**
- * Ranks every session the plan names by how much of what it trains is behind.
- * Each muscle counts once per session however many slots hit it: two chest
- * slots do not make a session twice as much "the chest day" for this purpose.
- * Ties go to rotation order, then bonus sessions, so the plan's own sequence
- * breaks them rather than array position.
+ * Days since each muscle was last trained, as of `today`. The log carries
+ * dates, not times, so this is in whole days: a muscle trained yesterday is 1,
+ * today 0. Days after `today` or more than `lookbackDays` before it are
+ * ignored; a muscle absent from the result was not trained in that span.
+ */
+export function daysSinceTrained(
+  trainingDays: readonly TrainingDay[],
+  today: string,
+  lookbackDays: number = RECOVERY_LOOKBACK_DAYS,
+): Map<MuscleGroup, number> {
+  const since = new Map<MuscleGroup, number>();
+  for (const day of trainingDays) {
+    const days = daysBetween(day.date, today);
+    if (!(days >= 0 && days <= lookbackDays)) continue;
+    for (const muscle of day.muscles) {
+      if (!(MUSCLE_GROUPS as readonly string[]).includes(muscle)) continue;
+      const group = muscle as MuscleGroup;
+      const known = since.get(group);
+      if (known === undefined || days < known) since.set(group, days);
+    }
+  }
+  return since;
+}
+
+export const recoveryDaysFor = (muscle: MuscleGroup, config: RecoveryConfig): number =>
+  config.byMuscle[muscle] ?? config.defaultDays;
+
+/** What rankSessions needs to judge recovery; omitted, every muscle counts as rested. */
+export interface RecoveryContext {
+  readonly daysSince: ReadonlyMap<MuscleGroup, number>;
+  readonly config: RecoveryConfig;
+}
+
+const NO_HISTORY: RecoveryContext = { daysSince: new Map(), config: DEFAULT_RECOVERY };
+
+/**
+ * Ranks every session the plan names by how many of the muscles it trains are
+ * below their weekly target *and* recovered. Each muscle counts once per
+ * session however many slots hit it: two chest slots do not make a session
+ * twice as much "the chest day" for this purpose.
+ *
+ * In order:
+ *   1. recovery-blocked sessions after all others — more than half of their
+ *      planned sets would land on muscles still recovering;
+ *   2. score, highest first;
+ *   3. the more rested session: higher average days since last trained,
+ *      weighted by planned sets (a muscle untrained in the lookback counts as
+ *      one day past it);
+ *   4. rotation order, then bonus sessions, so the plan's own sequence breaks
+ *      what is left rather than array position.
  */
 export function rankSessions(
   sessions: readonly PlanSession[],
   statusOf: ReadonlyMap<MuscleGroup, VolumeStatus>,
   rotation: readonly string[],
   bonusSessions: readonly string[],
+  recovery: RecoveryContext = NO_HISTORY,
 ): SessionScore[] {
   const order = [...rotation, ...bonusSessions.filter((id) => !rotation.includes(id))];
   const rank = (id: string) => {
     const i = order.indexOf(id);
     return i === -1 ? order.length : i;
   };
+  const recovered = (muscle: MuscleGroup) => {
+    const days = recovery.daysSince.get(muscle);
+    return days === undefined || days >= recoveryDaysFor(muscle, recovery.config);
+  };
 
   return sessions
     .map((session) => {
       const muscles = [...new Set(session.exercises.map((e) => e.muscle))];
-      const judged = muscles
+      const behind = muscles
         .map((muscle) => ({ muscle, status: statusOf.get(muscle) }))
-        .filter((m): m is { muscle: MuscleGroup; status: VolumeStatus } => m.status !== undefined);
-      const score = judged.reduce((total, m) => total + STATUS_WEIGHT[m.status], 0);
-      const behind = judged
+        .filter((m): m is { muscle: MuscleGroup; status: VolumeStatus } => m.status !== undefined)
         .filter((m) => STATUS_WEIGHT[m.status] > 0)
         .sort((a, b) => STATUS_WEIGHT[b.status] - STATUS_WEIGHT[a.status]);
+      const score = behind.filter((m) => recovered(m.muscle)).length;
+
+      let plannedSets = 0;
+      let unrecoveredSets = 0;
+      let restedSetDays = 0;
+      for (const slot of session.exercises) {
+        plannedSets += slot.sets.max;
+        if (!recovered(slot.muscle)) unrecoveredSets += slot.sets.max;
+        restedSetDays += slot.sets.max * (recovery.daysSince.get(slot.muscle) ?? RECOVERY_LOOKBACK_DAYS + 1);
+      }
+      const unrecoveredSetShare = plannedSets > 0 ? unrecoveredSets / plannedSets : 0;
+
       return {
         id: session.id,
         name: session.name,
         score,
         behind,
         bonus: bonusSessions.includes(session.id) && !rotation.includes(session.id),
+        recovery: {
+          daysSinceByMuscle: Object.fromEntries(
+            muscles.map((muscle) => [muscle, recovery.daysSince.get(muscle) ?? null]),
+          ),
+          unrecoveredSetShare: Math.round(unrecoveredSetShare * 100) / 100,
+          recoveryBlocked: unrecoveredSetShare > RECOVERY_BLOCK_SHARE,
+        },
+        rested: plannedSets > 0 ? restedSetDays / plannedSets : 0,
       };
     })
-    .sort((a, b) => b.score - a.score || rank(a.id) - rank(b.id));
+    .sort(
+      (a, b) =>
+        Number(a.recovery.recoveryBlocked) - Number(b.recovery.recoveryBlocked) ||
+        b.score - a.score ||
+        b.rested - a.rested ||
+        rank(a.id) - rank(b.id),
+    )
+    .map(({ rested: _rested, ...score }) => score);
+}
+
+/**
+ * One note per session the recovery rules moved down: compared with the same
+ * ranking made with every muscle treated as rested, any session now further
+ * down lost its place to recovery and nothing else.
+ */
+function recoveryNotes(
+  ranked: readonly SessionScore[],
+  ignoringRecovery: readonly SessionScore[],
+  daysSince: ReadonlyMap<MuscleGroup, number>,
+  config: RecoveryConfig,
+): string[] {
+  const ordinal = (n: number) => {
+    const suffix = n % 10 === 1 && n % 100 !== 11 ? 'st' : n % 10 === 2 && n % 100 !== 12 ? 'nd' : n % 10 === 3 && n % 100 !== 13 ? 'rd' : 'th';
+    return `${n}${suffix}`;
+  };
+  const dayWord = (n: number) => (n === 1 ? '1 day ago' : n === 0 ? 'today' : `${n} days ago`);
+
+  return ranked.flatMap((session, now) => {
+    const before = ignoringRecovery.findIndex((s) => s.id === session.id);
+    if (now <= before) return [];
+    const unrecovered = Object.keys(session.recovery.daysSinceByMuscle)
+      .map((m) => m as MuscleGroup)
+      .filter((m) => {
+        const days = daysSince.get(m);
+        return days !== undefined && days < recoveryDaysFor(m, config);
+      })
+      .map((m) => `${m} (trained ${dayWord(daysSince.get(m)!)}, needs ${recoveryDaysFor(m, config)})`);
+    const why = session.recovery.recoveryBlocked
+      ? `recovery-blocked: ${Math.round(session.recovery.unrecoveredSetShare * 100)}% of its planned sets would hit muscles still recovering`
+      : unrecovered.length > 0
+        ? 'behind muscles that have not recovered do not count toward its score'
+        : 'it lost a tie to a more rested session';
+    const detail = unrecovered.length > 0 ? ` Not yet recovered: ${unrecovered.join(', ')}.` : '';
+    return [`${session.name} moved down from ${ordinal(before + 1)} to ${ordinal(now + 1)} for recovery (${why}).${detail}`];
+  });
 }
 
 /** One slot, adjusted for the day's verdict and its own muscle's status. */
@@ -208,9 +391,16 @@ export function prescribeSlot(
 
 export function recommendTraining(input: RecommendationInput): TrainingRecommendation {
   const statusOf = new Map(input.volume.map((row) => [row.muscle, row.status] as const));
-  const ranked = rankSessions(input.sessions, statusOf, input.rotation, input.bonusSessions);
+  const config = input.recovery ?? DEFAULT_RECOVERY;
+  const daysSince = daysSinceTrained(input.trainingDays, input.today);
+  const ranked = rankSessions(input.sessions, statusOf, input.rotation, input.bonusSessions, { daysSince, config });
   const [best, ...alternatives] = ranked;
-  const notes: string[] = [];
+  const notes: string[] = recoveryNotes(
+    ranked,
+    rankSessions(input.sessions, statusOf, input.rotation, input.bonusSessions),
+    daysSince,
+    config,
+  );
 
   if (!best) {
     return { readiness: input.readiness, session: null, alternatives: [], prescription: null, restSuggested: false, notes: ['The plan has no sessions.'] };
@@ -224,12 +414,16 @@ export function recommendTraining(input: RecommendationInput): TrainingRecommend
         : 'Readiness has no verdict yet (see readiness.status), so only the session is recommended. Ask again once the watch has synced for today\'s intensity.',
     );
   }
-  if (best.score <= 0) {
-    notes.push('Nothing any session trains is behind its weekly target; the top session is simply the least over.');
+  const allBlocked = ranked.every((s) => s.recovery.recoveryBlocked);
+  if (allBlocked) {
+    notes.push('Every session would put most of its sets on muscles still recovering: rest today. If you train anyway, run the session below.');
+  } else if (best.score <= 0) {
+    notes.push('Nothing any session trains is both behind its weekly target and recovered; the top session is simply the most rested.');
   }
 
-  const restSuggested = verdict === 'easy' && best.score <= 0;
-  if (restSuggested) {
+  const easyAndNothingBehind = verdict === 'easy' && best.score <= 0;
+  const restSuggested = allBlocked || easyAndNothingBehind;
+  if (easyAndNothingBehind && !allBlocked) {
     notes.push('Easy day with nothing behind: a rest day costs no progress. If you train anyway, run the session below.');
   }
 

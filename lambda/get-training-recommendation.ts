@@ -2,16 +2,24 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { handler as getReadiness } from './get-readiness';
 import { handler as getMuscleVolumeStatus } from './get-muscle-volume-status';
 import { handler as getWorkoutPlan } from './get-workout-plan';
+import { handler as getWorkoutSets } from './get-workout-sets';
 import type { MuscleVolumeRow } from './muscle-volume-status';
 import type { PlanSession } from './workout-plan-schema';
-import { recommendTraining, type ReadinessSummary } from './training-recommendation';
+import { addDays, isValidTimeZone, localDate } from './readiness';
+import {
+  RECOVERY_LOOKBACK_DAYS,
+  recommendTraining,
+  type ReadinessSummary,
+  type TrainingDay,
+} from './training-recommendation';
 import { corsHeaders } from './cors';
 
 /**
  * Today's session and how hard to run it: readiness joined with the volume
- * status and the plan (see training-recommendation.ts for the join itself).
+ * status, the plan and the recent log (see training-recommendation.ts for the
+ * join itself).
  *
- * The three inputs are read by calling their own handlers in-process, exactly
+ * The inputs are read by calling their own handlers in-process, exactly
  * as the MCP server does, rather than by repeating their queries here. Each
  * already owns a judgement — what "today" is for readiness, what the trailing
  * window and the current targets are for the volume status, how the menu and
@@ -19,14 +27,25 @@ import { corsHeaders } from './cors';
  * progress page and the plan came to disagree about chest. Reusing the
  * handlers means this answer and the individual tools cannot drift apart.
  *
- * Failure is asymmetric on purpose. The plan and the volume status are this
- * API's own data: if either fails, there is nothing sound to recommend and the
+ * Failure is asymmetric on purpose. The plan, the volume status and the logged
+ * sets are this API's own data: if either fails, there is nothing sound to recommend and the
  * error is passed through. Readiness depends on the owner's watch and a Google
  * grant; if it fails, the session choice (which needs neither) is still
  * returned, with intensity withheld and the reason stated.
  *
  * Reached only through the MCP server's admin gate: there is no REST route.
  */
+
+/**
+ * The owner's zone, for "today" in days-since-trained. The MCP function is
+ * configured with it as HEALTH_TIME_ZONE; the fallback is the same zone.
+ */
+const OWNER_TIME_ZONE = 'America/Toronto';
+
+const ownerTimeZone = (): string => {
+  const configured = process.env.HEALTH_TIME_ZONE;
+  return configured && isValidTimeZone(configured) ? configured : OWNER_TIME_ZONE;
+};
 
 const proxyEvent = (query: Record<string, string | undefined>): APIGatewayProxyEvent =>
   ({ body: null, queryStringParameters: query, pathParameters: null, headers: {} }) as unknown as APIGatewayProxyEvent;
@@ -40,9 +59,11 @@ export const handler = async (
   const planId = event.queryStringParameters?.planId?.trim() || undefined;
 
   const asOf = new Date();
-  const [plan, volume, readiness] = await Promise.all([
+  const today = localDate(asOf, ownerTimeZone());
+  const [plan, volume, sets, readiness] = await Promise.all([
     getWorkoutPlan(proxyEvent({ planId })),
     getMuscleVolumeStatus(proxyEvent({ planId })),
+    getWorkoutSets(proxyEvent({ from: addDays(today, -RECOVERY_LOOKBACK_DAYS), to: today })),
     // A readiness failure must not take the session choice down with it.
     getReadiness(proxyEvent({})).catch(
       (error: unknown): APIGatewayProxyResult => {
@@ -52,7 +73,7 @@ export const handler = async (
     ),
   ]);
 
-  for (const [name, result] of [['plan', plan], ['volume status', volume]] as const) {
+  for (const [name, result] of [['plan', plan], ['volume status', volume], ['logged sets', sets]] as const) {
     if (!ok(result)) {
       const detail = JSON.parse(result.body || '{}') as { message?: string };
       return {
@@ -71,6 +92,11 @@ export const handler = async (
     sessions: PlanSession[];
   };
   const volumeBody = JSON.parse(volume.body) as { window: unknown; muscles: MuscleVolumeRow[] };
+  const setsBody = JSON.parse(sets.body) as { days: { date: string; sets: { muscle: string }[] }[] };
+  const trainingDays: TrainingDay[] = setsBody.days.map((day) => ({
+    date: day.date,
+    muscles: [...new Set(day.sets.map((set) => set.muscle))],
+  }));
   const readinessBody = JSON.parse(readiness.body || '{}') as {
     status?: ReadinessSummary['status'];
     date?: string;
@@ -94,6 +120,8 @@ export const handler = async (
     rotation: planBody.rotation,
     bonusSessions: planBody.bonusSessions,
     sessions: planBody.sessions,
+    today,
+    trainingDays,
   });
 
   return {
