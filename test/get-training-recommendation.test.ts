@@ -46,9 +46,11 @@ test('joins readiness, volume and plan into one prescription', async () => {
   expect(body.plan).toEqual({ planId: 'upper-lower', version: 1 });
   expect(body.volumeWindow).toEqual(volumeBody.window);
   expect(body.readiness).toEqual({ status: 'ready', date: '2026-09-26', verdict: 'push', reasons: ['r'] });
-  expect(body.session.id).toBe('lower-a');
-  expect(body.prescription).toHaveLength(5);
-  expect(body.session).not.toHaveProperty('recovery');
+  // Both rankings sit side by side; nothing ranking-specific is left at the top.
+  expect(Object.keys(body).sort()).toEqual(['asOf', 'notes', 'plan', 'readiness', 'recoveryAware', 'volumeOnly', 'volumeWindow']);
+  expect(body.volumeOnly.session.id).toBe('lower-a');
+  expect(body.volumeOnly.prescription).toHaveLength(5);
+  expect(body.volumeOnly.session).not.toHaveProperty('recovery');
   expect(body.recoveryAware.session.id).toBe('lower-a');
   expect(body.recoveryAware.prescription).toHaveLength(5);
 });
@@ -70,8 +72,8 @@ test('a readiness error still yields the session, with intensity withheld', asyn
     verdict: null,
     reasons: ['Secret "google-health-oauth" does not exist.'],
   });
-  expect(body.session.id).toBe('lower-a');
-  expect(body.prescription).toBeNull();
+  expect(body.volumeOnly.session.id).toBe('lower-a');
+  expect(body.volumeOnly.prescription).toBeNull();
 });
 
 test('a readiness handler that throws is contained the same way', async () => {

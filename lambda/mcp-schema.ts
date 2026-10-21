@@ -277,13 +277,12 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_training_recommendation',
     title: 'Get today\'s training recommendation',
     description:
-      'What to train today and how hard: the plan session that best covers muscles behind on volume ' +
-      '(`alternatives` ranks the rest), with each slot restated for today\'s readiness. It never ' +
-      'prescribes more than the plan. When readiness has no verdict, `prescription` is null; do not ' +
-      'fill it in. `restSuggested` is true on an easy day with nothing behind. `recoveryAware` is the ' +
-      'same answer with days since each muscle was trained factored in: prefer its `session` when ' +
-      'recent training matters; its sessions carry `recovery`, and `recoveryBlocked` ones rank last. ' +
-      'Admin only.',
+      'What to train today and how hard, answered two ways side by side. `volumeOnly` ranks plan ' +
+      'sessions by muscles behind on volume; `recoveryAware` also requires those muscles to have ' +
+      'recovered since last trained (its sessions carry `recovery`; `recoveryBlocked` ones rank last). ' +
+      'Each has `session`, `alternatives`, `prescription` (each slot restated for today\'s readiness, ' +
+      'never more than the plan; null when readiness has no verdict, do not fill it in), ' +
+      '`restSuggested` and `notes`. Top-level `notes` say when the two picks differ. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
