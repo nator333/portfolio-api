@@ -48,6 +48,8 @@ test('joins readiness, volume and plan into one prescription', async () => {
   expect(body.readiness).toEqual({ status: 'ready', date: '2026-09-26', verdict: 'push', reasons: ['r'] });
   expect(body.session.id).toBe('lower-a');
   expect(body.prescription).toHaveLength(5);
+  expect(body.volumeOnly.session.id).toBe('lower-a');
+  expect(body.volumeOnly.prescription).toHaveLength(5);
 });
 
 test('planId reaches the plan and volume reads alike', async () => {

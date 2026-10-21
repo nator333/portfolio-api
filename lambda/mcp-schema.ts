@@ -282,7 +282,8 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       '`recoveryBlocked` sessions rank last), with each slot restated for today\'s readiness. It never ' +
       'prescribes more than the plan. When readiness has no verdict, `prescription` is null; do not ' +
       'fill it in. `restSuggested` is true on an easy day with nothing behind, or when every session ' +
-      'is recovery-blocked. Admin only.',
+      'is recovery-blocked. `volumeOnly` is the same answer ranked on volume alone, ignoring ' +
+      'recovery, for comparison. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
