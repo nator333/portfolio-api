@@ -98,23 +98,26 @@ step 2 fixes it.
 the plan (`lambda/training-recommendation.ts`). It calls those handlers
 in-process rather than repeating their queries, so it cannot drift from them.
 
-* **Which session** comes from volume alone. Each plan session is scored by the
-  status of the muscles it trains (under +2, maintenance +1, in range 0,
-  over −1, each muscle counted once), with ties going to rotation order.
-* **`recoveryAware`** answers the same question with recovery factored in,
-  with its own `session`, `alternatives`, `prescription`, `restSuggested` and
-  `notes`. A session scores one point per muscle it trains that is below its
-  weekly target (under or maintenance) *and* recovered: last trained (from the
-  logged sets, looking back 14 days, in whole days in America/Toronto) at
-  least its minimum recovery ago — 2 days by default, 1 for shoulders, calves,
-  forearms and abs (`DEFAULT_RECOVERY`). A session with more than half its
-  planned sets (top of each range) on unrecovered muscles is `recoveryBlocked`
-  and ranks below every session that isn't; if all are blocked,
-  `restSuggested` is true. Ties go to the more rested session (average days
-  since trained, weighted by planned sets), then rotation order. Each session
-  carries `recovery` (`daysSinceByMuscle`, `unrecoveredSetShare`,
-  `recoveryBlocked`); its `notes` say when a session was moved down for
-  recovery, and the top-level `notes` say when its pick differs.
+* **Which session** is answered twice, side by side, each as `{ session,
+  alternatives, prescription, restSuggested, notes }`:
+  * **`volumeOnly`** ranks on volume alone. Each plan session is scored by the
+    status of the muscles it trains (under +2, maintenance +1, in range 0,
+    over −1, each muscle counted once), with ties going to rotation order.
+  * **`recoveryAware`** factors in recovery. A session scores one point per
+    muscle it trains that is below its weekly target (under or maintenance)
+    *and* recovered: last trained (from the logged sets, looking back 14 days,
+    in whole days in America/Toronto) at least its minimum recovery ago — 2
+    days by default, 1 for shoulders, calves, forearms and abs
+    (`DEFAULT_RECOVERY`). A session with more than half its planned sets (top
+    of each range) on unrecovered muscles is `recoveryBlocked` and ranks below
+    every session that isn't; if all are blocked, `restSuggested` is true.
+    Ties go to the more rested session (average days since trained, weighted
+    by planned sets), then rotation order. Each session carries `recovery`
+    (`daysSinceByMuscle`, `unrecoveredSetShare`, `recoveryBlocked`), and its
+    `notes` say when a session was moved down for recovery.
+
+  The top-level `notes` hold what applies to both: readiness, and a line when
+  the two rankings pick different sessions.
 * **How hard** comes from readiness alone. Each slot is restated for today:
   the top of its set range on a push day, as planned on a normal day, and about
   two-thirds of its minimum sets at one RPE lower on an easy day. A muscle

@@ -43,8 +43,8 @@ const slot = (over: Partial<PlanExercise> = {}): PlanExercise => ({
 describe('choosing the session', () => {
   test('the session training what is behind wins', () => {
     const result = recommend(ready('normal'), { Quads: 'under', Hamstrings: 'under' });
-    expect(result.session?.id).toBe('lower-a');
-    expect(result.session?.behind.map((m) => m.muscle)).toEqual(['Quads', 'Hamstrings']);
+    expect(result.volumeOnly.session?.id).toBe('lower-a');
+    expect(result.volumeOnly.session?.behind.map((m) => m.muscle)).toEqual(['Quads', 'Hamstrings']);
   });
 
   test('a muscle counts once per session, however many slots hit it', () => {
@@ -74,12 +74,12 @@ describe('choosing the session', () => {
 
   test('over-target muscles count against a session', () => {
     const result = recommend(ready('normal'), { Chest: 'over', Shoulders: 'over' });
-    expect(['upper-a', 'upper-b']).not.toContain(result.session?.id);
-    expect(result.session).not.toHaveProperty('recovery');
+    expect(['upper-a', 'upper-b']).not.toContain(result.volumeOnly.session?.id);
+    expect(result.volumeOnly.session).not.toHaveProperty('recovery');
   });
 
   test('with everything in range, the rotation order decides', () => {
-    expect(recommend(ready('normal')).session?.id).toBe('upper-a');
+    expect(recommend(ready('normal')).volumeOnly.session?.id).toBe('upper-a');
   });
 });
 
@@ -124,36 +124,36 @@ describe('prescribing a slot', () => {
 describe('the recommendation', () => {
   test('a ready verdict prescribes every slot of the chosen session, in order', () => {
     const result = recommend(ready('easy'), { Quads: 'under' });
-    expect(result.session?.id).toBe('lower-a');
-    expect(result.prescription?.map((p) => p.order)).toEqual([1, 2, 3, 4, 5]);
-    expect(result.prescription?.every((p) => p.action === 'reduced')).toBe(true);
-    expect(result.restSuggested).toBe(false);
+    expect(result.volumeOnly.session?.id).toBe('lower-a');
+    expect(result.volumeOnly.prescription?.map((p) => p.order)).toEqual([1, 2, 3, 4, 5]);
+    expect(result.volumeOnly.prescription?.every((p) => p.action === 'reduced')).toBe(true);
+    expect(result.volumeOnly.restSuggested).toBe(false);
   });
 
   test('without a verdict, the session is still chosen but intensity is withheld', () => {
     const notSynced: ReadinessSummary = { status: 'not_synced', date: '2026-09-26', verdict: null, reasons: ['…'] };
     const result = recommend(notSynced, { Quads: 'under' });
-    expect(result.session?.id).toBe('lower-a');
-    expect(result.prescription).toBeNull();
+    expect(result.volumeOnly.session?.id).toBe('lower-a');
+    expect(result.volumeOnly.prescription).toBeNull();
     expect(result.notes.join(' ')).toMatch(/no verdict yet/);
   });
 
   test('an unreadable readiness is said so, not treated as a verdict', () => {
     const unavailable: ReadinessSummary = { status: 'unavailable', date: null, verdict: null, reasons: ['not connected'] };
     const result = recommend(unavailable);
-    expect(result.prescription).toBeNull();
+    expect(result.volumeOnly.prescription).toBeNull();
     expect(result.notes.join(' ')).toMatch(/could not be read/);
   });
 
   test('an easy day with nothing behind suggests rest', () => {
     const result = recommend(ready('easy'));
-    expect(result.restSuggested).toBe(true);
+    expect(result.volumeOnly.restSuggested).toBe(true);
     // The session is still there for anyone who trains anyway.
-    expect(result.session).not.toBeNull();
+    expect(result.volumeOnly.session).not.toBeNull();
   });
 
   test('a push day with nothing behind is not a rest day', () => {
-    expect(recommend(ready('push')).restSuggested).toBe(false);
+    expect(recommend(ready('push')).volumeOnly.restSuggested).toBe(false);
   });
 });
 
@@ -275,8 +275,9 @@ describe('recovery', () => {
     expect(result.notes.some((n) => n.startsWith('Lower B moved down'))).toBe(false);
   });
 
-  test('2026-10-21: the top level is unchanged, with the recovery-aware pick pointed to', () => {
-    const result = recommendOct21();
+  test('2026-10-21: volumeOnly is the answer as it was, and the disagreement is noted', () => {
+    const full = recommendOct21();
+    const result = full.volumeOnly;
     // What the tool answered that morning, before recovery was considered.
     expect(result.session).toMatchObject({ id: 'upper-b', score: 5 });
     expect(result.session).not.toHaveProperty('recovery');
@@ -289,16 +290,17 @@ describe('recovery', () => {
       V11_SESSIONS.find((s) => s.id === 'upper-b')!.exercises.map((e) => e.muscle),
     );
     expect(result.restSuggested).toBe(false);
-    expect(result.notes).toEqual(['With recovery factored in, the pick is Lower B instead (see recoveryAware).']);
-    expect(result.recoveryAware.prescription?.map((p) => p.muscle)).toEqual(
+    expect(result.notes).toEqual([]);
+    expect(full.notes).toEqual(['The rankings disagree: volumeOnly picks Upper B, recoveryAware picks Lower B.']);
+    expect(full.recoveryAware.prescription?.map((p) => p.muscle)).toEqual(
       V11_SESSIONS.find((s) => s.id === 'lower-b')!.exercises.map((e) => e.muscle),
     );
   });
 
   test('when both picks agree, there is no note saying otherwise', () => {
     const result = recommendOct21({ trainingDays: [] });
-    expect(result.session?.id).toBe(result.recoveryAware.session?.id);
-    expect(result.notes.join(' ')).not.toMatch(/recoveryAware/);
+    expect(result.volumeOnly.session?.id).toBe(result.recoveryAware.session?.id);
+    expect(result.notes.join(' ')).not.toMatch(/disagree/);
   });
 
   test('a blocked session ranks below an unblocked one whatever its score', () => {
@@ -321,8 +323,8 @@ describe('recovery', () => {
     expect([result.session!, ...result.alternatives].every((s) => s.recovery.recoveryBlocked)).toBe(true);
     expect(result.restSuggested).toBe(true);
     expect(result.notes.join(' ')).toMatch(/rest today/);
-    // The top level does not know about recovery.
-    expect(full.restSuggested).toBe(false);
+    // The volume-only ranking does not know about recovery.
+    expect(full.volumeOnly.restSuggested).toBe(false);
   });
 
   test('on a tied score the more rested session wins', () => {
