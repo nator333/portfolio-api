@@ -48,8 +48,9 @@ test('joins readiness, volume and plan into one prescription', async () => {
   expect(body.readiness).toEqual({ status: 'ready', date: '2026-09-26', verdict: 'push', reasons: ['r'] });
   expect(body.session.id).toBe('lower-a');
   expect(body.prescription).toHaveLength(5);
-  expect(body.volumeOnly.session.id).toBe('lower-a');
-  expect(body.volumeOnly.prescription).toHaveLength(5);
+  expect(body.session).not.toHaveProperty('recovery');
+  expect(body.recoveryAware.session.id).toBe('lower-a');
+  expect(body.recoveryAware.prescription).toHaveLength(5);
 });
 
 test('planId reaches the plan and volume reads alike', async () => {
@@ -89,7 +90,7 @@ test('recent sets are read for the lookback ending today in the owner\'s zone, a
 
     const body = JSON.parse((await handler(event())).body);
     expect(mockSets.mock.calls[0][0].queryStringParameters).toEqual({ from: '2026-10-06', to: '2026-10-20' });
-    const lowerA = [body.session, ...body.alternatives].find((s: { id: string }) => s.id === 'lower-a');
+    const lowerA = [body.recoveryAware.session, ...body.recoveryAware.alternatives].find((s: { id: string }) => s.id === 'lower-a');
     expect(lowerA.recovery.daysSinceByMuscle.Quads).toBe(0);
     expect(lowerA.score).toBe(0);
   } finally {
