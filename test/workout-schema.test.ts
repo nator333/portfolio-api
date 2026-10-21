@@ -320,6 +320,7 @@ describe('muscleFor', () => {
     ['EZ Bar Reverse Grip Preacher Curl', 'Forearms'],
     // ...but reverse-grip work that isn't a curl keeps the group it always had.
     ['リバースグリップベント-オーバーロウズ', 'Lats'],
+    ['High low', 'Lats'],
     ['リバース グリップ トライセップス プッシュダウン', 'Triceps'],
     ['トライセップス プッシュダウン', 'Triceps'],
     ['ナロー グリップ ベンチプレス', 'Triceps'],

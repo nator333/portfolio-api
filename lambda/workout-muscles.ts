@@ -176,6 +176,8 @@ const RULES: readonly MuscleRule[] = [
       'プルオーバー', 'pullover', 'hyperextension', 'ハイパーエクステンション', 'ストレート アーム',
       'straight arm', 'ボディ ロウ', 'ボディー ロウ', 'body row', 'meadows', 'lever row', 't-バー',
       't-bar', 'エクステンション', 'extension',
+      // "High low" is a high-to-low cable row logged under its bare nickname.
+      'high low', 'high-low',
     ],
   },
   {
