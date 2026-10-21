@@ -43,8 +43,9 @@ import type { ReadinessStatus, Verdict } from './readiness';
 
 /**
  * How much each muscle status argues for training a session that hits it.
- * Orders the `behind` list; the score itself counts behind muscles (see
- * rankSessions).
+ * The volume-only score sums these (see rankSessionsByVolume); the
+ * recovery-aware score counts behind muscles instead and uses them only to
+ * order the `behind` list.
  */
 export const STATUS_WEIGHT: Readonly<Record<VolumeStatus, number>> = {
   under: 2,
@@ -146,6 +147,22 @@ export interface ReadinessSummary {
   readonly reasons: readonly string[];
 }
 
+/** A session as the volume-only ranking scores it: no recovery. */
+export type VolumeSessionScore = Omit<SessionScore, 'recovery'>;
+
+/**
+ * The recommendation as it was made before recovery was considered, kept
+ * alongside the recovery-aware one so the two can be compared: where they
+ * disagree, recovery is the reason.
+ */
+export interface VolumeOnlyRecommendation {
+  readonly session: VolumeSessionScore | null;
+  readonly alternatives: readonly VolumeSessionScore[];
+  readonly prescription: readonly SlotPrescription[] | null;
+  /** True on an easy day when this ranking's top session has nothing behind. */
+  readonly restSuggested: boolean;
+}
+
 export interface TrainingRecommendation {
   readonly readiness: ReadinessSummary;
   /** The session to run; null only when the plan has no sessions at all. */
@@ -164,6 +181,8 @@ export interface TrainingRecommendation {
    */
   readonly restSuggested: boolean;
   readonly notes: readonly string[];
+  /** The volume-only ranking, without recovery, for comparison. */
+  readonly volumeOnly: VolumeOnlyRecommendation;
 }
 
 export interface RecommendationInput {
@@ -306,6 +325,45 @@ export function rankSessions(
 }
 
 /**
+ * The ranking as it was before recovery: each session scored by the status
+ * of the muscles it trains (STATUS_WEIGHT: under +2, maintenance +1, in range
+ * 0, over -1), each muscle counted once however many slots hit it, ties going
+ * to rotation order, then bonus sessions.
+ */
+export function rankSessionsByVolume(
+  sessions: readonly PlanSession[],
+  statusOf: ReadonlyMap<MuscleGroup, VolumeStatus>,
+  rotation: readonly string[],
+  bonusSessions: readonly string[],
+): VolumeSessionScore[] {
+  const order = [...rotation, ...bonusSessions.filter((id) => !rotation.includes(id))];
+  const rank = (id: string) => {
+    const i = order.indexOf(id);
+    return i === -1 ? order.length : i;
+  };
+
+  return sessions
+    .map((session) => {
+      const muscles = [...new Set(session.exercises.map((e) => e.muscle))];
+      const judged = muscles
+        .map((muscle) => ({ muscle, status: statusOf.get(muscle) }))
+        .filter((m): m is { muscle: MuscleGroup; status: VolumeStatus } => m.status !== undefined);
+      const score = judged.reduce((total, m) => total + STATUS_WEIGHT[m.status], 0);
+      const behind = judged
+        .filter((m) => STATUS_WEIGHT[m.status] > 0)
+        .sort((a, b) => STATUS_WEIGHT[b.status] - STATUS_WEIGHT[a.status]);
+      return {
+        id: session.id,
+        name: session.name,
+        score,
+        behind,
+        bonus: bonusSessions.includes(session.id) && !rotation.includes(session.id),
+      };
+    })
+    .sort((a, b) => b.score - a.score || rank(a.id) - rank(b.id));
+}
+
+/**
  * One note per session the recovery rules moved down: compared with the same
  * ranking made with every muscle treated as rested, any session now further
  * down lost its place to recovery and nothing else.
@@ -402,11 +460,41 @@ export function recommendTraining(input: RecommendationInput): TrainingRecommend
     config,
   );
 
+  const verdict = input.readiness.status === 'ready' ? input.readiness.verdict : null;
+  const prescribe = (id: string) => {
+    const session = input.sessions.find((s) => s.id === id)!;
+    return verdict
+      ? [...session.exercises]
+          .sort((a, b) => a.order - b.order)
+          .map((slot) => prescribeSlot(slot, verdict, statusOf.get(slot.muscle) ?? null))
+      : null;
+  };
+
+  const [volumeBest, ...volumeAlternatives] = rankSessionsByVolume(
+    input.sessions,
+    statusOf,
+    input.rotation,
+    input.bonusSessions,
+  );
+  const volumeOnly: VolumeOnlyRecommendation = {
+    session: volumeBest ?? null,
+    alternatives: volumeAlternatives,
+    prescription: volumeBest ? prescribe(volumeBest.id) : null,
+    restSuggested: verdict === 'easy' && volumeBest !== undefined && volumeBest.score <= 0,
+  };
+
   if (!best) {
-    return { readiness: input.readiness, session: null, alternatives: [], prescription: null, restSuggested: false, notes: ['The plan has no sessions.'] };
+    return {
+      readiness: input.readiness,
+      session: null,
+      alternatives: [],
+      prescription: null,
+      restSuggested: false,
+      notes: ['The plan has no sessions.'],
+      volumeOnly,
+    };
   }
 
-  const verdict = input.readiness.status === 'ready' ? input.readiness.verdict : null;
   if (!verdict) {
     notes.push(
       input.readiness.status === 'unavailable'
@@ -427,12 +515,19 @@ export function recommendTraining(input: RecommendationInput): TrainingRecommend
     notes.push('Easy day with nothing behind: a rest day costs no progress. If you train anyway, run the session below.');
   }
 
-  const session = input.sessions.find((s) => s.id === best.id)!;
-  const prescription = verdict
-    ? [...session.exercises]
-        .sort((a, b) => a.order - b.order)
-        .map((slot) => prescribeSlot(slot, verdict, statusOf.get(slot.muscle) ?? null))
-    : null;
+  if (volumeBest && volumeBest.id !== best.id) {
+    notes.push(
+      `The volume-only ranking, which ignores recovery, would pick ${volumeBest.name} (see volumeOnly).`,
+    );
+  }
 
-  return { readiness: input.readiness, session: best, alternatives, prescription, restSuggested, notes };
+  return {
+    readiness: input.readiness,
+    session: best,
+    alternatives,
+    prescription: prescribe(best.id),
+    restSuggested,
+    notes,
+    volumeOnly,
+  };
 }

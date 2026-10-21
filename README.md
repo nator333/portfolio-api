@@ -110,6 +110,11 @@ in-process rather than repeating their queries, so it cannot drift from them.
   sets), then rotation order. Each session carries `recovery`
   (`daysSinceByMuscle`, `unrecoveredSetShare`, `recoveryBlocked`), and `notes`
   says when a session was moved down for recovery.
+* **`volumeOnly`** is the ranking as it was before recovery was considered,
+  returned alongside for comparison: `session`, `alternatives`, `prescription`
+  and `restSuggested`, scored by muscle status alone (under +2, maintenance +1,
+  in range 0, over −1, each muscle counted once) with ties going to rotation
+  order. `notes` says when it picks a different session.
 * **How hard** comes from readiness alone. Each slot is restated for today:
   the top of its set range on a push day, as planned on a normal day, and about
   two-thirds of its minimum sets at one RPE lower on an easy day. A muscle

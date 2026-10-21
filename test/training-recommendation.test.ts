@@ -72,6 +72,12 @@ describe('choosing the session', () => {
     expect(ranked.find((s) => s.id === 'lower-a')?.score).toBe(2);
   });
 
+  test('the volume-only ranking still weighs status, and over-target muscles count against a session', () => {
+    const result = recommend(ready('normal'), { Chest: 'over', Shoulders: 'over' });
+    expect(['upper-a', 'upper-b']).not.toContain(result.volumeOnly.session?.id);
+    expect(result.volumeOnly.session).not.toHaveProperty('recovery');
+  });
+
   test('with everything in range, the rotation order decides', () => {
     expect(recommend(ready('normal')).session?.id).toBe('upper-a');
   });
@@ -267,6 +273,28 @@ describe('recovery', () => {
     expect(result.notes.some((n) => n.startsWith('Upper B moved down from 1st to 3rd for recovery (recovery-blocked'))).toBe(true);
     expect(result.notes.some((n) => n.startsWith('Upper A moved down'))).toBe(true);
     expect(result.notes.some((n) => n.startsWith('Lower B moved down'))).toBe(false);
+  });
+
+  test('2026-10-21: the volume-only ranking is returned alongside, as it was', () => {
+    const result = recommendOct21();
+    // What the tool answered that morning, before recovery was considered.
+    expect(result.volumeOnly.session).toMatchObject({ id: 'upper-b', score: 5 });
+    expect(result.volumeOnly.alternatives.map((s) => [s.id, s.score])).toEqual([
+      ['lower-b', 5],
+      ['upper-a', 4],
+      ['lower-a', 4],
+    ]);
+    expect(result.volumeOnly.prescription?.map((p) => p.muscle)).toEqual(
+      V11_SESSIONS.find((s) => s.id === 'upper-b')!.exercises.map((e) => e.muscle),
+    );
+    expect(result.volumeOnly.restSuggested).toBe(false);
+    expect(result.notes).toContain('The volume-only ranking, which ignores recovery, would pick Upper B (see volumeOnly).');
+  });
+
+  test('when both rankings agree, there is no note saying otherwise', () => {
+    const result = recommendOct21({ trainingDays: [] });
+    expect(result.session?.id).toBe(result.volumeOnly.session?.id);
+    expect(result.notes.join(' ')).not.toMatch(/volume-only/);
   });
 
   test('a blocked session ranks below an unblocked one whatever its score', () => {
