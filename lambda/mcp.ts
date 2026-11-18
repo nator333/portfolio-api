@@ -31,6 +31,7 @@ import {
   JSON_RPC,
   MCP_PROTOCOL_VERSION,
   MCP_SERVER_INFO,
+  MCP_INSTRUCTIONS,
   TOOL_SPECS,
   TOOL_SPECS_BY_NAME,
   CONTENT_DOCS,
@@ -38,6 +39,8 @@ import {
 } from './mcp-schema';
 import { corsHeaders } from './cors';
 import { etag, versionOf } from './content-version';
+import { toolError, toolErrorFromResponse, type ToolError } from './tool-error';
+import { randomUUID } from 'crypto';
 import { challengeHeader } from './mcp-oauth';
 
 /**
@@ -423,18 +426,21 @@ const rpcError = (id: Id, code: number, message: string, data?: unknown) => ({
   error: data === undefined ? { code, message } : { code, message, data },
 });
 
-/** MCP tool result content, framing the delegated handler's HTTP outcome. */
+/**
+ * MCP tool result content, framing the delegated handler's HTTP outcome. A
+ * success is the handler's body. A failure is one ToolError (tool-error.ts),
+ * both as `structuredContent` for clients that read it and as the text, since
+ * the HTTP status itself never reaches the client.
+ */
 function toolResult(handlerResult: APIGatewayProxyResult) {
   const ok = handlerResult.statusCode >= 200 && handlerResult.statusCode < 300;
-  const body = handlerResult.body ?? '';
-  return {
-    content: [{ type: 'text', text: body }],
-    isError: !ok,
-  };
+  if (ok) return { content: [{ type: 'text', text: handlerResult.body ?? '' }], isError: false };
+  return errorToolResult(toolErrorFromResponse(handlerResult.statusCode, handlerResult.body));
 }
 
-const errorToolResult = (message: string) => ({
-  content: [{ type: 'text', text: message }],
+const errorToolResult = (error: ToolError) => ({
+  content: [{ type: 'text', text: JSON.stringify({ error }) }],
+  structuredContent: { error },
   isError: true,
 });
 
@@ -457,6 +463,7 @@ async function handleRpc(
           protocolVersion: typeof requested === 'string' ? requested : MCP_PROTOCOL_VERSION,
           capabilities: { tools: { listChanged: false } },
           serverInfo: MCP_SERVER_INFO,
+          instructions: MCP_INSTRUCTIONS,
         }),
       };
     }
@@ -515,8 +522,20 @@ async function handleRpc(
         const result = await invoke(args, { admin });
         return { response: rpcResult(id, toolResult(result)) };
       } catch (error) {
-        console.error(`MCP tool ${name} failed`, error);
-        return { response: rpcResult(id, errorToolResult('The tool failed to execute, please try again')) };
+        // An exception is a bug or an outage, not something the caller can fix
+        // by retrying the same call; the id ties the answer to the log line.
+        const incident = randomUUID();
+        console.error(`MCP tool ${name} failed`, { incident }, error);
+        return {
+          response: rpcResult(
+            id,
+            errorToolResult(
+              toolError('internal', `The ${name} tool failed unexpectedly (incident ${incident}); nothing to fix in the call.`, {
+                fix: 'Tell the owner, quoting the incident id; it is in the server logs.',
+              }),
+            ),
+          ),
+        };
       }
     }
 

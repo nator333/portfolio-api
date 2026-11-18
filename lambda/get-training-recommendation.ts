@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { handler as getReadiness } from './get-readiness';
+import { toolErrorFromResponse } from './tool-error';
 import { handler as getMuscleVolumeStatus } from './get-muscle-volume-status';
 import { handler as getWorkoutPlan } from './get-workout-plan';
 import { handler as getWorkoutSets } from './get-workout-sets';
@@ -112,7 +113,10 @@ export const handler = async (
         verdict: readinessBody.verdict ?? null,
         reasons: readinessBody.reasons ?? [],
       }
-    : { status: 'unavailable', date: null, verdict: null, reasons: [readinessBody.message ?? `HTTP ${readiness.statusCode}`] };
+    : (() => {
+        const error = toolErrorFromResponse(readiness.statusCode, readiness.body);
+        return { status: 'unavailable' as const, date: null, verdict: null, reasons: [error.message], error };
+      })();
 
   const recommendation = recommendTraining({
     readiness: readinessSummary,

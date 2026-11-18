@@ -71,6 +71,13 @@ test('a readiness error still yields the session, with intensity withheld', asyn
     date: null,
     verdict: null,
     reasons: ['Secret "google-health-oauth" does not exist.'],
+    // The shared error shape, so "reconnect Google" is a code, not a sentence.
+    error: {
+      code: 'upstream_auth',
+      message: 'Secret "google-health-oauth" does not exist.',
+      retry: 'owner_action',
+      fix: expect.stringContaining('npm run health:auth'),
+    },
   });
   expect(body.volumeOnly.session.id).toBe('lower-a');
   expect(body.volumeOnly.prescription).toBeNull();

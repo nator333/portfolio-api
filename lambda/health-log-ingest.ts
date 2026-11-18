@@ -144,7 +144,7 @@ async function measure(): Promise<IngestSummary> {
   } catch (error) {
     // Nothing measured is touched; each unsettled day says the read failed.
     const fetchError = toFetchError(error, 'nightly');
-    console.error('Google Health read failed', fetchError.kind, error);
+    console.error('Google Health read failed', fetchError.error.code, error);
     await recordFetchError(tableName, dates, fetchError);
     throw error;
   }
