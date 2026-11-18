@@ -21,11 +21,29 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
 * **Admin tools** — `get_workout_sets` (the private per-set training log),
   `get_exercise_history`, `list_exercises`, `get_workout_plan`,
   `get_muscle_volume_status`, `get_readiness`, `get_training_recommendation`,
-  `get_weight_trend`, `list_reflections`, and every write: `update_content`,
-  `revise_workout_plan` (edits, or a whole new version via `plan`),
-  `add_reflection`, `update_reflection`. Each is refused with `401` and a
+  `get_weight_trend`, `list_reflections`, `list_health_log`, and every write:
+  `replace_content`, `revise_workout_plan` (edits, or a whole new version via
+  `plan`), `add_reflection`, `update_reflection`, `add_health_note`,
+  `update_health_log`. Each is refused with `401` and a
   `WWW-Authenticate` challenge unless the request carries an access token issued
   by this user pool, for this resource, bearing the `mcp/admin` scope.
+* **Write verbs mean one thing each** (`lambda/mcp-schema.ts`, checked by a
+  test against each tool's annotations):
+  * `add_*` creates or appends, never changing what exists.
+  * `update_*` is a partial update with JSON Merge Patch semantics: an omitted
+    field is unchanged, `null` clears it, objects merge, arrays and strings are
+    replaced whole. The record must already exist.
+  * `replace_*` swaps a whole document (annotated destructive), and only if it
+    is unchanged since the `version` the caller read.
+  * `revise_*` publishes a new version; stored versions are never modified.
+* **Site documents are versioned.** The four content getters return an `ETag`
+  and the writers honour `If-Match`, refusing a stale write with `412`. The
+  version is stored beside each document, never in it. The front-end's editors
+  save without `If-Match`, as before, and each save changes the version.
+  `get_content` returns `{doc, version, document}` and `replace_content`
+  requires that `version`, so Claude cannot overwrite an edit made after it
+  read. With an admin token, `get_content('blog')` includes drafts, so a
+  read-modify-replace round-trips them.
 * **Not exposed** — the activity feed and the media catalogue. The site serves
   them over REST; they were dropped from MCP as unused, since every tool costs
   context in every conversation.
@@ -86,11 +104,60 @@ Connecting it is a one-time step outside the deploy:
 
    This opens Google's consent flow on a loopback redirect and stores
    `{client_id, client_secret, refresh_token}` in the Secrets Manager secret
-   `google-health-oauth` (us-west-1). Only the MCP Lambda can read it.
+   `google-health-oauth` (us-west-1). Only the MCP Lambda and the scheduled
+   ingests (bodyweight, health log) can read it.
 
 While the consent screen stays in *Testing*, Google expires the refresh token
 after 7 days. The tool then reports that the grant was refused, and re-running
 step 2 fixes it.
+
+### Daily health log
+
+A private record per day (`lambda/health-log-schema.ts`), with two writers that
+cannot touch each other's half:
+
+* **`measured`** — written by `lambda/health-log-ingest.ts`, run twice a day
+  by EventBridge Scheduler in **America/Toronto** time (time-zone aware, so the
+  times hold across DST). At **00:05** it opens today with an `awaiting`
+  placeholder and no Google read, so daytime notes have a record to land on,
+  even if the Google grant has lapsed. Today's readiness is then recorded by
+  whichever comes first: the day's **first note** (after saving
+  the notes, the handler reads Google itself if the day has no `ready` reading;
+  a Google failure is reported in `readinessFetch` and the notes still save),
+  or the **10:00** run. The 10:00 run is idempotent: it checks the day first
+  and does nothing, with no Google call, if it is already `ready`, and both
+  writers only write while the day is not `ready`. At **22:00** it measures. Each run reads Google Health once and judges every
+  day of the last 28 with the same arithmetic as `get_readiness`: sleep, HRV and
+  resting heart rate with their baselines, the verdict, and its reasons. Unlike
+  `get_readiness` this can be scheduled: it records a day after the fact, when
+  that morning's sync has long happened. Because every run covers the whole
+  window, the first run is the 28-day backfill and a late sync or failed run is
+  picked up the next night. A day is written even with no watch data
+  (`not_synced`), so it can still be annotated. Once all three signals are in
+  and judged it is `settled`, and never rewritten.
+* **Notes** — written by Claude from conversation. `add_health_note` appends
+  one timestamped entry (`notes` is an object keyed by time-sortable ids) and
+  adds any `tags` to the day's tag set, in one atomic write, so nothing needs
+  reading first and no earlier note can be lost. `update_health_log` is a merge
+  patch over the 1–5 `energy` / `mood` / `stress` / `soreness`, the `tags`, and
+  `notes` by id (`{id: {text}}` rewrites an entry, `{id: null}` removes it).
+  Both can only touch a day the scheduler has created (`attribute_exists`
+  condition) and only those fields; neither can create a day or change a
+  measured value. `list_health_log` reads it back.
+
+**An empty night and a failed read are kept apart.** A read that succeeds with
+no data is an answer and is recorded: `not_synced` while the day is still
+going, `no_data` once it is over (watch off or flat), with each missing
+signal's newest date, so a run of days missing since the same date shows the
+gap. A read that fails (`auth`, `api`, `network`) never changes `measured`; it
+is recorded beside it as `fetchError` and cleared by the next successful read.
+Data Google returned but this code could not parse is a failure (`parse`), not
+an empty night.
+
+The table (`HealthLogTable`) is retained, has point-in-time recovery, and is
+granted to nothing public: the job has `GetItem` and `UpdateItem`, the MCP server
+`Query` and `UpdateItem`. Neither can delete. To backfill without waiting for
+22:00, invoke `HealthLogIngestFunction` by hand after deploying.
 
 ### What to train today
 

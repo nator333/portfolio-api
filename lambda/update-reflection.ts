@@ -12,7 +12,9 @@ import { corsHeaders } from './cors';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 /**
- * Correct an existing reflection's body and/or themes. Admin only.
+ * Correct an existing reflection's body and/or themes. Admin only. Merge-patch
+ * semantics, like every update_ tool: an omitted field is unchanged, and
+ * `themes: null` clears the tags.
  *
  * For fixing a note, not for rewriting history: the type and date are the
  * note's key and stay as they were, and the update is guarded so a wrong id is
@@ -63,7 +65,8 @@ export const handler = async (
   }
   if (themes !== undefined) {
     names['#themes'] = 'themes';
-    values[':themes'] = themes;
+    // Stored as a list, never absent: clearing is the empty list.
+    values[':themes'] = themes ?? [];
     sets.push('#themes = :themes');
   }
 

@@ -3,13 +3,14 @@ import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { HOME_TABLE_ITEM_ID } from './home-schema';
 import { corsHeaders } from './cors';
+import { INITIAL_VERSION, etag, splitVersion } from './content-version';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
-  const headers = { 'Content-Type': 'application/json', ...corsHeaders(event) };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...corsHeaders(event) };
 
   const tableName = process.env.CV_TABLE_NAME;
   if (!tableName) {
@@ -23,10 +24,13 @@ export const handler = async (
   // null rather than 404 when unset, so the front can fall back to its bundled
   // mottoes — distinct from a saved empty list, which means "show none".
   if (!result.Item) {
+    headers.ETag = etag(INITIAL_VERSION);
     return { statusCode: 200, headers, body: JSON.stringify({ mottoes: null }) };
   }
 
-  const { id, ...homeData } = result.Item;
+  // The version travels as the ETag, never in the document (see content-version.ts).
+  const { version, rest: homeData } = splitVersion(result.Item);
+  headers.ETag = etag(version);
 
   return { statusCode: 200, headers, body: JSON.stringify(homeData) };
 };

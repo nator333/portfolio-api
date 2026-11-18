@@ -3,7 +3,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 
 import { handler as getCv } from './get-cv';
 import { handler as getProjects } from './get-projects';
-import { handler as getBlog } from './get-blog';
+import { blogReader } from './get-blog';
 import { handler as getHome } from './get-home';
 import { handler as getWorkout } from './get-workout';
 import { handler as getWorkoutSets } from './get-workout-sets';
@@ -23,6 +23,9 @@ import { handler as reviseWorkoutPlan } from './revise-workout-plan';
 import { handler as listReflections } from './list-reflections';
 import { handler as addReflection } from './add-reflection';
 import { handler as updateReflection } from './update-reflection';
+import { handler as listHealthLog } from './list-health-log';
+import { handler as updateHealthLog } from './update-health-log';
+import { handler as addHealthNote } from './add-health-note';
 
 import {
   JSON_RPC,
@@ -34,6 +37,7 @@ import {
   jsonRpcRequestSchema,
 } from './mcp-schema';
 import { corsHeaders } from './cors';
+import { etag, versionOf } from './content-version';
 import { challengeHeader } from './mcp-oauth';
 
 /**
@@ -69,25 +73,35 @@ function proxyEvent(opts: {
   body?: unknown;
   query?: Record<string, string | undefined>;
   path?: Record<string, string>;
+  headers?: Record<string, string>;
 }): APIGatewayProxyEvent {
   return {
     body: opts.body === undefined ? null : JSON.stringify(opts.body),
     queryStringParameters: opts.query ?? null,
     pathParameters: opts.path ?? null,
-    // Empty headers → the delegated handler's corsHeaders() returns {}; we only
-    // read its statusCode and body, and re-frame CORS on the MCP response itself.
-    headers: {},
+    // No Origin → the delegated handler's corsHeaders() returns {}; we only
+    // read its statusCode, body and ETag, and re-frame CORS on the MCP response.
+    headers: opts.headers ?? {},
   } as unknown as APIGatewayProxyEvent;
+}
+
+/** Who is calling: `admin` is a verified admin token, on any tool. */
+interface CallContext {
+  admin: boolean;
 }
 
 /**
  * Maps each advertised tool to the underlying handler and the event shape it
  * expects. `args` is the client-supplied `arguments` object from `tools/call`.
  */
-const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGatewayProxyResult>> = {
-  get_content: (args) => {
-    const read = CONTENT_READERS.get(String(args.doc));
-    return read ? read(proxyEvent({})) : Promise.resolve(unknownDoc(args.doc));
+const INVOKERS: Record<
+  string,
+  (args: Record<string, unknown>, ctx: CallContext) => Promise<APIGatewayProxyResult>
+> = {
+  get_content: async (args, ctx) => {
+    const read = contentReader(String(args.doc), ctx);
+    if (!read) return unknownDoc(args.doc);
+    return withVersion(String(args.doc), await read(proxyEvent({})));
   },
   get_workout: (args) => getWorkout(proxyEvent({ query: dateRange(args) })),
   get_workout_sets: (args) => getWorkoutSets(proxyEvent({ query: setsRange(args) })),
@@ -110,27 +124,61 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
         },
       }),
     ),
-  update_content: (args) => {
+  replace_content: async (args) => {
     const write = CONTENT_WRITERS.get(String(args.doc));
-    return write ? write(proxyEvent({ body: args.document })) : Promise.resolve(unknownDoc(args.doc));
+    if (!write) return unknownDoc(args.doc);
+    if (typeof args.version !== 'string' || args.version === '') {
+      return badRequest('`version` is required: pass the one get_content returned with the document');
+    }
+    // If-Match makes the writer refuse (412) a document changed since then.
+    const result = await write(proxyEvent({ body: args.document, headers: { 'If-Match': etag(args.version) } }));
+    return withVersion(String(args.doc), result);
   },
   revise_workout_plan: (args) => revisePlan(args),
   list_reflections: (args) => listReflections(proxyEvent({ query: reflectionQuery(args) })),
   add_reflection: (args) => addReflection(proxyEvent({ body: args })),
   update_reflection: (args) => updateReflection(proxyEvent({ body: args })),
+  list_health_log: (args) => listHealthLog(proxyEvent({ query: dateRange(args) })),
+  add_health_note: (args) => addHealthNote(proxyEvent({ body: args })),
+  update_health_log: (args) => updateHealthLog(proxyEvent({ body: args })),
 };
 
 /**
- * get_content and update_content route on `doc` to the handler each document
+ * get_content and replace_content route on `doc` to the handler each document
  * always had. A Map rather than an object literal, so a `doc` such as
  * "constructor" finds nothing instead of a prototype member.
  */
 const CONTENT_READERS = new Map<string, ProxyHandler>([
   ['cv', getCv],
   ['projects', getProjects],
-  ['blog', getBlog],
   ['home', getHome],
 ]);
+
+/**
+ * The blog is read with its drafts for the verified admin and without them for
+ * anyone else. That is what makes replace_content safe on the blog: a document
+ * read without drafts and written back would delete every draft.
+ */
+const publicBlog = blogReader(false);
+const adminBlog = blogReader(true);
+
+function contentReader(doc: string, ctx: CallContext): ProxyHandler | undefined {
+  if (doc === 'blog') return ctx.admin ? adminBlog : publicBlog;
+  return CONTENT_READERS.get(doc);
+}
+
+/**
+ * A content handler's answer, reframed as `{doc, version, document}`: the
+ * version (its ETag) is what replace_content must send back. Errors pass
+ * through unchanged.
+ */
+function withVersion(doc: string, result: APIGatewayProxyResult): APIGatewayProxyResult {
+  if (result.statusCode < 200 || result.statusCode >= 300) return result;
+  return {
+    ...result,
+    body: JSON.stringify({ doc, version: versionOf(result) ?? null, document: JSON.parse(result.body || 'null') }),
+  };
+}
 
 const CONTENT_WRITERS = new Map<string, ProxyHandler>([
   ['cv', updateCv],
@@ -442,6 +490,7 @@ async function handleRpc(
         return { response: rpcError(id, JSON_RPC.INVALID_PARAMS, `Unknown tool: ${name || '(none)'}`) };
       }
 
+      let admin = false;
       if (spec.requiresAuth) {
         const auth = await verifyAdmin(headers);
         if (!auth.ok) {
@@ -450,6 +499,11 @@ async function handleRpc(
           // discover, so the OAuth flow would never begin.
           return { unauthorized: { error: auth.error, reason: auth.reason } };
         }
+        admin = true;
+      } else if (bearerToken(headers)) {
+        // A public tool still answers anyone, but a verified admin may see more
+        // (the blog's drafts). An invalid token here just means "not admin".
+        admin = (await verifyAdmin(headers)).ok;
       }
 
       const args =
@@ -458,7 +512,7 @@ async function handleRpc(
           : {};
 
       try {
-        const result = await invoke(args);
+        const result = await invoke(args, { admin });
         return { response: rpcResult(id, toolResult(result)) };
       } catch (error) {
         console.error(`MCP tool ${name} failed`, error);
