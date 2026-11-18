@@ -6,10 +6,10 @@ import {
   HEALTH_NOTE_FIELDS,
   toHealthLogEntry,
   updateHealthLogSchema,
+  type FetchErrorKind,
   type HealthLogItem,
 } from './health-log-schema';
-import { hasReadiness, recordReadiness } from './health-log-measure';
-import { GoogleHealthError } from './google-health';
+import { ReadinessFetchFailure, hasReadiness, recordReadiness, toFetchError } from './health-log-measure';
 import { isValidTimeZone } from './readiness';
 import { corsHeaders } from './cors';
 
@@ -100,10 +100,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 };
 
+/**
+ * What happened when this update tried to record readiness. The point is to
+ * keep "Google had nothing" and "Google could not be asked" apart:
+ *
+ *   recorded  Google answered. `status` is what it said: "ready" with values,
+ *             or "not_synced" / "no_data" when the night is empty (watch off,
+ *             flat, or not synced yet), or "pending" while it processes.
+ *   failed    Google could not be read. `kind` says why; the day's measured
+ *             values are unchanged and `fetchError` is set on it.
+ */
 type ReadinessFetch =
   | { attempted: false; reason: 'already_ready' }
-  | { attempted: true; outcome: 'recorded' | 'already_ready' }
-  | { attempted: true; outcome: 'failed'; message: string };
+  | { attempted: true; outcome: 'already_ready' }
+  | { attempted: true; outcome: 'recorded'; status: string }
+  | { attempted: true; outcome: 'failed'; kind: FetchErrorKind; message: string };
 
 /** Try to record the day's readiness if it has none. Never throws. */
 async function fillReadiness(
@@ -117,18 +128,27 @@ async function fillReadiness(
   if (!secretName || !timeZone || !isValidTimeZone(timeZone)) {
     return {
       item,
-      readinessFetch: { attempted: true, outcome: 'failed', message: 'Google Health is not configured on this endpoint' },
+      readinessFetch: {
+        attempted: true,
+        outcome: 'failed',
+        kind: 'unknown',
+        message: 'Google Health is not configured on this endpoint',
+      },
     };
   }
   try {
-    const stored = await recordReadiness(tableName, secretName, timeZone, item.date);
+    const stored = await recordReadiness(tableName, secretName, timeZone, item.date, 'update');
     // null: something else recorded a ready reading first; the notes still stand.
     return stored
-      ? { item: stored, readinessFetch: { attempted: true, outcome: 'recorded' } }
+      ? { item: stored, readinessFetch: { attempted: true, outcome: 'recorded', status: stored.measured.status } }
       : { item, readinessFetch: { attempted: true, outcome: 'already_ready' } };
   } catch (error) {
-    const message = error instanceof GoogleHealthError ? error.message : 'Google Health could not be read';
-    console.error('Readiness fetch on health log update failed', error);
-    return { item, readinessFetch: { attempted: true, outcome: 'failed', message } };
+    const fetchError = error instanceof ReadinessFetchFailure ? error.fetchError : toFetchError(error, 'update');
+    if (!(error instanceof ReadinessFetchFailure)) console.error('Readiness fetch on health log update failed', error);
+    return {
+      // recordReadiness has stored the same fetchError on the day.
+      item: { ...item, fetchError },
+      readinessFetch: { attempted: true, outcome: 'failed', kind: fetchError.kind, message: fetchError.message },
+    };
   }
 }

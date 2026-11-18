@@ -123,6 +123,15 @@ cannot touch each other's half:
   condition) and only those fields; it cannot create a day or change a measured
   value. `list_health_log` reads it back.
 
+**An empty night and a failed read are kept apart.** A read that succeeds with
+no data is an answer and is recorded: `not_synced` while the day is still
+going, `no_data` once it is over (watch off or flat), with each missing
+signal's newest date, so a run of days missing since the same date shows the
+gap. A read that fails (`auth`, `api`, `network`) never changes `measured`; it
+is recorded beside it as `fetchError` and cleared by the next successful read.
+Data Google returned but this code could not parse is a failure (`parse`), not
+an empty night.
+
 The table (`HealthLogTable`) is retained, has point-in-time recovery, and is
 granted to nothing public: the job has `GetItem` and `UpdateItem`, the MCP server
 `Query` and `UpdateItem`. Neither can delete. To backfill without waiting for

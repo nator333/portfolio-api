@@ -16,7 +16,8 @@ import { handler as ingest } from '../lambda/health-log-ingest';
 import { handler as updateHealthLog } from '../lambda/update-health-log';
 import { handler as listHealthLog } from '../lambda/list-health-log';
 import { LOG_DAYS, awaitingDay, logDates, measureDay, updateHealthLogSchema } from '../lambda/health-log-schema';
-import { resetGoogleHealthCache } from '../lambda/google-health';
+import { GoogleHealthError, resetGoogleHealthCache } from '../lambda/google-health';
+import { UnreadableHealthDataError, classifyFetchError } from '../lambda/health-log-measure';
 import type { DailyValue, SleepSession } from '../lambda/readiness';
 
 const TABLE = 'health-log-test';
@@ -72,7 +73,7 @@ describe('measuring a day', () => {
       sleeps: [night(date, 450)],
       hrv: daily([...baseline, date], 50),
       restingHeartRate: daily([...baseline, date], 55),
-    });
+    }, { dayIsOver: false });
 
     expect(measured.status).toBe('ready');
     expect(measured.verdict).toBe('push');
@@ -89,21 +90,40 @@ describe('measuring a day', () => {
       sleeps: [night(date, 450)],
       hrv: daily([...baseline, date], 50),
       restingHeartRate: daily(baseline, 55),
-    });
+    }, { dayIsOver: false });
 
     expect(measured.status).toBe('ready');
-    expect(measured.missing).toEqual(['restingHeartRate']);
+    expect(measured.missing).toEqual([{ signal: 'restingHeartRate', latestDate: '2026-11-09' }]);
     expect(measured.settled).toBe(false);
   });
 
-  it('should still describe a day with no watch data, without the "ask again" prompts', () => {
-    const measured = measureDay({ date, sleeps: [], hrv: daily(baseline, 50), restingHeartRate: [] });
+  it('should call an empty night not_synced while the day is still going', () => {
+    const measured = measureDay({ date, sleeps: [], hrv: daily(baseline, 50), restingHeartRate: [] }, { dayIsOver: false });
+    expect(measured.status).toBe('not_synced');
+  });
+
+  it('should call an empty night no_data once the day is over, and say since when', () => {
+    // The watch was last worn on the 6th: three nights, HRV and RHR stop there.
+    const worn = baseline.filter((d) => d <= '2026-11-06');
+    const measured = measureDay(
+      {
+        date,
+        sleeps: worn.map((d) => night(d, 420)),
+        hrv: daily(worn, 50),
+        restingHeartRate: daily(worn, 55),
+      },
+      { dayIsOver: true },
+    );
 
     expect(measured).toMatchObject({
-      status: 'not_synced',
+      status: 'no_data',
       verdict: null,
       reasons: [],
-      missing: ['sleep', 'hrv', 'restingHeartRate'],
+      missing: [
+        { signal: 'sleep', latestDate: '2026-11-06' },
+        { signal: 'hrv', latestDate: '2026-11-06' },
+        { signal: 'restingHeartRate', latestDate: '2026-11-06' },
+      ],
       sleep: null,
       hrv: null,
       restingHeartRate: null,
@@ -116,6 +136,28 @@ describe('measuring a day', () => {
     expect(dates).toHaveLength(LOG_DAYS);
     expect(dates[0]).toBe('2026-10-22');
     expect(dates[dates.length - 1]).toBe('2026-11-18');
+  });
+
+  it('should not report a later night as the latest when judging an earlier day', () => {
+    // Read at 22:00 on the 18th: the window holds the 18th's night too.
+    const measured = measureDay(
+      { date, sleeps: [night('2026-11-08', 420), night('2026-11-18', 420)], hrv: [], restingHeartRate: [] },
+      { dayIsOver: true },
+    );
+    expect(measured.missing[0]).toEqual({ signal: 'sleep', latestDate: '2026-11-08' });
+  });
+});
+
+describe('telling a failed read from an empty one', () => {
+  it.each([
+    ['a refused grant', new GoogleHealthError('refused', 'auth', 401), 'auth'],
+    ['a Google error status', new GoogleHealthError('boom', 'api', 503), 'api'],
+    ['a timeout', Object.assign(new Error('timed out'), { name: 'TimeoutError' }), 'network'],
+    ['a dropped connection', new TypeError('fetch failed'), 'network'],
+    ['data that could not be read', new UnreadableHealthDataError('sleep', 3), 'parse'],
+    ['anything else', new Error('???'), 'unknown'],
+  ])('should classify %s', (_label, error, kind) => {
+    expect(classifyFetchError(error).kind).toBe(kind);
   });
 });
 
@@ -181,7 +223,7 @@ describe('the nightly ingest', () => {
 
     const todayWrite = commands[commands.length - 1];
     expect(todayWrite.ExpressionAttributeValues[':measured']).toMatchObject({ status: 'ready', settled: true });
-    expect(commands[0].ExpressionAttributeValues[':measured']).toMatchObject({ status: 'not_synced', settled: false });
+    expect(commands[0].ExpressionAttributeValues[':measured']).toMatchObject({ status: 'no_data', settled: false });
   });
 
   it('should touch only the measured half, and never a settled day', async () => {
@@ -191,7 +233,8 @@ describe('the nightly ingest', () => {
     for (const [{ input }] of mockDdbSend.mock.calls) {
       expect(input.TableName).toBe(TABLE);
       expect(input.UpdateExpression).toBe(
-        'SET #measured = :measured, #measuredAt = :measuredAt, #createdAt = if_not_exists(#createdAt, :measuredAt)',
+        'SET #measured = :measured, #measuredAt = :measuredAt, #createdAt = if_not_exists(#createdAt, :measuredAt) ' +
+          'REMOVE #fetchError',
       );
       expect(input.ConditionExpression).toBe('attribute_not_exists(#measured) OR #measured.#settled = :false');
     }
@@ -223,11 +266,44 @@ describe('the nightly ingest', () => {
     );
   });
 
-  it('should write nothing when Google cannot be read', async () => {
-    fetchMock.mockImplementation(async () => new Response('{"error":"boom"}', { status: 500 }));
+  it('should record the failure on every unsettled day, measure nothing, and throw for a retry', async () => {
+    fetchMock.mockImplementation(async (input: string | URL) =>
+      String(input).startsWith('https://oauth2.googleapis.com/token')
+        ? new Response(JSON.stringify({ access_token: 'at', expires_in: 3600 }), { status: 200 })
+        : new Response('{"error":"boom"}', { status: 503 }),
+    );
+    // One day is settled and refuses the write; that must not stop the rest.
+    mockDdbSend.mockRejectedValueOnce(conditionFailed()).mockResolvedValue({});
 
-    await expect(ingest()).rejects.toThrow();
-    expect(mockDdbSend).not.toHaveBeenCalled();
+    await expect(ingest()).rejects.toThrow('503');
+
+    const writes = mockDdbSend.mock.calls.map(([c]) => c.input);
+    expect(writes).toHaveLength(LOG_DAYS);
+    for (const w of writes) {
+      expect(w.UpdateExpression).toBe('SET #fetchError = :fetchError');
+      expect(w.ConditionExpression).toBe('attribute_exists(#measured) AND #measured.#settled = :false');
+      expect(w.ExpressionAttributeValues[':fetchError']).toMatchObject({ kind: 'api', by: 'nightly' });
+      expect(w.ExpressionAttributeValues).not.toHaveProperty(':measured');
+    }
+  });
+
+  it('should treat data it cannot read as a failure, never as an empty night', async () => {
+    fetchMock.mockImplementation(async (input: string | URL) => {
+      const url = String(input);
+      if (url.startsWith('https://oauth2.googleapis.com/token')) {
+        return new Response(JSON.stringify({ access_token: 'at', expires_in: 3600 }), { status: 200 });
+      }
+      // Sleep in a shape the parser does not know; the others empty.
+      const dataPoints = url.includes('/sleep/') ? [{ sleep: { somethingNew: true } }, { sleep: {} }] : [];
+      return new Response(JSON.stringify({ dataPoints }), { status: 200 });
+    });
+    mockDdbSend.mockResolvedValue({});
+
+    await expect(ingest()).rejects.toThrow(UnreadableHealthDataError);
+
+    const writes = mockDdbSend.mock.calls.map(([c]) => c.input);
+    expect(writes.every((w) => w.ExpressionAttributeValues[':fetchError']?.kind === 'parse')).toBe(true);
+    expect(writes.some((w) => ':measured' in w.ExpressionAttributeValues)).toBe(false);
   });
 });
 
@@ -297,11 +373,12 @@ describe('the 10:00 morning run', () => {
       'attribute_not_exists(#measured) OR (#measured.#settled = :false AND #measured.#status <> :ready)',
     );
     expect(input.UpdateExpression).not.toMatch(/notes|tags|energy|mood|stress|soreness/);
-    // One day's reads: sleep ending today, HRV/RHR for today plus its baseline.
+    // One day's reads, each reaching back far enough to date a gap.
     expect(googleCalls().map(([u]) => new URL(String(u)).searchParams.get('filter'))).toEqual(
       expect.arrayContaining([
-        'sleep.interval.civil_end_time >= "2026-11-18" AND sleep.interval.civil_end_time < "2026-11-19"',
-        'daily_heart_rate_variability.date >= "2026-10-21" AND daily_heart_rate_variability.date < "2026-11-19"',
+        // A week back, so a missing night can say when the last one was.
+        'sleep.interval.civil_end_time >= "2026-11-11" AND sleep.interval.civil_end_time < "2026-11-19"',
+        'daily_heart_rate_variability.date >= "2026-10-14" AND daily_heart_rate_variability.date < "2026-11-19"',
       ]),
     );
   });
@@ -347,7 +424,7 @@ describe('the first update of the day fetching readiness', () => {
     expect(statusCode).toBe(200);
     expect(body.notes).toBe('Slept badly');
     expect(body.measured).toMatchObject({ status: 'ready', sleep: { minutesAsleep: 450 } });
-    expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded' });
+    expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded', status: 'ready' });
     const [notesWrite, measureWrite] = mockDdbSend.mock.calls.map(([c]) => c.input);
     expect(notesWrite.UpdateExpression).not.toContain('#measured =');
     expect(measureWrite.ConditionExpression).toBe(
@@ -373,9 +450,44 @@ describe('the first update of the day fetching readiness', () => {
 
     expect(statusCode).toBe(200);
     expect(body.notes).toBe('Slept badly');
+    // The measured half is untouched: a failed read is not an empty night.
     expect(body.measured.status).toBe('awaiting');
-    expect(body.readinessFetch).toMatchObject({ attempted: true, outcome: 'failed' });
-    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+    expect(body.readinessFetch).toMatchObject({ attempted: true, outcome: 'failed', kind: 'auth' });
+    expect(body.fetchError).toMatchObject({ kind: 'auth', by: 'update' });
+    // The notes write, then the fetchError written on the day; no measured write.
+    expect(mockDdbSend).toHaveBeenCalledTimes(2);
+    const errorWrite = mockDdbSend.mock.calls[1][0].input;
+    expect(errorWrite.UpdateExpression).toBe('SET #fetchError = :fetchError');
+  });
+
+  it('should record an empty night as an answer, not a failure', async () => {
+    fetchMock = stubGoogle(today, { sleep: false });
+    mockDdbSend
+      .mockResolvedValueOnce({ Attributes: awaitingWithNotes })
+      .mockImplementationOnce(async (cmd) => ({
+        Attributes: { ...awaitingWithNotes, measured: cmd.input.ExpressionAttributeValues[':measured'] },
+      }));
+
+    const { body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Forgot the watch' })));
+
+    // Today is not over: an empty night may still sync.
+    expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded', status: 'not_synced' });
+    expect(body.fetchError).toBeUndefined();
+    expect(body.measured.missing[0]).toEqual({ signal: 'sleep', latestDate: null });
+  });
+
+  it('should call an empty night on a past day no_data', async () => {
+    fetchMock = stubGoogle('2026-11-10', { sleep: false });
+    const pastDay = { ...awaitingWithNotes, date: '2026-11-15' };
+    mockDdbSend
+      .mockResolvedValueOnce({ Attributes: pastDay })
+      .mockImplementationOnce(async (cmd) => ({
+        Attributes: { ...pastDay, measured: cmd.input.ExpressionAttributeValues[':measured'] },
+      }));
+
+    const { body } = parse(await updateHealthLog(bodyEvent({ date: '2026-11-15', notes: 'Battery died' })));
+
+    expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded', status: 'no_data' });
   });
 
   it('should leave a reading another writer made first, and say so', async () => {

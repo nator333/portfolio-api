@@ -58,6 +58,40 @@ export const LOG_DAYS = 28;
 /** Status of a day opened at 00:05 and not yet measured. */
 export const AWAITING = 'awaiting';
 
+/**
+ * Google answered, and had nothing for the night: the watch was off, flat, or
+ * never synced. Used once the day is over (the 22:00 run, or any read of a past
+ * day); earlier on the day itself the same answer is "not_synced", since the
+ * morning sync may simply not have happened yet. Never settled, so a late sync
+ * within the 28-day window still fills it in.
+ *
+ * Distinct from a failed read, which never changes `measured` and is recorded
+ * as `fetchError` instead.
+ */
+export const NO_DATA = 'no_data';
+
+export type MeasuredStatus = ReadinessStatus | typeof AWAITING | typeof NO_DATA;
+
+/**
+ * Why the last attempt to read Google for a day failed.
+ *
+ *   auth     the stored grant was refused: re-run scripts/google-health-auth.ts
+ *   api      Google Health returned an error status
+ *   network  the request did not complete (timeout, connection)
+ *   parse    Google returned data this code could not read: a bug here, not
+ *            an empty day
+ *   unknown  anything else
+ */
+export type FetchErrorKind = 'auth' | 'api' | 'network' | 'parse' | 'unknown';
+
+export interface FetchError {
+  at: string;
+  kind: FetchErrorKind;
+  message: string;
+  /** Which writer hit it. */
+  by: 'update' | 'morning' | 'nightly';
+}
+
 export const HEALTH_NOTES_MAX = 4000;
 /** Tags share the reflections' vocabulary and limit. */
 export const HEALTH_TAGS_MAX = REFLECTION_THEMES_MAX;
@@ -77,13 +111,19 @@ export type HealthNoteField = (typeof HEALTH_NOTE_FIELDS)[number];
 
 /** The measured half of a day, as the job stores it. */
 export interface MeasuredDay {
-  /** A readiness status, or "awaiting" until the 22:00 run has measured the day. */
-  status: ReadinessStatus | typeof AWAITING;
+  /**
+   * "awaiting" until Google is first read for the day; then a readiness status,
+   * or "no_data" when Google had nothing for a day that is over.
+   */
+  status: MeasuredStatus;
   verdict: Verdict | null;
   /** Why the verdict is what it is; only when `status` is "ready". */
   reasons: string[];
-  /** Signals with no value for the day. */
-  missing: string[];
+  /**
+   * Signals Google had no value for, each with the newest date it does have:
+   * a run of days missing since the same date is a watch left off or flat.
+   */
+  missing: { signal: 'sleep' | 'hrv' | 'restingHeartRate'; latestDate: string | null }[];
   sleep: { minutesAsleep: number | null; endTime: string; processed: boolean } | null;
   hrv: { milliseconds: number; baselineMean: number | null; z: number | null; flag: string | null } | null;
   restingHeartRate: {
@@ -103,8 +143,15 @@ export interface HealthLogItem {
   pk: typeof HEALTH_LOG_PK;
   date: string;
   measured: MeasuredDay;
-  measuredAt: string;
+  /** When Google was last read successfully for this day. */
+  measuredAt?: string;
   createdAt: string;
+  /**
+   * The last read of Google for this day failed. `measured` is left as it was;
+   * cleared by the next successful read. If `fetchError.at` is later than
+   * `measuredAt`, the newest attempt is the one that failed.
+   */
+  fetchError?: FetchError;
   notes?: string;
   tags?: string[];
   energy?: number;
@@ -119,17 +166,29 @@ export function logDates(today: string, days = LOG_DAYS): string[] {
   return Array.from({ length: days }, (_, i) => addDays(today, i - days + 1));
 }
 
-/** Reduce one day's readiness judgement to what the log keeps. */
-export function measureDay(input: ReadinessInput): MeasuredDay {
-  const result = judgeReadiness(input);
+/**
+ * Reduce one day's readiness judgement to what the log keeps. `dayIsOver`
+ * turns an empty night into "no_data" rather than "not_synced".
+ */
+export function measureDay(input: ReadinessInput, opts: { dayIsOver: boolean }): MeasuredDay {
+  // Only what existed up to the day. The judgement never looks later anyway,
+  // but `missing[].latestDate` would: a window read at 22:00 holds later
+  // nights, and "latest sleep: today" on a day ten days back says nothing.
+  const { date } = input;
+  const result = judgeReadiness({
+    date,
+    sleeps: input.sleeps.filter((s) => s.endDate <= date),
+    hrv: input.hrv.filter((v) => v.date <= date),
+    restingHeartRate: input.restingHeartRate.filter((v) => v.date <= date),
+  });
   const { sleep, hrv, restingHeartRate } = result.signals;
   const measured: MeasuredDay = {
-    status: result.status,
+    status: result.status === 'not_synced' && opts.dayIsOver ? NO_DATA : result.status,
     verdict: result.verdict,
     // The other statuses' reasons are prompts to "sync and ask again", which
     // mean nothing in a log read days later; `missing` says what was absent.
     reasons: result.status === 'ready' ? [...result.reasons] : [],
-    missing: result.missing.map((m) => m.signal),
+    missing: result.missing.map((m) => ({ signal: m.signal, latestDate: m.latestDate })),
     sleep: sleep && { minutesAsleep: sleep.minutesAsleep, endTime: sleep.endTime, processed: sleep.processed },
     hrv: hrv && {
       milliseconds: hrv.milliseconds,
@@ -155,7 +214,8 @@ export function awaitingDay(): MeasuredDay {
     status: AWAITING,
     verdict: null,
     reasons: [],
-    missing: ['sleep', 'hrv', 'restingHeartRate'],
+    // Nothing has been asked yet, so nothing is known to be missing.
+    missing: [],
     sleep: null,
     hrv: null,
     restingHeartRate: null,
@@ -167,8 +227,9 @@ export function awaitingDay(): MeasuredDay {
 export function measureDays(
   dates: readonly string[],
   signals: { sleeps: readonly SleepSession[]; hrv: readonly DailyValue[]; restingHeartRate: readonly DailyValue[] },
+  opts: { dayIsOver: boolean },
 ): { date: string; measured: MeasuredDay }[] {
-  return dates.map((date) => ({ date, measured: measureDay({ date, ...signals }) }));
+  return dates.map((date) => ({ date, measured: measureDay({ date, ...signals }, opts) }));
 }
 
 // --- What Claude may send ------------------------------------------------------

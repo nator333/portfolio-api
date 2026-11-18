@@ -517,8 +517,13 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     description:
       'The owner\'s private daily health log, newest first. Each day has `measured` (last night\'s ' +
       'sleep, HRV, resting heart rate and readiness verdict from Google Health, recorded on the ' +
-      'first update of the day or at 10:00, refreshed at 22:00; status "awaiting" until then, ' +
-      '`settled` once final) and the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
+      'first update of the day or at 10:00, refreshed at 22:00; `settled` once final). ' +
+      '`measured.status`: "awaiting" = not asked yet; "not_synced" = Google has no night yet ' +
+      'today; "no_data" = the day is over and Google has nothing (watch off or flat; ' +
+      '`missing[].latestDate` shows since when); "pending"/"ready" as in get_readiness. A ' +
+      '`fetchError` means the last read FAILED (auth, api, network, parse) and `measured` is ' +
+      'the last good answer, not evidence of an empty night. Never call a failed read "no data", ' +
+      'or vice versa. Each day also has the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
       '`mood`, `stress`, `soreness`). Read a day before update_health_log so existing notes are ' +
       `kept. Defaults to the last ${HEALTH_LIST_DEFAULT_DAYS} days. Admin only.`,
     requiresAuth: true,
@@ -543,8 +548,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'days the scheduler has created can be annotated: today exists from 00:05 the owner\'s time, ' +
       'so notes about today can be saved during the day. There is no way to add a day, and the ' +
       'measured values cannot be changed. If the day has no readiness yet, this call also fetches ' +
-      'it from Google Health; `readinessFetch` says whether that worked, and the notes are saved ' +
-      'either way. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
+      'it from Google Health; `readinessFetch` is "recorded" with the `status` Google\'s answer gave ' +
+      '(an empty night is "not_synced"/"no_data"), or "failed" with a `kind` when Google could not ' +
+      'be read. The notes are saved either way. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
       'revised text, in the conversation\'s language. `tags` are lowercase English, e.g. "cold", ' +
       '"lower-back". Ratings are 1-5 in their plain sense (energy and mood: 5 is high; stress and ' +
       'soreness: 5 is severe); set one only when the owner said something that clearly maps to it. ' +

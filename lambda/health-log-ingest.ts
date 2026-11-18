@@ -2,7 +2,15 @@ import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { isValidTimeZone, localDate } from './readiness';
 import { HEALTH_LOG_PK, LOG_DAYS, awaitingDay, logDates, measureDays, type HealthLogItem } from './health-log-schema';
-import { fetchSignals, hasReadiness, recordReadiness, writeMeasured } from './health-log-measure';
+import {
+  fetchSignals,
+  hasReadiness,
+  recordFetchError,
+  recordReadiness,
+  toFetchError,
+  writeMeasured,
+  type Signals,
+} from './health-log-measure';
 
 /**
  * Opens and measures the health log's days. Three schedules invoke it, all in
@@ -23,7 +31,8 @@ import { fetchSignals, hasReadiness, recordReadiness, writeMeasured } from './he
  * judges each day locally, and writes each with the 'unsettled' rule (see
  * health-log-measure.ts): it creates a missing day, sets only the measured
  * half, and stops rewriting a day once it is settled. A Google failure throws:
- * the scheduler retries, and the next night covers the same days anyway.
+ * `fetchError` is recorded on each unsettled day, the scheduler retries, and
+ * the next night covers the same days anyway.
  */
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -112,7 +121,9 @@ async function morning(): Promise<MorningSummary> {
   if (hasReadiness(existing.Item as HealthLogItem | undefined)) {
     summary = { mode: 'morning', date, outcome: 'already_ready' };
   } else {
-    const stored = await recordReadiness(tableName, secretName, timeZone, date);
+    // A failed read records `fetchError` on today and throws, so the
+    // scheduler retries and the failure is visible on the day meanwhile.
+    const stored = await recordReadiness(tableName, secretName, timeZone, date, 'morning');
     // null: an update recorded it between the check and the write.
     summary = stored
       ? { mode: 'morning', date, outcome: 'recorded', status: stored.measured.status }
@@ -127,13 +138,23 @@ async function measure(): Promise<IngestSummary> {
   const now = new Date();
   const today = localDate(now, timeZone);
   const dates = logDates(today, LOG_DAYS);
-  const signals = await fetchSignals(secretName, timeZone, dates[0], today);
+  let signals: Signals;
+  try {
+    signals = await fetchSignals(secretName, timeZone, dates[0], today);
+  } catch (error) {
+    // Nothing measured is touched; each unsettled day says the read failed.
+    const fetchError = toFetchError(error, 'nightly');
+    console.error('Google Health read failed', fetchError.kind, error);
+    await recordFetchError(tableName, dates, fetchError);
+    throw error;
+  }
 
   const measuredAt = now.toISOString();
   let written = 0;
   let settledSkipped = 0;
   // In series: 28 small writes, and one run a day. Not worth the throttling risk.
-  for (const { date, measured } of measureDays(dates, signals)) {
+  // 22:00: every day in the window is over, so an empty night is no_data.
+  for (const { date, measured } of measureDays(dates, signals, { dayIsOver: true })) {
     if (await writeMeasured(tableName, date, measured, measuredAt, 'unsettled')) written += 1;
     else settledSkipped += 1;
   }
