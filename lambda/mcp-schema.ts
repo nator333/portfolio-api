@@ -6,7 +6,7 @@ import {
   REFLECTION_THEMES_MAX,
   REFLECTION_TYPES,
 } from './reflection-schema';
-import { HEALTH_LIST_DEFAULT_DAYS, HEALTH_LIST_MAX_DAYS, HEALTH_NOTES_MAX, HEALTH_TAGS_MAX } from './health-log-schema';
+import { HEALTH_LIST_DEFAULT_DAYS, HEALTH_LIST_MAX_DAYS, HEALTH_NOTE_TEXT_MAX, HEALTH_TAGS_MAX } from './health-log-schema';
 
 /**
  * Declarative side of the Model Context Protocol server that fronts this API.
@@ -175,6 +175,22 @@ const writeAnnotations = { readOnlyHint: false, destructiveHint: false, idempote
 // Publishing a plan version appends rather than replaces, so repeating the call
 // is refused rather than absorbed — not idempotent, and not destructive either.
 const appendAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+// replace_*: the whole stored document is swapped for the one sent. Repeating it
+// is harmless, but anything left out of the document is gone.
+const replaceAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false };
+
+/**
+ * The write verbs, one meaning each, so a tool's name says what it does to
+ * what is already there:
+ *
+ *   add_*      creates a new item or appends; never changes existing content.
+ *   update_*   a partial update with JSON Merge Patch (RFC 7386) semantics:
+ *              an omitted field is unchanged, null clears it, objects merge,
+ *              arrays and strings are replaced whole. The record must exist.
+ *   replace_*  swaps the whole document, only if it is unchanged since the
+ *              `version` the caller read.
+ *   revise_*   publishes a new version; stored versions are never modified.
+ */
 
 /** A weekly set target as the plan stores it; shared by the whole-plan and edit forms. */
 const WEEKLY_SET_TARGET_SHAPE =
@@ -184,7 +200,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
   {
     name: 'get_content',
     title: 'Get site content',
-    description: 'Read one of the public site documents.',
+    description:
+      'Read one of the site documents, as `{doc, version, document}`. Keep `version`: replace_content ' +
+      'needs it. With the admin token the blog includes draft posts.',
     requiresAuth: false,
     inputSchema: {
       type: 'object',
@@ -319,22 +337,26 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: { ...readAnnotations, openWorldHint: true },
   },
   {
-    name: 'update_content',
-    title: 'Update site content',
+    name: 'replace_content',
+    title: 'Replace site content',
     description:
-      'Replace one site document. Send the whole document, as get_content returns it; it is validated ' +
-      'and an invalid one is rejected unchanged. A home background is {url, caption, alt?, dim?} where dim is the overlay darkness as an integer percentage 0-100 (omitted = site default 55); backgroundsHidden: true keeps the saved photos but shows the plain black background. Admin only.',
+      'Replace one whole site document: anything left out of `document` is deleted. Call get_content ' +
+      'first, change what was asked, and send the full `document` back with the `version` it returned. ' +
+      'If the document changed since (an edit on the site, or another write), it is refused with 412: ' +
+      'read it again and reapply the change; never retry with an old document. It is validated and an ' +
+      'invalid one is rejected unchanged. A home background is {url, caption, alt?, dim?} where dim is the overlay darkness as an integer percentage 0-100 (omitted = site default 55); backgroundsHidden: true keeps the saved photos but shows the plain black background. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
         doc: CONTENT_DOC_ARG,
+        version: { type: 'string', description: 'The `version` get_content returned with the document.' },
         document: { type: 'object', description: 'The complete document.', additionalProperties: true },
       },
-      required: ['doc', 'document'],
+      required: ['doc', 'version', 'document'],
       additionalProperties: false,
     },
-    annotations: writeAnnotations,
+    annotations: replaceAnnotations,
   },
   /**
    * One tool for both ways of publishing a plan version: `edits` against the
@@ -490,7 +512,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     title: 'Correct reflection note',
     description:
       'Correct the body and/or themes of an existing note, by `type` and the `id` from ' +
-      'list_reflections. A new thought is a new note, not a correction. Type and date cannot ' +
+      'list_reflections. Omitted fields are unchanged; `themes: null` clears the tags. A new thought is a new note, not a correction. Type and date cannot ' +
       'change. The add_reflection rule on workout notes applies. Admin only.',
     requiresAuth: true,
     inputSchema: {
@@ -500,10 +522,10 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
         id: { type: 'string' },
         body: { type: 'string', maxLength: REFLECTION_BODY_MAX, description: 'Replacement body. Optional.' },
         themes: {
-          type: 'array',
+          type: ['array', 'null'],
           items: { type: 'string' },
           maxItems: REFLECTION_THEMES_MAX,
-          description: 'Replacement list of tags. Optional.',
+          description: 'Replacement list of tags; null clears them. Optional.',
         },
       },
       required: ['type', 'id'],
@@ -523,9 +545,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       '`missing[].latestDate` shows since when); "pending"/"ready" as in get_readiness. A ' +
       '`fetchError` means the last read FAILED (auth, api, network, parse) and `measured` is ' +
       'the last good answer, not evidence of an empty night. Never call a failed read "no data", ' +
-      'or vice versa. Each day also has the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
-      '`mood`, `stress`, `soreness`). Read a day before update_health_log so existing notes are ' +
-      `kept. Defaults to the last ${HEALTH_LIST_DEFAULT_DAYS} days. Admin only.`,
+      'or vice versa. Each day also has what the owner said: `notes` (entries keyed by id, oldest ' +
+      'first, each {at, text}), `tags`, and 1-5 `energy`, `mood`, `stress`, `soreness`. ' +
+      `Defaults to the last ${HEALTH_LIST_DEFAULT_DAYS} days. Admin only.`,
     requiresAuth: true,
     inputSchema: {
       type: 'object',
@@ -541,26 +563,59 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     annotations: readAnnotations,
   },
   {
-    name: 'update_health_log',
-    title: 'Annotate health log day',
+    name: 'add_health_note',
+    title: 'Add health note',
     description:
-      'Record what the owner said about a day\'s health on that day\'s existing log entry. Only ' +
-      'days the scheduler has created can be annotated: today exists from 00:05 the owner\'s time, ' +
-      'so notes about today can be saved during the day. There is no way to add a day, and the ' +
-      'measured values cannot be changed. If the day has no readiness yet, this call also fetches ' +
-      'it from Google Health; `readinessFetch` is "recorded" with the `status` Google\'s answer gave ' +
-      '(an empty night is "not_synced"/"no_data"), or "failed" with a `kind` when Google could not ' +
-      'be read. The notes are saved either way. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
-      'revised text, in the conversation\'s language. `tags` are lowercase English, e.g. "cold", ' +
-      '"lower-back". Ratings are 1-5 in their plain sense (energy and mood: 5 is high; stress and ' +
-      'soreness: 5 is severe); set one only when the owner said something that clearly maps to it. ' +
-      'null clears a field. Admin only.',
+      'Save one thing the owner said about a day\'s health (how they slept or feel, soreness, ' +
+      'illness, stress) as a new timestamped entry on that day. It always appends: earlier notes ' +
+      'are never touched, so there is no need to read first. Write `text` in the conversation\'s ' +
+      'language. `tags` are added to the day\'s tags: lowercase English, e.g. "cold", "lower-back". ' +
+      'Only days the scheduler has created exist: today from 00:05 the owner\'s time; there is no ' +
+      'way to add a day. If the day has no readiness yet, this also fetches it from Google Health: ' +
+      '`readinessFetch` is "recorded" with the `status` Google\'s answer gave (an empty night is ' +
+      '"not_synced"/"no_data"), or "failed" with a `kind` when Google could not be read; the note ' +
+      'is saved either way. Admin only.',
     requiresAuth: true,
     inputSchema: {
       type: 'object',
       properties: {
         date: { type: 'string', description: 'The owner\'s local day, ISO YYYY-MM-DD.' },
-        notes: { type: ['string', 'null'], maxLength: HEALTH_NOTES_MAX },
+        text: { type: 'string', maxLength: HEALTH_NOTE_TEXT_MAX },
+        tags: { type: 'array', items: { type: 'string' }, maxItems: HEALTH_TAGS_MAX },
+      },
+      required: ['date', 'text'],
+      additionalProperties: false,
+    },
+    // Reaches Google Health when the day has no readiness yet.
+    annotations: { ...appendAnnotations, openWorldHint: true },
+  },
+  {
+    name: 'update_health_log',
+    title: 'Correct health log day',
+    description:
+      'Correct a day\'s notes, tags or ratings. Merge patch: omitted fields are unchanged, null ' +
+      'clears one. `notes` is keyed by the entry ids list_health_log returns: {"<id>": {"text": ' +
+      '"..."}} rewrites that entry, {"<id>": null} removes it, and entries not named are kept. To ' +
+      'add a note use add_health_note, never this. `tags` replaces the day\'s tags. Ratings are 1-5 ' +
+      'in their plain sense (energy and mood: 5 is high; stress and soreness: 5 is severe); set one ' +
+      'only when the owner said something that clearly maps to it. The measured values cannot be ' +
+      'changed. Like add_health_note, it fetches readiness if the day has none (`readinessFetch`). ' +
+      'Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'The owner\'s local day, ISO YYYY-MM-DD.' },
+        notes: {
+          type: 'object',
+          description: 'Entry id → {text} to rewrite it, or null to remove it.',
+          additionalProperties: {
+            type: ['object', 'null'],
+            properties: { text: { type: 'string', maxLength: HEALTH_NOTE_TEXT_MAX } },
+            required: ['text'],
+            additionalProperties: false,
+          },
+        },
         tags: { type: ['array', 'null'], items: { type: 'string' }, maxItems: HEALTH_TAGS_MAX },
         energy: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
         mood: { type: ['integer', 'null'], minimum: 1, maximum: 5 },

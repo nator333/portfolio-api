@@ -16,6 +16,7 @@ test('every read tool is public and every write tool requires auth', () => {
   // progress page shows.
   expect(publicTools).toEqual(['get_content', 'get_workout']);
   expect(authTools).toEqual([
+    'add_health_note',
     'add_reflection',
     'get_exercise_history',
     'get_muscle_volume_status',
@@ -27,8 +28,8 @@ test('every read tool is public and every write tool requires auth', () => {
     'list_exercises',
     'list_health_log',
     'list_reflections',
+    'replace_content',
     'revise_workout_plan',
-    'update_content',
     'update_health_log',
     'update_reflection',
   ]);
@@ -41,6 +42,25 @@ test('read tools are annotated read-only and write tools are not', () => {
   for (const tool of TOOL_SPECS) {
     const isRead = tool.name.startsWith('get_') || tool.name.startsWith('list_');
     expect([tool.name, tool.annotations.readOnlyHint]).toEqual([tool.name, isRead]);
+  }
+});
+
+test('each write verb means one thing, and its annotations say so', () => {
+  // add_: appends, never changes what exists. update_: merge patch, repeatable.
+  // replace_: swaps the whole document, so anything left out is destroyed.
+  // revise_: publishes a new version. A new verb needs a meaning here first.
+  const expected: Record<string, { destructiveHint: boolean; idempotentHint: boolean }> = {
+    add: { destructiveHint: false, idempotentHint: false },
+    update: { destructiveHint: false, idempotentHint: true },
+    replace: { destructiveHint: true, idempotentHint: true },
+    revise: { destructiveHint: false, idempotentHint: false },
+  };
+  for (const tool of TOOL_SPECS) {
+    const verb = tool.name.split('_')[0];
+    if (verb === 'get' || verb === 'list') continue;
+    expect([tool.name, verb in expected]).toEqual([tool.name, true]);
+    const { destructiveHint, idempotentHint } = tool.annotations;
+    expect([tool.name, { destructiveHint, idempotentHint }]).toEqual([tool.name, expected[verb]]);
   }
 });
 

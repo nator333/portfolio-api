@@ -107,7 +107,8 @@ export const updateReflectionSchema = z
     type: z.enum(REFLECTION_TYPES),
     id: z.string().min(1),
     body: body.optional(),
-    themes: themes.optional(),
+    /** Replaces the tags; null (or []) clears them. A note's body cannot be cleared. */
+    themes: themes.nullable().optional(),
   })
   .strict()
   .refine((value) => value.body !== undefined || value.themes !== undefined, {

@@ -1,15 +1,16 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { BLOG_TABLE_ITEM_ID, blogDataSchema } from './blog-schema';
 import { corsHeaders } from './cors';
+import { etag, ifMatch, preconditionFailed, putVersioned } from './content-version';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
-  const headers = { 'Content-Type': 'application/json', ...corsHeaders(event) };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...corsHeaders(event) };
 
   const tableName = process.env.CV_TABLE_NAME;
   if (!tableName) {
@@ -32,12 +33,10 @@ export const handler = async (
     };
   }
 
-  await ddb.send(
-    new PutCommand({
-      TableName: tableName,
-      Item: { id: BLOG_TABLE_ITEM_ID, ...validation.data },
-    }),
-  );
+  // `If-Match` is optional here (the front-end's editors save without it);
+  // when sent, a document changed since that version is refused with 412.
+  const version = await putVersioned(ddb, tableName, BLOG_TABLE_ITEM_ID, validation.data, ifMatch(event));
+  if (version === null) return preconditionFailed(headers, 'blog');
 
-  return { statusCode: 200, headers, body: JSON.stringify(validation.data) };
+  return { statusCode: 200, headers: { ...headers, ETag: etag(version) }, body: JSON.stringify(validation.data) };
 };
