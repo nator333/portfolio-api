@@ -203,12 +203,14 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_training_recommendation',
     title: 'Get today\'s training recommendation',
     description:
-      'What to train today and how hard, answered two ways side by side: `volumeOnly` (muscles behind ' +
-      'on volume) and `recoveryAware` (behind and recovered). A null `prescription` means readiness ' +
-      'has no verdict: do not fill it in. Fields are described in the output schema. Admin only.',
+      'What to train today and how hard, answered two ways side by side. `volumeOnly` ranks plan ' +
+      'sessions by muscles behind on volume; `recoveryAware` also requires those muscles to have ' +
+      'recovered since last trained (its sessions carry `recovery`; `recoveryBlocked` ones rank last). ' +
+      'Each has `session`, `alternatives`, `prescription` (each slot restated for today\'s readiness, ' +
+      'never more than the plan; null when readiness has no verdict, do not fill it in), ' +
+      '`restSuggested` and `notes`. Top-level `notes` say when the two picks differ. Admin only.',
     requiresAuth: true,
     inputSchema: inputSchemaOf(TOOL_ARGS.get_training_recommendation),
-    outputSchema: outputSchemaOf(TOOL_OUTPUTS.get_training_recommendation),
     // Reaches the Google Health API through its readiness half.
     annotations: { ...readAnnotations, openWorldHint: true },
   },
@@ -216,12 +218,13 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'get_weight_trend',
     title: 'Get bodyweight trend',
     description:
-      'Bodyweight from the smart scale, read live from Google Health. Report the 7-day trend and the ' +
-      '28-day rate, not a single reading, and say so when `latest.stale`. Pass `exercise` for ' +
-      'strength relative to bodyweight. Fields are described in the output schema. Admin only.',
+      'Bodyweight from the smart scale, read live from Google Health. Daily readings swing 1-2 kg, so ' +
+      'report `latest.trendKg`/`trendLb` (7-day mean) and `rate` (28-day fit per week, with `pace`), ' +
+      'not a single reading. If `latest.stale` is true, say the data is old. `bodyFat` is included ' +
+      'when measured. Pass `exercise` for `relativeStrength` (estimated 1RM over bodyweight, or an ' +
+      '`error` in the shared error shape when it cannot be computed). Admin only.',
     requiresAuth: true,
     inputSchema: inputSchemaOf(TOOL_ARGS.get_weight_trend),
-    outputSchema: outputSchemaOf(TOOL_OUTPUTS.get_weight_trend),
     // Read-only, but reaches the Google Health API.
     annotations: { ...readAnnotations, openWorldHint: true },
   },

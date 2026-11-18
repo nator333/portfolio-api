@@ -10,7 +10,6 @@ jest.mock('../lambda/get-exercise-history', () => ({ handler: mockHistory }));
 
 import { handler } from '../lambda/get-weight-trend';
 import { resetGoogleHealthCache } from '../lambda/google-health';
-import { expectMatchesOutputSchema } from './output-schema';
 
 const event = (query: Record<string, string> = {}) =>
   ({ queryStringParameters: query, headers: {} }) as unknown as APIGatewayProxyEvent;
@@ -59,7 +58,6 @@ test('reads weight and body fat for the window, judged on the local day', async 
   expect(body.latest).toMatchObject({ date: '2026-09-28', stale: false });
   expect(body.rate.pace).toBe('gaining_slowly');
   expect(body.fetched).toEqual({ weight: { points: 30, usable: 30 }, bodyFat: { points: 0, usable: 0 } });
-  expectMatchesOutputSchema('get_weight_trend', body);
 
   const filters = fetchMock.mock.calls
     .map(([u]) => String(u))
@@ -97,7 +95,6 @@ test('with an exercise, sets its 1RM against bodyweight (log in lb, answer in kg
   expect(body.relativeStrength.sessions).toHaveLength(2);
   // Best set of the first day: 185 × 5 → Epley 215.83 lb → 97.9 kg.
   expect(body.relativeStrength.sessions[0].e1rmKg).toBeCloseTo(97.9, 1);
-  expectMatchesOutputSchema('get_weight_trend', body);
 });
 
 test('an unknown exercise does not fail the weight answer', async () => {
@@ -118,7 +115,6 @@ test('an unknown exercise does not fail the weight answer', async () => {
       details: { requested: 'curlz', candidates: ['Curl'] },
     },
   });
-  expectMatchesOutputSchema('get_weight_trend', JSON.parse(result.body));
 });
 
 test('an out-of-range window is refused before any read', async () => {

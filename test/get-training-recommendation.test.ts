@@ -14,7 +14,6 @@ jest.mock('../lambda/get-workout-sets', () => ({ handler: mockSets }));
 
 import { handler } from '../lambda/get-training-recommendation';
 import { UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
-import { expectMatchesOutputSchema } from './output-schema';
 
 const event = (query: Record<string, string> = {}) =>
   ({ queryStringParameters: query, headers: {} }) as unknown as APIGatewayProxyEvent;
@@ -54,7 +53,6 @@ test('joins readiness, volume and plan into one prescription', async () => {
   expect(body.volumeOnly.session).not.toHaveProperty('recovery');
   expect(body.recoveryAware.session.id).toBe('lower-a');
   expect(body.recoveryAware.prescription).toHaveLength(5);
-  expectMatchesOutputSchema('get_training_recommendation', body);
 });
 
 test('planId reaches the plan and volume reads alike', async () => {
@@ -83,7 +81,6 @@ test('a readiness error still yields the session, with intensity withheld', asyn
   });
   expect(body.volumeOnly.session.id).toBe('lower-a');
   expect(body.volumeOnly.prescription).toBeNull();
-  expectMatchesOutputSchema('get_training_recommendation', body);
 });
 
 test('a readiness handler that throws is contained the same way', async () => {

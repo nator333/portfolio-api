@@ -1,11 +1,7 @@
 import { z } from 'zod';
 import type { ReadinessResult } from './readiness';
-import type { TrainingRecommendation } from './training-recommendation';
-import type { relativeStrength, weightTrend } from './weight-trend';
 import type { toHealthLogEntry } from './health-log-schema';
-import type { WindowBounds } from './muscle-volume-status';
 import type { ToolError } from './tool-error';
-import { muscleGroupSchema } from './workout-plan-schema';
 import { TOOL_ERROR_CODES } from './tool-error';
 
 /**
@@ -14,8 +10,11 @@ import { TOOL_ERROR_CODES } from './tool-error';
  * here once, advertised as `outputSchema` in tools/list, and returned as
  * `structuredContent` beside the text.
  *
- * Only four tools have one. The others return simple shapes their descriptions
- * cover, and a schema would cost tools/list more than it tells.
+ * Only two tools have one: the two whose results carry the rules most costly to
+ * get wrong (a failed read is not an empty night; never invent a verdict). The
+ * others' descriptions cover their results; full output schemas for
+ * get_training_recommendation and get_weight_trend were tried and cost about
+ * 11k characters of tools/list for little the prose did not already say.
  *
  * Kept honest two ways, since the results are built as plain objects typed by
  * TypeScript interfaces rather than parsed through these:
@@ -34,7 +33,6 @@ import { TOOL_ERROR_CODES } from './tool-error';
 // are, and the same sentence repeated on 30 fields is 1k characters of tools/list.
 const isoDate = z.string();
 const instant = z.string();
-const range = z.object({ min: z.number(), max: z.number() });
 const baseline = z.object({ mean: z.number(), sd: z.number(), days: z.number() });
 const fetchedCounts = z.object({ points: z.number(), usable: z.number() });
 const signal = z.enum(['sleep', 'hrv', 'restingHeartRate']);
@@ -107,150 +105,6 @@ const getReadinessOutput = readinessResult.extend({
   fetched: z.object({ sleep: fetchedCounts, hrv: fetchedCounts, restingHeartRate: fetchedCounts }),
 });
 
-// --- get_training_recommendation -------------------------------------------------
-
-const volumeStatus = z.enum(['under', 'maintenance', 'in_range', 'over']);
-
-const volumeSessionScore = z.object({
-  id: z.string(),
-  name: z.string(),
-  score: z.number().meta({ description: 'How many of the `behind` muscles are also recovered.' }),
-  behind: z.array(z.object({ muscle: muscleGroupSchema, status: volumeStatus })).meta({
-    description: 'Muscles below their weekly target, strongest first.',
-  }),
-  bonus: z.boolean(),
-});
-
-const sessionScore = volumeSessionScore.extend({
-  recovery: z.object({
-    daysSinceByMuscle: z.partialRecord(muscleGroupSchema, z.number().nullable()).meta({
-      description: 'Whole days since each muscle was last trained; null when not within the lookback.',
-    }),
-    unrecoveredSetShare: z.number().meta({ description: 'Share of planned sets on unrecovered muscles, 0-1.' }),
-    recoveryBlocked: z.boolean().meta({ description: 'True when that share is too high; such a session ranks last.' }),
-  }),
-});
-
-const slotPrescription = z.object({
-  order: z.number(),
-  options: z.array(z.string()),
-  muscle: muscleGroupSchema,
-  volumeStatus: volumeStatus.nullable(),
-  action: z.enum(['top', 'as_planned', 'reduced', 'skip']),
-  sets: range.nullable().meta({ description: 'Sets for today; null when the slot is skipped.' }),
-  rpe: range.nullable(),
-  reps: range,
-  planned: z.object({ sets: range, rpe: range.nullable() }).meta({ description: 'What the menu says, for comparison.' }),
-});
-
-const ranked = <S extends z.ZodType>(session: S) =>
-  z.object({
-    session: session.nullable(),
-    alternatives: z.array(session).meta({ description: 'Every other session, best first.' }),
-    prescription: z.array(slotPrescription).nullable().meta({
-      description: 'Each slot restated for today\'s readiness, never more than the plan. Null when readiness has no verdict: do not fill it in.',
-    }),
-    restSuggested: z.boolean(),
-    notes: z.array(z.string()),
-  });
-
-const trainingRecommendation = z.object({
-  readiness: z.object({
-    status: z.enum(['ready', 'not_synced', 'pending', 'insufficient_baseline', 'unavailable']),
-    date: isoDate.nullable(),
-    verdict: z.enum(['push', 'normal', 'easy']).nullable(),
-    reasons: z.array(z.string()),
-    error: toolErrorSchema.optional().meta({ description: 'Why readiness is "unavailable".' }),
-  }),
-  notes: z.array(z.string()).meta({ description: 'Notes for both rankings, including when their picks differ.' }),
-  volumeOnly: ranked(volumeSessionScore).meta({ description: 'Ranked on volume status alone.' }),
-  recoveryAware: ranked(sessionScore).meta({
-    description: 'Ranked with recovery: a behind muscle counts only once recovered; recovery-blocked sessions rank last.',
-  }),
-});
-
-const getTrainingRecommendationOutput = trainingRecommendation.extend({
-  asOf: instant,
-  plan: z.object({ planId: z.string(), version: z.number() }),
-  volumeWindow: z.object({ days: z.number(), from: isoDate, to: isoDate }),
-});
-
-// --- get_weight_trend ----------------------------------------------------------
-
-const rateUnavailable = z.object({ reason: z.string() });
-
-const weightTrendResult = z.object({
-  latest: z
-    .object({
-      date: isoDate,
-      kg: z.number(),
-      lb: z.number(),
-      trendKg: z.number().nullable().meta({ description: '7-day mean. Report this, not `kg`: daily readings swing 1-2 kg.' }),
-      trendLb: z.number().nullable(),
-      bodyFatPercent: z.number().nullable(),
-      daysAgo: z.number().nullable(),
-      stale: z.boolean().meta({ description: 'True when the newest weigh-in is old: say so.' }),
-    })
-    .nullable(),
-  rate: z
-    .union([
-      z.object({
-        from: isoDate,
-        to: isoDate,
-        points: z.number(),
-        kgPerWeek: z.number(),
-        lbPerWeek: z.number(),
-        percentPerWeek: z.number(),
-        pace: z.enum(['stable', 'gaining_slowly', 'gaining_fast', 'losing_slowly', 'losing_fast']),
-      }),
-      rateUnavailable,
-    ])
-    .meta({ description: 'A 28-day fit, or the reason there is none.' }),
-  bodyFat: z
-    .object({
-      latest: z.object({ date: isoDate, percent: z.number() }),
-      trendPercent: z.number().nullable(),
-      rate: z.union([
-        z.object({ from: isoDate, to: isoDate, points: z.number(), pointsPerWeek: z.number() }),
-        rateUnavailable,
-      ]),
-    })
-    .nullable()
-    .meta({ description: 'Null when the scale has not measured it.' }),
-  series: z.array(
-    z.object({
-      date: isoDate,
-      kg: z.number(),
-      lb: z.number(),
-      trendKg: z.number().nullable(),
-      trendLb: z.number().nullable(),
-      bodyFatPercent: z.number().nullable(),
-    }),
-  ),
-  notes: z.array(z.string()),
-});
-
-const relativeStrengthResult = z.object({
-  sessions: z.array(z.object({ date: isoDate, e1rmKg: z.number(), bodyweightKg: z.number(), ratio: z.number() })),
-  change: z
-    .object({ from: isoDate, to: isoDate, e1rmKg: z.number(), bodyweightKg: z.number(), ratio: z.number() })
-    .nullable(),
-});
-
-const getWeightTrendOutput = weightTrendResult.extend({
-  asOf: instant,
-  timeZone: z.string(),
-  window: z.object({ days: z.number(), from: isoDate, to: isoDate }),
-  relativeStrength: z
-    .union([
-      relativeStrengthResult.extend({ exercise: z.string() }),
-      z.object({ requested: z.string(), error: toolErrorSchema }),
-    ])
-    .optional()
-    .meta({ description: 'Only with `exercise`: estimated 1RM over bodyweight, or why it could not be computed.' }),
-  fetched: z.object({ weight: fetchedCounts, bodyFat: fetchedCounts }),
-});
-
 // --- list_health_log -------------------------------------------------------------
 
 const measuredDay = z.object({
@@ -312,8 +166,6 @@ const listHealthLogOutput = z.object({
 
 export const TOOL_OUTPUTS = {
   get_readiness: getReadinessOutput,
-  get_training_recommendation: getTrainingRecommendationOutput,
-  get_weight_trend: getWeightTrendOutput,
   list_health_log: listHealthLogOutput,
 } satisfies Record<string, z.ZodType>;
 
@@ -350,10 +202,6 @@ type Fits<Actual, Schema extends z.ZodType> = Mutable<Actual> extends z.input<Sc
 
 export const COMPILE_TIME_CHECKS: [
   Fits<ReadinessResult, typeof readinessResult>,
-  Fits<TrainingRecommendation, typeof trainingRecommendation>,
-  Fits<ReturnType<typeof weightTrend>, typeof weightTrendResult>,
-  Fits<ReturnType<typeof relativeStrength>, typeof relativeStrengthResult>,
   Fits<ReturnType<typeof toHealthLogEntry>, typeof healthLogEntry>,
-  Fits<WindowBounds, typeof getTrainingRecommendationOutput.shape.volumeWindow>,
   Fits<ToolError, typeof toolErrorSchema>,
-] = [true, true, true, true, true, true, true];
+] = [true, true, true];

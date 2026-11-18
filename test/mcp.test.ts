@@ -495,10 +495,10 @@ describe('arguments are checked once, against the schema tools/list advertises',
 });
 
 describe('structured results for the tools with an outputSchema', () => {
-  it('should advertise outputSchema on exactly the four tools that explain their results', async () => {
+  it('should advertise outputSchema on exactly the two tools whose results carry the costliest rules', async () => {
     const { json } = await call({ jsonrpc: '2.0', id: 30, method: 'tools/list' });
     const withOutput = json.result.tools.filter((t: { outputSchema?: unknown }) => t.outputSchema).map((t: { name: string }) => t.name);
-    expect(withOutput.sort()).toEqual(['get_readiness', 'get_training_recommendation', 'get_weight_trend', 'list_health_log']);
+    expect(withOutput.sort()).toEqual(['get_readiness', 'list_health_log']);
   });
 
   it('should return structuredContent beside the text, and log a mismatch without failing the read', async () => {
