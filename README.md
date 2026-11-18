@@ -322,7 +322,8 @@ reflection text reaches the public site, so the boundary is kept narrow:
   table, nothing else.
 * **Two privacy guards.** `add_reflection` / `update_reflection` tell the
   writer that workout notes feed a public line and must hold nothing private
-  (health, injuries, mood, work, relationships — those go in a "life" note),
+  (a day's health, injuries, mood go in a health note via `add_health_note`;
+  work, relationships and longer reflection go in a "life" note),
   and the summary prompt forbids mentioning private life even if a note does,
   replying `-` (no line) when nothing about the training remains.
 * **Backfill** notes written before this existed by invoking
