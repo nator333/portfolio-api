@@ -13,6 +13,7 @@ import {
 } from './weight-trend';
 import { estimate1rm, toKg } from './workout-schema';
 import { corsHeaders } from './cors';
+import { toolErrorFromResponse } from './tool-error';
 
 /**
  * Bodyweight trend from the owner's smart scale, read live from the Google
@@ -117,7 +118,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       days?: { date: string; sets: { weight: number; reps: number }[] }[];
     };
     if (history.statusCode !== 200) {
-      strength = { requested: exercise, error: body.message ?? `HTTP ${history.statusCode}`, detail: body };
+      // The shared error shape (tool-error.ts): an unknown lift arrives as
+      // not_found with the candidate names in `details`.
+      strength = { requested: exercise, error: toolErrorFromResponse(history.statusCode, history.body) };
     } else {
       // The log is in lb; the 1RM is estimated in lb, then converted once.
       const sessions: LiftSession[] = (body.days ?? []).map((d) => ({

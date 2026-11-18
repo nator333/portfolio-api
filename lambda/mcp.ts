@@ -41,6 +41,7 @@ import { corsHeaders } from './cors';
 import { etag, versionOf } from './content-version';
 import { compactIssues, toolError, toolErrorFromResponse, type ToolError } from './tool-error';
 import { TOOL_ARGS, type ToolArgs, type ToolName } from './mcp-args';
+import { TOOL_OUTPUTS, type OutputToolName } from './mcp-outputs';
 import { randomUUID } from 'crypto';
 import { challengeHeader } from './mcp-oauth';
 
@@ -341,10 +342,40 @@ const rpcError = (id: Id, code: number, message: string, data?: unknown) => ({
  * both as `structuredContent` for clients that read it and as the text, since
  * the HTTP status itself never reaches the client.
  */
-function toolResult(handlerResult: APIGatewayProxyResult) {
+function toolResult(name: string, handlerResult: APIGatewayProxyResult) {
   const ok = handlerResult.statusCode >= 200 && handlerResult.statusCode < 300;
-  if (ok) return { content: [{ type: 'text', text: handlerResult.body ?? '' }], isError: false };
-  return errorToolResult(toolErrorFromResponse(handlerResult.statusCode, handlerResult.body));
+  if (!ok) return errorToolResult(toolErrorFromResponse(handlerResult.statusCode, handlerResult.body));
+  const text = handlerResult.body ?? '';
+  const structuredContent = Object.hasOwn(TOOL_OUTPUTS, name)
+    ? checkedOutput(name as OutputToolName, text)
+    : undefined;
+  return {
+    content: [{ type: 'text', text }],
+    ...(structuredContent ? { structuredContent } : {}),
+    isError: false,
+  };
+}
+
+/**
+ * A result for a tool with an outputSchema, as `structuredContent`. Checked
+ * against the schema, but a mismatch is only logged: the result is still
+ * returned as built, so a field added to a handler before its schema is a log
+ * line to act on, not a broken read. (A client that validates strictly may
+ * still reject it; the tests are where a mismatch is meant to be caught.)
+ */
+function checkedOutput(name: OutputToolName, text: string): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    console.warn('MCP output is not JSON', { tool: name });
+    return undefined;
+  }
+  const check = TOOL_OUTPUTS[name].safeParse(parsed);
+  if (!check.success) {
+    console.warn('MCP output does not match its outputSchema', { tool: name, issues: compactIssues(check.error.issues) });
+  }
+  return parsed as Record<string, unknown>;
 }
 
 const errorToolResult = (error: ToolError) => ({
@@ -393,6 +424,7 @@ async function handleRpc(
             title: spec.title,
             description: spec.description,
             inputSchema: spec.inputSchema,
+            ...(spec.outputSchema ? { outputSchema: spec.outputSchema } : {}),
             annotations: spec.annotations,
           })),
         }),
@@ -444,7 +476,7 @@ async function handleRpc(
           parsed.data,
           { admin },
         );
-        return { response: rpcResult(id, toolResult(result)) };
+        return { response: rpcResult(id, toolResult(name, result)) };
       } catch (error) {
         // An exception is a bug or an outage, not something the caller can fix
         // by retrying the same call; the id ties the answer to the log line.
