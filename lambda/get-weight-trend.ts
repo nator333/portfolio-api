@@ -33,9 +33,10 @@ import { corsHeaders } from './cors';
  * Reached only through the MCP server's admin gate: there is no REST route.
  */
 
-export const DEFAULT_DAYS = 90;
-export const MIN_DAYS = 14;
-export const MAX_DAYS = 365;
+// Defined beside the arithmetic so the MCP argument schema can share them
+// without importing this handler.
+export { DEFAULT_DAYS, MIN_DAYS, MAX_DAYS } from './weight-trend';
+import { DEFAULT_DAYS, MIN_DAYS, MAX_DAYS } from './weight-trend';
 
 const proxyEvent = (query: Record<string, string | undefined>): APIGatewayProxyEvent =>
   ({ body: null, queryStringParameters: query, pathParameters: null, headers: {} }) as unknown as APIGatewayProxyEvent;

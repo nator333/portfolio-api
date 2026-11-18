@@ -256,13 +256,14 @@ export function measureDays(
 
 // --- What Claude may send ------------------------------------------------------
 
+const ownerDay = isoDate.meta({ description: 'The owner\'s local day, ISO YYYY-MM-DD.' });
 const rating = z.number().int().min(1).max(5).nullable();
 const noteText = z.string().trim().min(1).max(HEALTH_NOTE_TEXT_MAX);
 
 /** add_health_note: append one entry, and optionally add tags to the day. */
 export const addHealthNoteSchema = z
   .object({
-    date: isoDate,
+    date: ownerDay,
     text: noteText,
     tags: themeTags.optional(),
   })
@@ -278,12 +279,13 @@ export type AddHealthNote = z.infer<typeof addHealthNoteSchema>;
  */
 export const updateHealthLogSchema = z
   .object({
-    date: isoDate,
+    date: ownerDay,
     notes: z
       .record(z.string().regex(NOTE_ID_RE, 'not a note id from list_health_log'), z.object({ text: noteText }).strict().nullable())
       .refine((v) => Object.keys(v).length > 0, 'name at least one entry')
       .refine((v) => Object.keys(v).length <= HEALTH_NOTES_PER_DAY_MAX, 'too many entries')
-      .optional(),
+      .optional()
+      .meta({ description: 'Entry id (from list_health_log) → {text} to rewrite it, or null to remove it.' }),
     /** Replaces the day's tags; null or [] clears them. */
     tags: themeTags.nullable().optional(),
     energy: rating.optional(),
@@ -300,8 +302,10 @@ export type UpdateHealthLog = z.infer<typeof updateHealthLogSchema>;
 
 export const listHealthLogSchema = z
   .object({
-    from: isoDate.optional(),
-    to: isoDate.optional(),
+    from: isoDate.optional().meta({ description: 'Inclusive start date, ISO YYYY-MM-DD. Optional.' }),
+    to: isoDate
+      .optional()
+      .meta({ description: `Inclusive end date, ISO YYYY-MM-DD. Optional. At most ${HEALTH_LIST_MAX_DAYS} days per read.` }),
   })
   .strict()
   .refine((value) => !value.from || !value.to || value.from <= value.to, {

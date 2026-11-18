@@ -85,6 +85,8 @@ const themes = z
 
 /** The same tag vocabulary, for other private logs that group by topic. */
 export const themeTags = themes;
+/** One tag, e.g. a filter. */
+export const themeTag = theme;
 
 const body = z.string().trim().min(1).max(REFLECTION_BODY_MAX);
 
@@ -96,7 +98,7 @@ export const addReflectionSchema = z
      * than defaulted: the server only knows UTC, and a workout reflection
      * stamped with the wrong day no longer lines up with that day's sets.
      */
-    date: isoDate,
+    date: isoDate.meta({ description: 'The day the note is about, in the owner\'s calendar, ISO YYYY-MM-DD.' }),
     body,
     themes: themes.optional(),
   })
@@ -106,9 +108,9 @@ export const updateReflectionSchema = z
   .object({
     type: z.enum(REFLECTION_TYPES),
     id: z.string().min(1),
-    body: body.optional(),
+    body: body.optional().meta({ description: 'Replacement body. Optional.' }),
     /** Replaces the tags; null (or []) clears them. A note's body cannot be cleared. */
-    themes: themes.nullable().optional(),
+    themes: themes.nullable().optional().meta({ description: 'Replacement list of tags; null clears them. Optional.' }),
   })
   .strict()
   .refine((value) => value.body !== undefined || value.themes !== undefined, {

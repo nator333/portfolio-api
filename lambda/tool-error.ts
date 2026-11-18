@@ -95,7 +95,7 @@ function codeForStatus(status: number, body: Record<string, unknown>): ToolError
  * zod issues reduced to what a caller acts on: where, and why. The full issue
  * objects (code, expected, received, …) cost tokens and bury those two.
  */
-function compactIssues(issues: unknown): { path: string; message: string }[] | undefined {
+export function compactIssues(issues: unknown): { path: string; message: string }[] | undefined {
   if (!Array.isArray(issues)) return undefined;
   return issues.map((issue) => {
     const i = issue as { path?: unknown[]; message?: unknown };
