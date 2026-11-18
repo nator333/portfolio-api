@@ -886,7 +886,7 @@ test('the bodyweight ingest runs daily and only where the Google grant exists', 
   expect(devFunctions.some((id) => id.startsWith('GetBodyweightFunction'))).toBe(true);
 });
 
-test('the health log ingest runs at 22:00 Montreal time, and only where the Google grant exists', () => {
+test('the health log opens at 00:05 and measures at 22:00 Montreal time, only where the Google grant exists', () => {
   const template = synthStackWithMcp();
   template.hasResourceProperties('AWS::Scheduler::Schedule', {
     ScheduleExpression: 'cron(0 22 * * ? *)',
@@ -894,6 +894,15 @@ test('the health log ingest runs at 22:00 Montreal time, and only where the Goog
     State: 'ENABLED',
     Target: Match.objectLike({ RetryPolicy: Match.objectLike({ MaximumRetryAttempts: 2 }) }),
   });
+
+  // 00:05 opens today for daytime notes; same function, `open` mode.
+  template.hasResourceProperties('AWS::Scheduler::Schedule', {
+    ScheduleExpression: 'cron(5 0 * * ? *)',
+    ScheduleExpressionTimezone: 'America/Toronto',
+    State: 'ENABLED',
+    Target: Match.objectLike({ Input: JSON.stringify({ mode: 'open' }) }),
+  });
+  expect(Object.keys(template.findResources('AWS::Scheduler::Schedule'))).toHaveLength(2);
 
   const dev = synthStack();
   expect(Object.keys(dev.findResources('AWS::DynamoDB::Table')).some((id) => id.startsWith('HealthLogTable'))).toBe(false);

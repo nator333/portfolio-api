@@ -918,7 +918,7 @@ export class PortfolioApiStack extends cdk.Stack {
       });
 
       // The private daily health log (see lambda/health-log-schema.ts). Two
-      // writers with disjoint halves of each day: the nightly job below owns
+      // writers with disjoint halves of each day: the scheduled job below owns
       // `measured` and is the only thing that creates a day; the MCP server can
       // only update the notes of a day that exists. Neither holds PutItem or
       // DeleteItem, and nothing public reads the table.
@@ -959,6 +959,21 @@ export class PortfolioApiStack extends cdk.Stack {
         }),
         target: new schedulerTargets.LambdaInvoke(healthLogIngestFn, { retryAttempts: 2 }),
         description: 'Seeds and refreshes the private health log from Google Health',
+      });
+      new scheduler.Schedule(this, 'HealthLogOpenSchedule', {
+        // Opens today just after midnight, so notes made during the day have a
+        // record to land on. Writes a placeholder only and reads no Google data,
+        // so it keeps working when the Google grant has lapsed.
+        schedule: scheduler.ScheduleExpression.cron({
+          minute: '5',
+          hour: '0',
+          timeZone: HEALTH_SCHEDULE_TIME_ZONE,
+        }),
+        target: new schedulerTargets.LambdaInvoke(healthLogIngestFn, {
+          input: scheduler.ScheduleTargetInput.fromObject({ mode: 'open' }),
+          retryAttempts: 2,
+        }),
+        description: 'Opens today\'s private health log entry for daytime notes',
       });
 
       mcpFn.addEnvironment('HEALTH_LOG_TABLE_NAME', healthLogTable.tableName);

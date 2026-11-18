@@ -16,9 +16,10 @@ import {
  * Each record has two halves with two different writers, and neither may
  * touch the other's:
  *
- *   measured   written by the nightly job (health-log-ingest.ts) from Google
- *              Health: last night's sleep, HRV and resting heart rate, judged
- *              by the same arithmetic as get_readiness.
+ *   measured   written by the scheduled job (health-log-ingest.ts): a
+ *              placeholder at 00:05 that opens the day, then at 22:00 last
+ *              night's sleep, HRV and resting heart rate from Google Health,
+ *              judged by the same arithmetic as get_readiness.
  *   notes      written by Claude through update_health_log, from what the
  *              owner says in conversation: how the day felt, soreness,
  *              illness, stress, and so on.
@@ -28,6 +29,10 @@ import {
  * day nor alter a number that came from the watch. The job writes a record for
  * every day in its window, including days with no watch data (status
  * "not_synced"), so a day the watch was off can still be annotated.
+ *
+ * The 00:05 run exists because the owner mostly talks about a day during it,
+ * long before 22:00. It opens today with an "awaiting" placeholder and reads
+ * nothing from Google, so it still runs when the Google grant has lapsed.
  *
  * Why scheduled when get_readiness deliberately is not: get_readiness answers
  * "how should I train this morning?", before the watch's sync time is known.
@@ -46,6 +51,9 @@ export const HEALTH_LOG_PK = 'DAY';
 
 /** Days each run covers, ending today: the first run is a 28-day backfill. */
 export const LOG_DAYS = 28;
+
+/** Status of a day opened at 00:05 and not yet measured. */
+export const AWAITING = 'awaiting';
 
 export const HEALTH_NOTES_MAX = 4000;
 /** Tags share the reflections' vocabulary and limit. */
@@ -66,7 +74,8 @@ export type HealthNoteField = (typeof HEALTH_NOTE_FIELDS)[number];
 
 /** The measured half of a day, as the job stores it. */
 export interface MeasuredDay {
-  status: ReadinessStatus;
+  /** A readiness status, or "awaiting" until the 22:00 run has measured the day. */
+  status: ReadinessStatus | typeof AWAITING;
   verdict: Verdict | null;
   /** Why the verdict is what it is; only when `status` is "ready". */
   reasons: string[];
@@ -135,6 +144,20 @@ export function measureDay(input: ReadinessInput): MeasuredDay {
   };
   measured.settled = measured.status === 'ready' && measured.restingHeartRate?.flag != null;
   return measured;
+}
+
+/** What the 00:05 run writes: an open day with nothing measured yet. */
+export function awaitingDay(): MeasuredDay {
+  return {
+    status: AWAITING,
+    verdict: null,
+    reasons: [],
+    missing: ['sleep', 'hrv', 'restingHeartRate'],
+    sleep: null,
+    hrv: null,
+    restingHeartRate: null,
+    settled: false,
+  };
 }
 
 /** Every day in the window, measured from one set of reads. */

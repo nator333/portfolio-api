@@ -12,10 +12,15 @@ import {
   type DailyValue,
   type SleepSession,
 } from './readiness';
-import { HEALTH_LOG_PK, LOG_DAYS, logDates, measureDays } from './health-log-schema';
+import { HEALTH_LOG_PK, LOG_DAYS, awaitingDay, logDates, measureDays } from './health-log-schema';
 
 /**
- * Seeds and refreshes the health log's measured half, nightly at 22:00 local.
+ * Opens and measures the health log's days. Two schedules invoke it:
+ *
+ *   00:05  `{ "mode": "open" }`: creates today with an "awaiting" placeholder,
+ *          so Claude can annotate it during the day. No Google read; a day
+ *          that already exists is left exactly as it is.
+ *   22:00  no input: the measuring run described below.
  *
  * Three Google Health reads per run, whatever the window: sleep over the
  * window, and HRV and resting heart rate over the window plus its baselines.
@@ -37,6 +42,16 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 /** The API's page-size ceiling for sleep. */
 const SLEEP_PAGE_SIZE = 25;
 
+export interface IngestEvent {
+  mode?: 'open' | 'measure';
+}
+
+export interface OpenSummary {
+  mode: 'open';
+  date: string;
+  created: boolean;
+}
+
 export interface IngestSummary {
   from: string;
   to: string;
@@ -44,7 +59,46 @@ export interface IngestSummary {
   settledSkipped: number;
 }
 
-export const handler = async (): Promise<IngestSummary> => {
+export async function handler(event: IngestEvent & { mode: 'open' }): Promise<OpenSummary>;
+export async function handler(event?: { mode?: 'measure' }): Promise<IngestSummary>;
+export async function handler(event?: IngestEvent): Promise<IngestSummary | OpenSummary>;
+export async function handler(event: IngestEvent = {}): Promise<IngestSummary | OpenSummary> {
+  if (event?.mode === 'open') return openToday();
+  return measure();
+}
+
+async function openToday(): Promise<OpenSummary> {
+  const tableName = process.env.HEALTH_LOG_TABLE_NAME;
+  const timeZone = process.env.HEALTH_TIME_ZONE;
+  if (!tableName || !timeZone || !isValidTimeZone(timeZone)) {
+    throw new Error('Missing required env: HEALTH_LOG_TABLE_NAME, HEALTH_TIME_ZONE');
+  }
+  const now = new Date();
+  const date = localDate(now, timeZone);
+  let created = true;
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { pk: HEALTH_LOG_PK, date },
+        UpdateExpression: 'SET #measured = :measured, #createdAt = :createdAt',
+        // Never over an existing day: a re-run, or a hand-run backfill that
+        // already measured it, keeps what is there.
+        ConditionExpression: 'attribute_not_exists(#measured)',
+        ExpressionAttributeNames: { '#measured': 'measured', '#createdAt': 'createdAt' },
+        ExpressionAttributeValues: { ':measured': awaitingDay(), ':createdAt': now.toISOString() },
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    created = false;
+  }
+  const summary: OpenSummary = { mode: 'open', date, created };
+  console.log('Health log open', JSON.stringify(summary));
+  return summary;
+}
+
+async function measure(): Promise<IngestSummary> {
   const tableName = process.env.HEALTH_LOG_TABLE_NAME;
   const secretName = process.env.GOOGLE_HEALTH_SECRET_NAME;
   const timeZone = process.env.HEALTH_TIME_ZONE;
@@ -117,4 +171,4 @@ export const handler = async (): Promise<IngestSummary> => {
   const summary = { from: first, to: today, written, settledSkipped };
   console.log('Health log ingest', JSON.stringify(summary));
   return summary;
-};
+}

@@ -15,7 +15,7 @@ jest.mock('@aws-sdk/client-secrets-manager', () => {
 import { handler as ingest } from '../lambda/health-log-ingest';
 import { handler as updateHealthLog } from '../lambda/update-health-log';
 import { handler as listHealthLog } from '../lambda/list-health-log';
-import { LOG_DAYS, logDates, measureDay, updateHealthLogSchema } from '../lambda/health-log-schema';
+import { LOG_DAYS, awaitingDay, logDates, measureDay, updateHealthLogSchema } from '../lambda/health-log-schema';
 import { resetGoogleHealthCache } from '../lambda/google-health';
 import type { DailyValue, SleepSession } from '../lambda/readiness';
 
@@ -217,6 +217,39 @@ describe('the nightly ingest', () => {
 
     await expect(ingest()).rejects.toThrow();
     expect(mockDdbSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('opening today at 00:05', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn() as unknown as typeof fetch;
+    // 00:05 in Montreal on the 18th (05:05 UTC).
+    jest.useFakeTimers({ now: new Date('2026-11-18T05:05:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
+  });
+
+  it('should create today as an awaiting placeholder without reading Google', async () => {
+    delete process.env.GOOGLE_HEALTH_SECRET_NAME;
+    mockDdbSend.mockResolvedValueOnce({});
+
+    const summary = await ingest({ mode: 'open' });
+
+    expect(summary).toEqual({ mode: 'open', date: '2026-11-18', created: true });
+    expect(global.fetch).not.toHaveBeenCalled();
+    const { input } = mockDdbSend.mock.calls[0][0];
+    expect(input.Key).toEqual({ pk: 'DAY', date: '2026-11-18' });
+    expect(input.UpdateExpression).toBe('SET #measured = :measured, #createdAt = :createdAt');
+    expect(input.ConditionExpression).toBe('attribute_not_exists(#measured)');
+    expect(input.ExpressionAttributeValues[':measured']).toMatchObject({ status: 'awaiting', verdict: null, settled: false });
+  });
+
+  it('should leave a day that already exists exactly as it is', async () => {
+    mockDdbSend.mockRejectedValueOnce(conditionFailed());
+
+    expect(await ingest({ mode: 'open' })).toEqual({ mode: 'open', date: '2026-11-18', created: false });
+  });
+
+  it('should let the 22:00 run overwrite the placeholder, since it is never settled', async () => {
+    expect(awaitingDay().settled).toBe(false);
   });
 });
 

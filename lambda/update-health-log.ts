@@ -17,7 +17,8 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
  *
  * The one write Claude has on the log, and it is narrow by construction: the
  * schema admits only the note fields, the update expression names only those,
- * and the condition refuses a day the nightly job has not created. So it can
+ * and the condition refuses a day the scheduled job has not created (today is
+ * opened at 00:05). So it can
  * neither create a day nor touch what the watch measured. A field sent as null
  * is removed; a field left out is left as it was.
  */
@@ -79,8 +80,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (error instanceof ConditionalCheckFailedException) {
       return respond(404, {
         message:
-          `No health log entry for ${date}. Entries are created only by the nightly job at 22:00 the owner's ` +
-          `time: today's appears after tonight's run, and days before the log's first 28-day backfill never exist.`,
+          `No health log entry for ${date}. Days are created only by the scheduled job: today's at 00:05 the ` +
+          `owner's time, so a future day does not exist yet, and days before the log's first 28-day backfill never will.`,
       });
     }
     throw error;

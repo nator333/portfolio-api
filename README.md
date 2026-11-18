@@ -98,9 +98,11 @@ step 2 fixes it.
 A private record per day (`lambda/health-log-schema.ts`), with two writers that
 cannot touch each other's half:
 
-* **`measured`** — written by `lambda/health-log-ingest.ts`, scheduled by
-  EventBridge Scheduler at **22:00 America/Toronto** (time-zone aware, so it
-  stays at 22:00 across DST). Each run reads Google Health once and judges every
+* **`measured`** — written by `lambda/health-log-ingest.ts`, run twice a day
+  by EventBridge Scheduler in **America/Toronto** time (time-zone aware, so the
+  times hold across DST). At **00:05** it opens today with an `awaiting`
+  placeholder and no Google read, so daytime notes have a record to land on,
+  even if the Google grant has lapsed. At **22:00** it measures. Each run reads Google Health once and judges every
   day of the last 28 with the same arithmetic as `get_readiness`: sleep, HRV and
   resting heart rate with their baselines, the verdict, and its reasons. Unlike
   `get_readiness` this can be scheduled: it records a day after the fact, when
@@ -111,7 +113,7 @@ cannot touch each other's half:
   and judged it is `settled`, and never rewritten.
 * **Notes** — `notes`, `tags`, and 1–5 `energy` / `mood` / `stress` /
   `soreness`, written by Claude via `update_health_log` from conversation. The
-  tool can only update a day the job has created (`attribute_exists`
+  tool can only update a day the scheduler has created (`attribute_exists`
   condition) and only those fields; it cannot create a day or change a measured
   value. `list_health_log` reads it back.
 

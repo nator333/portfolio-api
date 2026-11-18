@@ -516,8 +516,8 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     title: 'List health log days',
     description:
       'The owner\'s private daily health log, newest first. Each day has `measured` (last night\'s ' +
-      'sleep, HRV, resting heart rate and readiness verdict, written by a nightly job from Google ' +
-      'Health; `settled` once final) and the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
+      'sleep, HRV, resting heart rate and readiness verdict, filled in at 22:00 from Google Health; ' +
+      'status "awaiting" until then, `settled` once final) and the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
       '`mood`, `stress`, `soreness`). Read a day before update_health_log so existing notes are ' +
       `kept. Defaults to the last ${HEALTH_LIST_DEFAULT_DAYS} days. Admin only.`,
     requiresAuth: true,
@@ -539,9 +539,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     title: 'Annotate health log day',
     description:
       'Record what the owner said about a day\'s health on that day\'s existing log entry. Only ' +
-      'days the nightly job has created can be annotated (each night at 22:00 the owner\'s time, ' +
-      'covering the last 28 days); there is no way to add a day, and the measured values cannot ' +
-      'be changed. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
+      'days the scheduler has created can be annotated: today exists from 00:05 the owner\'s time, ' +
+      'so notes about today can be saved during the day. There is no way to add a day, and the ' +
+      'measured values cannot be changed. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
       'revised text, in the conversation\'s language. `tags` are lowercase English, e.g. "cold", ' +
       '"lower-back". Ratings are 1-5 in their plain sense (energy and mood: 5 is high; stress and ' +
       'soreness: 5 is severe); set one only when the owner said something that clearly maps to it. ' +
