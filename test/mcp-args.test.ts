@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { TOOL_ARGS, inputSchemaOf } from '../lambda/mcp-args';
 import { TOOL_SPECS } from '../lambda/mcp-schema';
 import { MAX_DAYS, MIN_DAYS } from '../lambda/weight-trend';
+import { TOOL_OUTPUTS, outputSchemaOf } from '../lambda/mcp-outputs';
+import { expectMatchesOutputSchema } from './output-schema';
 
 describe('one schema per tool', () => {
   it('should define arguments for exactly the advertised tools', () => {
@@ -110,5 +112,24 @@ describe('revise_workout_plan arguments', () => {
     const result = args.safeParse({ changeNote: 'x', plan: PLAN, baseVersion: 3, name: 'Renamed' });
     expect(result.success).toBe(false);
     expect(result.error!.issues.map((i) => i.path.join('.')).sort()).toEqual(['baseVersion', 'name']);
+  });
+});
+
+describe('output schemas', () => {
+  it('should advertise the JSON Schema generated from each output schema, and only for those tools', () => {
+    for (const tool of TOOL_SPECS) {
+      const output = TOOL_OUTPUTS[tool.name as keyof typeof TOOL_OUTPUTS];
+      expect([tool.name, tool.outputSchema]).toEqual([tool.name, output ? outputSchemaOf(output) : undefined]);
+    }
+  });
+
+  it('should describe objects, as structuredContent must be one', () => {
+    for (const [name, schema] of Object.entries(TOOL_OUTPUTS)) {
+      expect([name, outputSchemaOf(schema).type]).toEqual([name, 'object']);
+    }
+  });
+
+  it('should make the test helper fail, naming the field, on a result that does not match', () => {
+    expect(() => expectMatchesOutputSchema('list_health_log', { from: 'x', to: 'y', count: 'one', days: [] })).toThrow(/count/);
   });
 });
