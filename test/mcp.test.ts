@@ -295,13 +295,39 @@ test('get_content refuses a doc it does not know, including prototype names', as
   for (const doc of ['resume', 'constructor']) {
     const { json } = await call({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'get_content', arguments: { doc } } });
     expect(json.result.isError).toBe(true);
-    expect(json.result.content[0].text).toMatch(/Unknown doc/);
+    // Refused by the tool's own schema, before any handler is looked up.
+    expect(json.result.structuredContent.error).toMatchObject({
+      code: 'invalid_input',
+      details: { issues: [{ path: 'doc', message: expect.stringContaining('"cv"') }] },
+    });
   }
   expect(mockGetCv).not.toHaveBeenCalled();
 });
 
 describe('revise_workout_plan', () => {
   const ok = { statusCode: 201, body: '{}' } as APIGatewayProxyResult;
+  /** The smallest plan version the tool's schema accepts. */
+  const PLAN = {
+    planId: 'upper-lower',
+    version: 4,
+    name: 'Upper/Lower',
+    sessionsPerWeek: 1,
+    rotation: ['upper-a'],
+    bonusSessions: [],
+    sessions: [
+      {
+        id: 'upper-a',
+        name: 'Upper A',
+        notes: '',
+        exercises: [
+          { order: 1, options: ['Bench Press'], muscle: 'Chest', sets: { min: 3, max: 3 }, reps: { min: 8, max: 10 }, rpe: null, notes: '' },
+        ],
+      },
+    ],
+    effectiveFrom: null,
+    effectiveTo: null,
+    notes: '',
+  };
   const revise = (args: Record<string, unknown>) =>
     call(
       { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'revise_workout_plan', arguments: args } },
@@ -323,26 +349,32 @@ describe('revise_workout_plan', () => {
   });
 
   test('a whole plan is published as a new version, carrying the changeNote into it', async () => {
-    await revise({ changeNote: 'new block', plan: { planId: 'upper-lower', version: 4 } });
+    await revise({ changeNote: 'new block', plan: PLAN });
 
     expect(mockRevisePlan).not.toHaveBeenCalled();
     expect(JSON.parse(mockUpdatePlan.mock.calls[0][0].body ?? '')).toEqual({
-      planId: 'upper-lower',
-      version: 4,
+      ...PLAN,
       changeNote: 'new block',
     });
   });
 
   test("the plan's own changeNote wins over the tool's", async () => {
-    await revise({ changeNote: 'outer', plan: { version: 4, changeNote: 'inner' } });
+    await revise({ changeNote: 'outer', plan: { ...PLAN, changeNote: 'inner' } });
     expect(JSON.parse(mockUpdatePlan.mock.calls[0][0].body ?? '').changeNote).toBe('inner');
   });
 
   test('a plan sent with edits is refused and nothing is written', async () => {
-    const { json } = await revise({ changeNote: 'both', plan: { version: 4 }, edits: [{ op: 'remove' }] });
+    const { json } = await revise({
+      changeNote: 'both',
+      plan: PLAN,
+      edits: [{ op: 'remove', session: 'upper-a', order: 1 }],
+    });
 
     expect(json.result.isError).toBe(true);
-    expect(json.result.content[0].text).toMatch(/not both; drop edits/);
+    expect(json.result.structuredContent.error).toMatchObject({
+      code: 'invalid_input',
+      details: { issues: [{ path: 'edits', message: expect.stringMatching(/Only with `edits`/) }] },
+    });
     expect(mockRevisePlan).not.toHaveBeenCalled();
     expect(mockUpdatePlan).not.toHaveBeenCalled();
   });
@@ -409,4 +441,52 @@ test('JSON-RPC batches are rejected as invalid requests', async () => {
   const result = await handler({ body: JSON.stringify([{ jsonrpc: '2.0', id: 1, method: 'ping' }]), headers: {} } as unknown as APIGatewayProxyEvent);
   const json = JSON.parse(result.body);
   expect(json.error.code).toBe(-32600);
+});
+
+describe('arguments are checked once, against the schema tools/list advertises', () => {
+  const list = (args: Record<string, unknown>) =>
+    call(
+      { jsonrpc: '2.0', id: 20, method: 'tools/call', params: { name: 'list_reflections', arguments: args } },
+      { Authorization: 'Bearer good' },
+    );
+
+  beforeEach(() => {
+    mockVerify.mockResolvedValue(adminPayload());
+    mockListReflections.mockResolvedValue({ statusCode: 200, body: '{"count":0,"reflections":[]}' } as APIGatewayProxyResult);
+  });
+
+  it('should hand the handler the parsed arguments as query strings', async () => {
+    await list({ limit: 5, theme: ' Sleep ', from: '2026-11-01' });
+
+    // Numbers stringified as a URL would; the theme normalised by its schema.
+    expect(mockListReflections.mock.calls[0][0].queryStringParameters).toEqual({
+      limit: '5',
+      theme: 'sleep',
+      from: '2026-11-01',
+    });
+  });
+
+  it.each([
+    ['an argument the tool does not take', { limt: 5 }, '(root)'],
+    ['a number out of range', { limit: 1000 }, 'limit'],
+    ['a wrong type', { limit: '5' }, 'limit'],
+    ['a malformed date', { from: '1 Nov' }, 'from'],
+  ])('should refuse %s before the handler runs', async (_label, args, path) => {
+    const { json } = await list(args);
+
+    expect(json.result.isError).toBe(true);
+    expect(json.result.structuredContent.error.code).toBe('invalid_input');
+    expect(json.result.structuredContent.error.details.issues[0].path).toBe(path);
+    expect(mockListReflections).not.toHaveBeenCalled();
+  });
+
+  it('should treat missing arguments as an empty object', async () => {
+    const { json } = await call(
+      { jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'list_reflections' } },
+      { Authorization: 'Bearer good' },
+    );
+
+    expect(json.result.isError).toBe(false);
+    expect(mockListReflections.mock.calls[0][0].queryStringParameters).toEqual({});
+  });
 });
