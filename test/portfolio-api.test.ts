@@ -902,7 +902,14 @@ test('the health log opens at 00:05 and measures at 22:00 Montreal time, only wh
     State: 'ENABLED',
     Target: Match.objectLike({ Input: JSON.stringify({ mode: 'open' }) }),
   });
-  expect(Object.keys(template.findResources('AWS::Scheduler::Schedule'))).toHaveLength(2);
+  // 10:00 records today's readiness unless an update already did.
+  template.hasResourceProperties('AWS::Scheduler::Schedule', {
+    ScheduleExpression: 'cron(0 10 * * ? *)',
+    ScheduleExpressionTimezone: 'America/Toronto',
+    State: 'ENABLED',
+    Target: Match.objectLike({ Input: JSON.stringify({ mode: 'morning' }) }),
+  });
+  expect(Object.keys(template.findResources('AWS::Scheduler::Schedule'))).toHaveLength(3);
 
   const dev = synthStack();
   expect(Object.keys(dev.findResources('AWS::DynamoDB::Table')).some((id) => id.startsWith('HealthLogTable'))).toBe(false);
@@ -937,7 +944,7 @@ test('only the nightly job can create a health log day, and nothing can delete o
   expect(Object.keys(actionsByRole)).toHaveLength(2);
   // UpdateItem with no condition creates an item, so the job's UpdateItem is
   // its create; the MCP server's handler always conditions on existence.
-  expect(byPrefix('HealthLogIngestFunction')).toEqual(['dynamodb:UpdateItem']);
+  expect(byPrefix('HealthLogIngestFunction')).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
   expect(byPrefix('McpFunction')).toEqual(['dynamodb:Query', 'dynamodb:UpdateItem']);
 });
 

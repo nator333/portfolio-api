@@ -516,8 +516,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     title: 'List health log days',
     description:
       'The owner\'s private daily health log, newest first. Each day has `measured` (last night\'s ' +
-      'sleep, HRV, resting heart rate and readiness verdict, filled in at 22:00 from Google Health; ' +
-      'status "awaiting" until then, `settled` once final) and the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
+      'sleep, HRV, resting heart rate and readiness verdict from Google Health, recorded on the ' +
+      'first update of the day or at 10:00, refreshed at 22:00; status "awaiting" until then, ' +
+      '`settled` once final) and the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
       '`mood`, `stress`, `soreness`). Read a day before update_health_log so existing notes are ' +
       `kept. Defaults to the last ${HEALTH_LIST_DEFAULT_DAYS} days. Admin only.`,
     requiresAuth: true,
@@ -541,7 +542,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'Record what the owner said about a day\'s health on that day\'s existing log entry. Only ' +
       'days the scheduler has created can be annotated: today exists from 00:05 the owner\'s time, ' +
       'so notes about today can be saved during the day. There is no way to add a day, and the ' +
-      'measured values cannot be changed. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
+      'measured values cannot be changed. If the day has no readiness yet, this call also fetches ' +
+      'it from Google Health; `readinessFetch` says whether that worked, and the notes are saved ' +
+      'either way. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
       'revised text, in the conversation\'s language. `tags` are lowercase English, e.g. "cold", ' +
       '"lower-back". Ratings are 1-5 in their plain sense (energy and mood: 5 is high; stress and ' +
       'soreness: 5 is severe); set one only when the owner said something that clearly maps to it. ' +
@@ -561,7 +564,8 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       required: ['date'],
       additionalProperties: false,
     },
-    annotations: writeAnnotations,
+    // Reaches Google Health when the day has no readiness yet.
+    annotations: { ...writeAnnotations, openWorldHint: true },
   },
 ] as const;
 

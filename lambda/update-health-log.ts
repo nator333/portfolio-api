@@ -8,6 +8,9 @@ import {
   updateHealthLogSchema,
   type HealthLogItem,
 } from './health-log-schema';
+import { hasReadiness, recordReadiness } from './health-log-measure';
+import { GoogleHealthError } from './google-health';
+import { isValidTimeZone } from './readiness';
 import { corsHeaders } from './cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -18,9 +21,16 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
  * The one write Claude has on the log, and it is narrow by construction: the
  * schema admits only the note fields, the update expression names only those,
  * and the condition refuses a day the scheduled job has not created (today is
- * opened at 00:05). So it can
- * neither create a day nor touch what the watch measured. A field sent as null
- * is removed; a field left out is left as it was.
+ * opened at 00:05). So Claude can neither create a day nor supply a measured
+ * value. A field sent as null is removed; a field left out is left as it was.
+ *
+ * After the notes are saved, if the day has no readiness reading yet, the
+ * handler itself tries to record one from Google Health, so the first note of
+ * the morning also captures the night's sleep, HRV and resting heart rate.
+ * The values come from Google, never from Claude's arguments, and are written
+ * under the 'until-ready' rule (health-log-measure.ts), which never replaces
+ * a "ready" reading. A Google failure is reported in `readinessFetch` and
+ * does not undo the notes; the 10:00 and 22:00 runs try again.
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const headers = { 'Content-Type': 'application/json', ...corsHeaders(event) };
@@ -75,7 +85,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ReturnValues: 'ALL_NEW',
       }),
     );
-    return respond(200, toHealthLogEntry(result.Attributes as HealthLogItem));
+    const saved = result.Attributes as HealthLogItem;
+    const { item, readinessFetch } = await fillReadiness(tableName, saved);
+    return respond(200, { ...toHealthLogEntry(item), readinessFetch });
   } catch (error) {
     if (error instanceof ConditionalCheckFailedException) {
       return respond(404, {
@@ -87,3 +99,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     throw error;
   }
 };
+
+type ReadinessFetch =
+  | { attempted: false; reason: 'already_ready' }
+  | { attempted: true; outcome: 'recorded' | 'already_ready' }
+  | { attempted: true; outcome: 'failed'; message: string };
+
+/** Try to record the day's readiness if it has none. Never throws. */
+async function fillReadiness(
+  tableName: string,
+  item: HealthLogItem,
+): Promise<{ item: HealthLogItem; readinessFetch: ReadinessFetch }> {
+  if (hasReadiness(item)) return { item, readinessFetch: { attempted: false, reason: 'already_ready' } };
+
+  const secretName = process.env.GOOGLE_HEALTH_SECRET_NAME;
+  const timeZone = process.env.HEALTH_TIME_ZONE;
+  if (!secretName || !timeZone || !isValidTimeZone(timeZone)) {
+    return {
+      item,
+      readinessFetch: { attempted: true, outcome: 'failed', message: 'Google Health is not configured on this endpoint' },
+    };
+  }
+  try {
+    const stored = await recordReadiness(tableName, secretName, timeZone, item.date);
+    // null: something else recorded a ready reading first; the notes still stand.
+    return stored
+      ? { item: stored, readinessFetch: { attempted: true, outcome: 'recorded' } }
+      : { item, readinessFetch: { attempted: true, outcome: 'already_ready' } };
+  } catch (error) {
+    const message = error instanceof GoogleHealthError ? error.message : 'Google Health could not be read';
+    console.error('Readiness fetch on health log update failed', error);
+    return { item, readinessFetch: { attempted: true, outcome: 'failed', message } };
+  }
+}

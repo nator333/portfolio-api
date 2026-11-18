@@ -944,7 +944,8 @@ export class PortfolioApiStack extends cdk.Stack {
       googleHealthSecret.grantRead(healthLogIngestFn);
       healthLogIngestFn.addToRolePolicy(
         new iam.PolicyStatement({
-          actions: ['dynamodb:UpdateItem'],
+          // GetItem: the 10:00 run checks the day before calling Google.
+          actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
           resources: [healthLogTable.tableArn],
         }),
       );
@@ -974,6 +975,20 @@ export class PortfolioApiStack extends cdk.Stack {
           retryAttempts: 2,
         }),
         description: 'Opens today\'s private health log entry for daytime notes',
+      });
+      new scheduler.Schedule(this, 'HealthLogMorningSchedule', {
+        // Records today's readiness if the first note of the day has not
+        // already done so; a no-op (no Google call) when it has.
+        schedule: scheduler.ScheduleExpression.cron({
+          minute: '0',
+          hour: '10',
+          timeZone: HEALTH_SCHEDULE_TIME_ZONE,
+        }),
+        target: new schedulerTargets.LambdaInvoke(healthLogIngestFn, {
+          input: scheduler.ScheduleTargetInput.fromObject({ mode: 'morning' }),
+          retryAttempts: 2,
+        }),
+        description: 'Records today\'s readiness in the private health log unless already recorded',
       });
 
       mcpFn.addEnvironment('HEALTH_LOG_TABLE_NAME', healthLogTable.tableName);

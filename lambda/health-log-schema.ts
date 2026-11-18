@@ -16,10 +16,13 @@ import {
  * Each record has two halves with two different writers, and neither may
  * touch the other's:
  *
- *   measured   written by the scheduled job (health-log-ingest.ts): a
- *              placeholder at 00:05 that opens the day, then at 22:00 last
- *              night's sleep, HRV and resting heart rate from Google Health,
- *              judged by the same arithmetic as get_readiness.
+ *   measured   last night's sleep, HRV and resting heart rate from Google
+ *              Health, judged by the same arithmetic as get_readiness. Always
+ *              read from Google by the server, never supplied by Claude: a
+ *              placeholder at 00:05, a reading on the day's first
+ *              update_health_log or at 10:00, whichever comes first, and a
+ *              refresh at 22:00 (see health-log-ingest.ts and
+ *              health-log-measure.ts).
  *   notes      written by Claude through update_health_log, from what the
  *              owner says in conversation: how the day felt, soreness,
  *              illness, stress, and so on.

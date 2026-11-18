@@ -102,7 +102,13 @@ cannot touch each other's half:
   by EventBridge Scheduler in **America/Toronto** time (time-zone aware, so the
   times hold across DST). At **00:05** it opens today with an `awaiting`
   placeholder and no Google read, so daytime notes have a record to land on,
-  even if the Google grant has lapsed. At **22:00** it measures. Each run reads Google Health once and judges every
+  even if the Google grant has lapsed. Today's readiness is then recorded by
+  whichever comes first: the day's **first `update_health_log`** (after saving
+  the notes, the handler reads Google itself if the day has no `ready` reading;
+  a Google failure is reported in `readinessFetch` and the notes still save),
+  or the **10:00** run. The 10:00 run is idempotent: it checks the day first
+  and does nothing, with no Google call, if it is already `ready`, and both
+  writers only write while the day is not `ready`. At **22:00** it measures. Each run reads Google Health once and judges every
   day of the last 28 with the same arithmetic as `get_readiness`: sleep, HRV and
   resting heart rate with their baselines, the verdict, and its reasons. Unlike
   `get_readiness` this can be scheduled: it records a day after the fact, when
@@ -118,7 +124,7 @@ cannot touch each other's half:
   value. `list_health_log` reads it back.
 
 The table (`HealthLogTable`) is retained, has point-in-time recovery, and is
-granted to nothing public: the job has `UpdateItem` only, the MCP server
+granted to nothing public: the job has `GetItem` and `UpdateItem`, the MCP server
 `Query` and `UpdateItem`. Neither can delete. To backfill without waiting for
 22:00, invoke `HealthLogIngestFunction` by hand after deploying.
 

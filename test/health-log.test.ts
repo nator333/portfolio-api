@@ -119,42 +119,53 @@ describe('measuring a day', () => {
   });
 });
 
+/**
+ * Stub Google Health: a full night ending on `day` (unless `sleep` is false),
+ * and daily HRV 50 ms / RHR 55 bpm on `day` and the 40 days before it.
+ */
+function stubGoogle(day: string, opts: { sleep?: boolean } = {}): jest.Mock {
+  resetGoogleHealthCache();
+  mockSecretsSend.mockReset();
+  mockSecretsSend.mockResolvedValue({
+    SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'cs', refresh_token: 'rt' }),
+  });
+  const baseline = daysBefore(day, 40);
+  const fetchMock = jest.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.startsWith('https://oauth2.googleapis.com/token')) {
+      return new Response(JSON.stringify({ access_token: 'at', expires_in: 3600 }), { status: 200 });
+    }
+    const type = /dataTypes\/([^/]+)\/dataPoints/.exec(url)?.[1];
+    const dataPoints =
+      type === 'sleep'
+        ? opts.sleep === false
+          ? []
+          : [
+            {
+              sleep: {
+                interval: { endTime: `${day}T11:00:00Z`, civilEndTime: { date: gDate(day) } },
+                metadata: { processed: true, mainSleep: true },
+                summary: { minutesAsleep: '450' },
+              },
+            },
+          ]
+        : type === 'daily-heart-rate-variability'
+          ? [...baseline, day].map((d) => ({
+              dailyHeartRateVariability: { date: gDate(d), averageHeartRateVariabilityMilliseconds: 50 },
+            }))
+          : [...baseline, day].map((d) => ({ dailyRestingHeartRate: { date: gDate(d), beatsPerMinute: '55' } }));
+    return new Response(JSON.stringify({ dataPoints }), { status: 200 });
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+  return fetchMock;
+}
+
 describe('the nightly ingest', () => {
   let fetchMock: jest.Mock;
   const today = '2026-11-18';
 
   beforeEach(() => {
-    resetGoogleHealthCache();
-    mockSecretsSend.mockReset();
-    mockSecretsSend.mockResolvedValue({
-      SecretString: JSON.stringify({ client_id: 'cid', client_secret: 'cs', refresh_token: 'rt' }),
-    });
-    const baseline = daysBefore(today, 40);
-    fetchMock = jest.fn(async (input: string | URL) => {
-      const url = String(input);
-      if (url.startsWith('https://oauth2.googleapis.com/token')) {
-        return new Response(JSON.stringify({ access_token: 'at', expires_in: 3600 }), { status: 200 });
-      }
-      const type = /dataTypes\/([^/]+)\/dataPoints/.exec(url)?.[1];
-      const dataPoints =
-        type === 'sleep'
-          ? [
-              {
-                sleep: {
-                  interval: { endTime: `${today}T11:00:00Z`, civilEndTime: { date: gDate(today) } },
-                  metadata: { processed: true, mainSleep: true },
-                  summary: { minutesAsleep: '450' },
-                },
-              },
-            ]
-          : type === 'daily-heart-rate-variability'
-            ? [...baseline, today].map((d) => ({
-                dailyHeartRateVariability: { date: gDate(d), averageHeartRateVariabilityMilliseconds: 50 },
-              }))
-            : [...baseline, today].map((d) => ({ dailyRestingHeartRate: { date: gDate(d), beatsPerMinute: '55' } }));
-      return new Response(JSON.stringify({ dataPoints }), { status: 200 });
-    });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock = stubGoogle(today);
     // 22:00 in Montreal on the 18th; already the 19th in UTC.
     jest.useFakeTimers({ now: new Date('2026-11-19T03:00:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
   });
@@ -253,6 +264,129 @@ describe('opening today at 00:05', () => {
   });
 });
 
+describe('the 10:00 morning run', () => {
+  const today = '2026-11-18';
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = stubGoogle(today);
+    // 10:00 in Montreal on the 18th.
+    jest.useFakeTimers({ now: new Date('2026-11-18T15:00:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
+  });
+
+  const googleCalls = () => fetchMock.mock.calls.filter(([u]) => String(u).includes('health.googleapis.com'));
+
+  it('should do nothing, not even call Google, when today already has readiness', async () => {
+    mockDdbSend.mockResolvedValueOnce({ Item: { pk: 'DAY', date: today, measured: { status: 'ready', settled: false } } });
+
+    expect(await ingest({ mode: 'morning' })).toEqual({ mode: 'morning', date: today, outcome: 'already_ready' });
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+    expect(mockDdbSend.mock.calls[0][0].input.Key).toEqual({ pk: 'DAY', date: today });
+    expect(googleCalls()).toHaveLength(0);
+  });
+
+  it('should record today over the awaiting placeholder, only while it is not ready', async () => {
+    mockDdbSend
+      .mockResolvedValueOnce({ Item: { pk: 'DAY', date: today, measured: { status: 'awaiting', settled: false } } })
+      .mockImplementationOnce(async (cmd) => ({ Attributes: { pk: 'DAY', date: today, measured: cmd.input.ExpressionAttributeValues[':measured'] } }));
+
+    expect(await ingest({ mode: 'morning' })).toEqual({ mode: 'morning', date: today, outcome: 'recorded', status: 'ready' });
+    const { input } = mockDdbSend.mock.calls[1][0];
+    expect(input.Key).toEqual({ pk: 'DAY', date: today });
+    expect(input.ConditionExpression).toBe(
+      'attribute_not_exists(#measured) OR (#measured.#settled = :false AND #measured.#status <> :ready)',
+    );
+    expect(input.UpdateExpression).not.toMatch(/notes|tags|energy|mood|stress|soreness/);
+    // One day's reads: sleep ending today, HRV/RHR for today plus its baseline.
+    expect(googleCalls().map(([u]) => new URL(String(u)).searchParams.get('filter'))).toEqual(
+      expect.arrayContaining([
+        'sleep.interval.civil_end_time >= "2026-11-18" AND sleep.interval.civil_end_time < "2026-11-19"',
+        'daily_heart_rate_variability.date >= "2026-10-21" AND daily_heart_rate_variability.date < "2026-11-19"',
+      ]),
+    );
+  });
+
+  it('should record a not-yet-synced morning too, so a later update or 22:00 can fill it in', async () => {
+    fetchMock = stubGoogle(today, { sleep: false });
+    mockDdbSend
+      .mockResolvedValueOnce({})
+      .mockImplementationOnce(async (cmd) => ({ Attributes: { pk: 'DAY', date: today, measured: cmd.input.ExpressionAttributeValues[':measured'] } }));
+
+    expect(await ingest({ mode: 'morning' })).toMatchObject({ outcome: 'recorded', status: 'not_synced' });
+  });
+
+  it('should treat a write refused because an update got there first as already done', async () => {
+    mockDdbSend.mockResolvedValueOnce({ Item: { pk: 'DAY', date: today, measured: { status: 'awaiting' } } })
+      .mockRejectedValueOnce(conditionFailed());
+
+    expect(await ingest({ mode: 'morning' })).toEqual({ mode: 'morning', date: today, outcome: 'already_ready' });
+  });
+});
+
+describe('the first update of the day fetching readiness', () => {
+  const today = '2026-11-18';
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = stubGoogle(today);
+    // 08:00 in Montreal: before the 10:00 run.
+    jest.useFakeTimers({ now: new Date('2026-11-18T13:00:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
+  });
+
+  const awaitingWithNotes = { pk: 'DAY', date: today, measured: { status: 'awaiting', settled: false }, notes: 'Slept badly' };
+
+  it('should save the notes, then record readiness from Google under the until-ready rule', async () => {
+    mockDdbSend
+      .mockResolvedValueOnce({ Attributes: awaitingWithNotes })
+      .mockImplementationOnce(async (cmd) => ({
+        Attributes: { ...awaitingWithNotes, measured: cmd.input.ExpressionAttributeValues[':measured'] },
+      }));
+
+    const { statusCode, body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Slept badly' })));
+
+    expect(statusCode).toBe(200);
+    expect(body.notes).toBe('Slept badly');
+    expect(body.measured).toMatchObject({ status: 'ready', sleep: { minutesAsleep: 450 } });
+    expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded' });
+    const [notesWrite, measureWrite] = mockDdbSend.mock.calls.map(([c]) => c.input);
+    expect(notesWrite.UpdateExpression).not.toContain('#measured =');
+    expect(measureWrite.ConditionExpression).toBe(
+      'attribute_not_exists(#measured) OR (#measured.#settled = :false AND #measured.#status <> :ready)',
+    );
+  });
+
+  it('should not call Google when the day already has readiness', async () => {
+    mockDdbSend.mockResolvedValueOnce({ Attributes: { ...awaitingWithNotes, measured: { status: 'ready' } } });
+
+    const { body } = parse(await updateHealthLog(bodyEvent({ date: today, mood: 3 })));
+
+    expect(body.readinessFetch).toEqual({ attempted: false, reason: 'already_ready' });
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should keep the notes and report the failure when Google cannot be read', async () => {
+    fetchMock.mockImplementation(async () => new Response('{"error":"invalid_grant"}', { status: 400 }));
+    mockDdbSend.mockResolvedValueOnce({ Attributes: awaitingWithNotes });
+
+    const { statusCode, body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Slept badly' })));
+
+    expect(statusCode).toBe(200);
+    expect(body.notes).toBe('Slept badly');
+    expect(body.measured.status).toBe('awaiting');
+    expect(body.readinessFetch).toMatchObject({ attempted: true, outcome: 'failed' });
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('should leave a reading another writer made first, and say so', async () => {
+    mockDdbSend.mockResolvedValueOnce({ Attributes: awaitingWithNotes }).mockRejectedValueOnce(conditionFailed());
+
+    const { body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Slept badly' })));
+
+    expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'already_ready' });
+  });
+});
+
 describe('annotating a day', () => {
   it('should set only the note fields, remove the nulled ones, and require the day to exist', async () => {
     mockDdbSend.mockResolvedValueOnce({
@@ -264,7 +398,12 @@ describe('annotating a day', () => {
     );
 
     expect(statusCode).toBe(200);
-    expect(body).toEqual({ date: '2026-11-17', measured: { status: 'ready' }, notes: 'Sore legs' });
+    expect(body).toEqual({
+      date: '2026-11-17',
+      measured: { status: 'ready' },
+      notes: 'Sore legs',
+      readinessFetch: { attempted: false, reason: 'already_ready' },
+    });
     const { input } = mockDdbSend.mock.calls[0][0];
     expect(input.Key).toEqual({ pk: 'DAY', date: '2026-11-17' });
     expect(input.ConditionExpression).toBe('attribute_exists(#measured)');
