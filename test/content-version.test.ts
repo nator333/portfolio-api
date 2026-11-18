@@ -16,6 +16,7 @@ import { handler as updateCv } from '../lambda/update-cv';
 import { handler as updateProjects } from '../lambda/update-projects';
 import { handler as updateBlog } from '../lambda/update-blog';
 import { ifMatch } from '../lambda/content-version';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const get = (headers: Record<string, string> = {}): APIGatewayProxyEvent =>
   ({ headers, queryStringParameters: null }) as unknown as APIGatewayProxyEvent;
@@ -149,3 +150,7 @@ describe('reading If-Match', () => {
     expect(ifMatch(put({}))).toBeUndefined();
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));

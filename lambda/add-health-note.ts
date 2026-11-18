@@ -56,13 +56,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const id = newNoteId(now, randomBytes(2).toString('hex'));
   const note: HealthNote = { at: now.toISOString(), text };
 
+  // Shared by every attempt below. DynamoDB refuses a request that declares a
+  // name or value its expressions do not use, so what only one form of the
+  // write needs (the entry's id, the entry itself, the cap) is added by that
+  // form alone.
   const names: Record<string, string> = {
     '#measured': 'measured',
     '#notes': 'notes',
-    '#id': id,
     '#notesUpdatedAt': 'notesUpdatedAt',
   };
-  const values: Record<string, unknown> = { ':note': note, ':now': note.at };
+  const values: Record<string, unknown> = { ':now': note.at };
   let add = '';
   if (tags && tags.length > 0) {
     names['#tags'] = 'tags';
@@ -70,20 +73,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     add = ' ADD #tags :tags';
   }
 
-  const send = (setNotes: string, condition: string, extraValues: Record<string, unknown>) =>
+  const send = (
+    setNotes: string,
+    condition: string,
+    extra: { names?: Record<string, string>; values?: Record<string, unknown> },
+  ) =>
     ddb.send(
       new UpdateCommand({
         TableName: tableName,
         Key: { pk: HEALTH_LOG_PK, date },
         UpdateExpression: `SET ${setNotes}, #notesUpdatedAt = :now${add}`,
         ConditionExpression: condition,
-        ExpressionAttributeNames: names,
-        ExpressionAttributeValues: { ...values, ...extraValues },
+        ExpressionAttributeNames: { ...names, ...extra.names },
+        ExpressionAttributeValues: { ...values, ...extra.values },
         ReturnValues: 'ALL_NEW',
         // On a refusal, say why: no day, no notes yet, or a full day.
         ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
       }),
     );
+  // Adding the entry to a map that already exists, by its id.
+  const intoMap = { names: { '#id': id }, values: { ':note': note } };
 
   let saved: HealthLogItem;
   try {
@@ -91,7 +100,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const result = await send(
       '#notes.#id = :note',
       'attribute_exists(#measured) AND attribute_exists(#notes) AND size(#notes) < :max',
-      { ':max': HEALTH_NOTES_PER_DAY_MAX },
+      { names: intoMap.names, values: { ...intoMap.values, ':max': HEALTH_NOTES_PER_DAY_MAX } },
     );
     saved = result.Attributes as HealthLogItem;
   } catch (error) {
@@ -117,12 +126,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // created it in the meantime, in which case the first form now applies.
     try {
       const result = await send('#notes = :first', 'attribute_exists(#measured) AND attribute_not_exists(#notes)', {
-        ':first': { [id]: note },
+        values: { ':first': { [id]: note } },
       });
       saved = result.Attributes as HealthLogItem;
     } catch (retryError) {
       if (!(retryError instanceof ConditionalCheckFailedException)) throw retryError;
-      const result = await send('#notes.#id = :note', 'attribute_exists(#measured) AND attribute_exists(#notes)', {});
+      const result = await send('#notes.#id = :note', 'attribute_exists(#measured) AND attribute_exists(#notes)', intoMap);
       saved = result.Attributes as HealthLogItem;
     }
   }

@@ -16,6 +16,7 @@ jest.mock('@anthropic-ai/bedrock-sdk', () => ({
 import { DeleteCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBStreamEvent } from 'aws-lambda';
 import { handler } from '../lambda/gym-summary';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const streamEvent = (...keys: [string, string][]): DynamoDBStreamEvent => ({
   Records: keys.map(([type, sk]) => ({
@@ -130,3 +131,7 @@ describe('gym-summary handler', () => {
     expect(sent(PutCommand).map((p) => p.input.Item?.date)).toEqual(['2026-09-18', '2026-09-19']);
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));

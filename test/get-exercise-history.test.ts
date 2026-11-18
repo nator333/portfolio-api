@@ -12,6 +12,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => {
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { handler, MAX_SETS } from '../lambda/get-exercise-history';
 import { SETS_BY_EXERCISE_INDEX } from '../lambda/workout-schema';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const SETS_TABLE = 'portfolio-workout-sets-test';
 const SUMMARY_TABLE = 'portfolio-workout-summary-test';
@@ -324,3 +325,7 @@ test('declares no expression name it does not use, on every range shape', async 
     ]);
   }
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));

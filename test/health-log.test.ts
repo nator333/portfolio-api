@@ -20,6 +20,7 @@ import { LOG_DAYS, awaitingDay, logDates, measureDay, updateHealthLogSchema } fr
 import { GoogleHealthError, resetGoogleHealthCache } from '../lambda/google-health';
 import { UnreadableHealthDataError, classifyFetchError, toFetchError } from '../lambda/health-log-measure';
 import { expectMatchesOutputSchema } from './output-schema';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 import type { DailyValue, SleepSession } from '../lambda/readiness';
 
 const TABLE = 'health-log-test';
@@ -63,6 +64,8 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.useRealTimers();
+  // Every request these tests made must be one DynamoDB would accept.
+  expectNoUnusedExpressionAttributes(mockDdbSend);
 });
 
 describe('measuring a day', () => {
@@ -553,6 +556,30 @@ describe('adding a note', () => {
     const retry = mockDdbSend.mock.calls[1][0].input;
     expect(retry.UpdateExpression).toBe('SET #notes = :first, #notesUpdatedAt = :now');
     expect(retry.ConditionExpression).toBe('attribute_exists(#measured) AND attribute_not_exists(#notes)');
+  });
+
+  it('should add into the map when another note created it between the two attempts', async () => {
+    mockDdbSend
+      .mockRejectedValueOnce(refusedWith({ measured: { M: {} } }))
+      .mockRejectedValueOnce(refusedWith({ measured: { M: {} }, notes: { M: {} } }))
+      .mockImplementationOnce(async (cmd) => ({
+        Attributes: { ...readyDay, notes: { [cmd.input.ExpressionAttributeNames['#id']]: cmd.input.ExpressionAttributeValues[':note'] } },
+      }));
+
+    const { statusCode, body } = parse(await addHealthNote(bodyEvent({ date: day, text: 'Raced' })));
+
+    expect(statusCode).toBe(200);
+    expect(Object.values(body.notes)).toEqual([{ at: '2026-11-17T23:30:00.000Z', text: 'Raced' }]);
+    expect(mockDdbSend.mock.calls[2][0].input.UpdateExpression).toBe('SET #notes.#id = :note, #notesUpdatedAt = :now');
+  });
+
+  it('should create the first entry with its tags in the same write', async () => {
+    mockDdbSend
+      .mockRejectedValueOnce(refusedWith({ measured: { M: {} } }))
+      .mockImplementationOnce(async (cmd) => ({ Attributes: { ...readyDay, notes: cmd.input.ExpressionAttributeValues[':first'] } }));
+
+    expect((await addHealthNote(bodyEvent({ date: day, text: 'First', tags: ['legs'] }))).statusCode).toBe(200);
+    expect(mockDdbSend.mock.calls[1][0].input.UpdateExpression).toBe('SET #notes = :first, #notesUpdatedAt = :now ADD #tags :tags');
   });
 
   it('should refuse a day the scheduler has not created', async () => {

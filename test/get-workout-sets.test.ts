@@ -10,6 +10,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => {
 });
 
 import { handler, datesInRange, MAX_SPAN_DAYS } from '../lambda/get-workout-sets';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const TABLE = 'portfolio-workout-sets-test';
 
@@ -153,3 +154,7 @@ test('a missing table name is a configuration error, not an empty result', async
   expect(statusCode).toBe(500);
   process.env.WORKOUT_SETS_TABLE_NAME = TABLE;
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));
