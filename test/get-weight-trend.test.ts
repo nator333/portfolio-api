@@ -99,10 +99,22 @@ test('with an exercise, sets its 1RM against bodyweight (log in lb, answer in kg
 
 test('an unknown exercise does not fail the weight answer', async () => {
   answer({ weight: thirtyDays });
-  mockHistory.mockResolvedValue({ statusCode: 404, body: JSON.stringify({ message: 'No exercise matches "curlz"' }) });
+  mockHistory.mockResolvedValue({
+    statusCode: 404,
+    body: JSON.stringify({ message: 'No exercise matches "curlz"', requested: 'curlz', candidates: ['Curl'] }),
+  });
   const result = await handler(event({ exercise: 'curlz' }));
   expect(result.statusCode).toBe(200);
-  expect(JSON.parse(result.body).relativeStrength).toMatchObject({ requested: 'curlz', error: 'No exercise matches "curlz"' });
+  // The shared error shape, candidates included, rather than a bare message.
+  expect(JSON.parse(result.body).relativeStrength).toEqual({
+    requested: 'curlz',
+    error: {
+      code: 'not_found',
+      message: 'No exercise matches "curlz"',
+      retry: 'after_fix',
+      details: { requested: 'curlz', candidates: ['Curl'] },
+    },
+  });
 });
 
 test('an out-of-range window is refused before any read', async () => {

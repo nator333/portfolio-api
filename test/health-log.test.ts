@@ -18,7 +18,8 @@ import { handler as addHealthNote } from '../lambda/add-health-note';
 import { handler as listHealthLog } from '../lambda/list-health-log';
 import { LOG_DAYS, awaitingDay, logDates, measureDay, updateHealthLogSchema } from '../lambda/health-log-schema';
 import { GoogleHealthError, resetGoogleHealthCache } from '../lambda/google-health';
-import { UnreadableHealthDataError, classifyFetchError } from '../lambda/health-log-measure';
+import { UnreadableHealthDataError, classifyFetchError, toFetchError } from '../lambda/health-log-measure';
+import { expectMatchesOutputSchema } from './output-schema';
 import type { DailyValue, SleepSession } from '../lambda/readiness';
 
 const TABLE = 'health-log-test';
@@ -682,6 +683,48 @@ describe('correcting a day (merge patch)', () => {
 });
 
 describe('reading the log', () => {
+  it('should return days that match the advertised outputSchema, as stored', async () => {
+    jest.useFakeTimers({ now: new Date('2026-11-19T03:00:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
+    const baseline = daysBefore('2026-11-18', 14);
+    const measured = measureDay(
+      {
+        date: '2026-11-18',
+        sleeps: [night('2026-11-18', 450)],
+        hrv: daily([...baseline, '2026-11-18'], 50),
+        restingHeartRate: daily([...baseline, '2026-11-18'], 55),
+      },
+      { dayIsOver: true },
+    );
+    mockDdbSend.mockResolvedValueOnce({
+      Items: [
+        {
+          pk: 'DAY',
+          date: '2026-11-18',
+          measured,
+          measuredAt: '2026-11-19T03:00:00.000Z',
+          createdAt: '2026-11-18T05:05:00.000Z',
+          notes: { '20261118T130000Z-a1b2': { at: '2026-11-18T13:00:00.000Z', text: 'Legs sore' } },
+          // DynamoDB hands a string set back as a Set.
+          tags: new Set(['legs']),
+          soreness: 4,
+          notesUpdatedAt: '2026-11-18T13:00:00.000Z',
+        },
+        {
+          pk: 'DAY',
+          date: '2026-11-17',
+          measured: measureDay({ date: '2026-11-17', sleeps: [], hrv: [], restingHeartRate: [] }, { dayIsOver: true }),
+          createdAt: '2026-11-17T05:05:00.000Z',
+          fetchError: toFetchError(new GoogleHealthError('refused', 'auth', 401), 'nightly'),
+        },
+      ],
+    });
+
+    const { body } = parse(await listHealthLog(queryEvent()));
+
+    expect(body.days[0].tags).toEqual(['legs']);
+    expectMatchesOutputSchema('list_health_log', body);
+  });
+
   it('should default to the last 14 days ending today in the owner\'s zone, newest first', async () => {
     jest.useFakeTimers({ now: new Date('2026-11-19T03:00:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
     mockDdbSend.mockResolvedValueOnce({

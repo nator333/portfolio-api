@@ -8,6 +8,7 @@ jest.mock('@aws-sdk/client-secrets-manager', () => {
 
 import { handler } from '../lambda/get-readiness';
 import { resetGoogleHealthCache } from '../lambda/google-health';
+import { expectMatchesOutputSchema } from './output-schema';
 
 const SECRET = 'google-health-oauth-test';
 const event = (query: Record<string, string> = {}): APIGatewayProxyEvent =>
@@ -94,6 +95,7 @@ test('judges the owner\'s local today, reading each signal live', async () => {
   const body = JSON.parse(result.body);
   expect(body).toMatchObject({ date: '2026-09-26', timeZone: 'Asia/Tokyo', status: 'ready', verdict: 'push' });
   expect(body.asOf).toBe('2026-09-25T20:30:00.000Z');
+  expectMatchesOutputSchema('get_readiness', body);
 
   // The filters are bounded by the local date, not the UTC one.
   const urls = requestedUrls().map((u) => decodeURIComponent(new URL(u).searchParams.get('filter') ?? ''));
@@ -120,6 +122,7 @@ test('before the morning sync, says so instead of judging on yesterday', async (
   expect(body.status).toBe('not_synced');
   expect(body.verdict).toBeNull();
   expect(body.missing).toContainEqual({ signal: 'sleep', latestDate: '2026-09-25' });
+  expectMatchesOutputSchema('get_readiness', body);
 });
 
 test('an earlier date can be looked back on', async () => {

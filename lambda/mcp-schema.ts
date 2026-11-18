@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { HEALTH_LIST_DEFAULT_DAYS } from './health-log-schema';
 import { TOOL_ARGS, inputSchemaOf } from './mcp-args';
+import { TOOL_OUTPUTS, outputSchemaOf } from './mcp-outputs';
 
 /**
  * Declarative side of the Model Context Protocol server that fronts this API.
@@ -72,6 +73,11 @@ export interface McpToolSpec {
   description: string;
   requiresAuth: boolean;
   inputSchema: Record<string, unknown>;
+  /**
+   * For the few tools whose results need explaining (TOOL_OUTPUTS in
+   * mcp-outputs.ts). A tool with one returns `structuredContent` too.
+   */
+  outputSchema?: Record<string, unknown>;
   annotations: {
     readOnlyHint: boolean;
     destructiveHint: boolean;
@@ -185,11 +191,11 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     description:
       'Whether today is a "push", "normal" or "easy" day, from last night\'s sleep, HRV and resting ' +
       'heart rate against a 28-day baseline, read live from Google Health. An older night is never ' +
-      'substituted: `status` "not_synced" means ask the owner to sync the Fitbit app, "pending" means ' +
-      'try again in a few minutes, and "insufficient_baseline" means under 7 days of HRV. In those ' +
-      'cases `verdict` is null; do not make one up. Admin only.',
+      'substituted; unless `status` is "ready", `verdict` is null: do not make one up. Fields are ' +
+      'described in the output schema. Admin only.',
     requiresAuth: true,
     inputSchema: inputSchemaOf(TOOL_ARGS.get_readiness),
+    outputSchema: outputSchemaOf(TOOL_OUTPUTS.get_readiness),
     // Read-only, but unlike every other read it reaches outside this API.
     annotations: { ...readAnnotations, openWorldHint: true },
   },
@@ -215,7 +221,8 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'Bodyweight from the smart scale, read live from Google Health. Daily readings swing 1-2 kg, so ' +
       'report `latest.trendKg`/`trendLb` (7-day mean) and `rate` (28-day fit per week, with `pace`), ' +
       'not a single reading. If `latest.stale` is true, say the data is old. `bodyFat` is included ' +
-      'when measured. Pass `exercise` for `relativeStrength` (estimated 1RM over bodyweight). Admin only.',
+      'when measured. Pass `exercise` for `relativeStrength` (estimated 1RM over bodyweight, or an ' +
+      '`error` in the shared error shape when it cannot be computed). Admin only.',
     requiresAuth: true,
     inputSchema: inputSchemaOf(TOOL_ARGS.get_weight_trend),
     // Read-only, but reaches the Google Health API.
@@ -298,19 +305,14 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'list_health_log',
     title: 'List health log days',
     description:
-      'The owner\'s private daily health log, newest first. Each day has `measured` (last night\'s ' +
-      'sleep, HRV, resting heart rate and readiness verdict from Google Health, recorded on the ' +
-      'first update of the day or at 10:00, refreshed at 22:00; `settled` once final). ' +
-      '`measured.status`: "awaiting" = not asked yet; "not_synced" = Google has no night yet ' +
-      'today; "no_data" = the day is over and Google has nothing (watch off or flat; ' +
-      '`missing[].latestDate` shows since when); "pending"/"ready" as in get_readiness. A ' +
-      '`fetchError` ({at, by, error}) means the last read FAILED and `measured` is ' +
-      'the last good answer, not evidence of an empty night. Never call a failed read "no data", ' +
-      'or vice versa. Each day also has what the owner said: `notes` (entries keyed by id, oldest ' +
-      'first, each {at, text}), `tags`, and 1-5 `energy`, `mood`, `stress`, `soreness`. ' +
+      'The owner\'s private daily health log, newest first: what Google Health measured each night ' +
+      '(`measured`) and what the owner said (`notes`, `tags`, ratings). A `fetchError` means the ' +
+      'last read FAILED, which is not the same as an empty night (`measured.status` "no_data"): ' +
+      'never report one as the other. Fields are described in the output schema. ' +
       `Defaults to the last ${HEALTH_LIST_DEFAULT_DAYS} days. Admin only.`,
     requiresAuth: true,
     inputSchema: inputSchemaOf(TOOL_ARGS.list_health_log),
+    outputSchema: outputSchemaOf(TOOL_OUTPUTS.list_health_log),
     annotations: readAnnotations,
   },
   {

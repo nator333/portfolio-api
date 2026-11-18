@@ -15,6 +15,8 @@ jest.mock('../lambda/get-blog', () => ({
 }));
 const mockListReflections = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
 jest.mock('../lambda/list-reflections', () => ({ handler: mockListReflections }));
+const mockListHealthLog = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
+jest.mock('../lambda/list-health-log', () => ({ handler: mockListHealthLog }));
 const mockRevisePlan = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
 const mockUpdatePlan = jest.fn<Promise<APIGatewayProxyResult>, [APIGatewayProxyEvent]>();
 jest.mock('../lambda/revise-workout-plan', () => ({ handler: mockRevisePlan }));
@@ -63,6 +65,7 @@ beforeEach(() => {
   mockPublicBlog.mockReset();
   mockAdminBlog.mockReset();
   mockListReflections.mockReset();
+  mockListHealthLog.mockReset();
   mockRevisePlan.mockReset();
   mockUpdatePlan.mockReset();
   mockVerify.mockReset();
@@ -488,5 +491,43 @@ describe('arguments are checked once, against the schema tools/list advertises',
 
     expect(json.result.isError).toBe(false);
     expect(mockListReflections.mock.calls[0][0].queryStringParameters).toEqual({});
+  });
+});
+
+describe('structured results for the tools with an outputSchema', () => {
+  it('should advertise outputSchema on exactly the two tools whose results carry the costliest rules', async () => {
+    const { json } = await call({ jsonrpc: '2.0', id: 30, method: 'tools/list' });
+    const withOutput = json.result.tools.filter((t: { outputSchema?: unknown }) => t.outputSchema).map((t: { name: string }) => t.name);
+    expect(withOutput.sort()).toEqual(['get_readiness', 'list_health_log']);
+  });
+
+  it('should return structuredContent beside the text, and log a mismatch without failing the read', async () => {
+    mockVerify.mockResolvedValue(adminPayload());
+    // A result the schema does not expect: `count` should be a number.
+    const body = { from: '2026-11-05', to: '2026-11-18', count: 'one', days: [] };
+    mockListHealthLog.mockResolvedValue({ statusCode: 200, body: JSON.stringify(body) } as APIGatewayProxyResult);
+    const warned = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { json } = await call(
+      { jsonrpc: '2.0', id: 31, method: 'tools/call', params: { name: 'list_health_log', arguments: {} } },
+      { Authorization: 'Bearer good' },
+    );
+
+    expect(json.result.isError).toBe(false);
+    expect(json.result.structuredContent).toEqual(body);
+    expect(JSON.parse(json.result.content[0].text)).toEqual(body);
+    expect(warned).toHaveBeenCalledWith(
+      'MCP output does not match its outputSchema',
+      expect.objectContaining({ tool: 'list_health_log', issues: [expect.objectContaining({ path: 'count' })] }),
+    );
+    warned.mockRestore();
+  });
+
+  it('should not add structuredContent to the other tools', async () => {
+    mockGetCv.mockResolvedValue({ statusCode: 200, headers: { ETag: '"v1"' }, body: '{"summary":"hi"}' } as APIGatewayProxyResult);
+
+    const { json } = await call({ jsonrpc: '2.0', id: 32, method: 'tools/call', params: { name: 'get_content', arguments: { doc: 'cv' } } });
+
+    expect(json.result).not.toHaveProperty('structuredContent');
   });
 });

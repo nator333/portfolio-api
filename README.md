@@ -45,6 +45,18 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
   to the handlers as query strings. A test checks that each read tool accepts
   exactly the query parameters its handler reads. The REST handlers keep their
   own checks.
+* **Structured results where they matter most.** `get_readiness` and
+  `list_health_log` declare an `outputSchema` (`lambda/mcp-outputs.ts`) and
+  return `structuredContent` beside the text, so their fields are described
+  once, in the schema, instead of in prose. They carry the rules most costly
+  to get wrong: a failed read is not an empty night, and a verdict is never
+  invented. Schemas for `get_training_recommendation` and
+  `get_weight_trend` were left out: they cost about 11k characters of
+  `tools/list`, and their prose descriptions already cover the results. Each schema is tied to the TypeScript
+  type its handler builds, so changing one without the other fails `tsc`.
+  Tests run real handler output through the schemas. At run time a mismatch
+  is logged and the result is still returned. The other tools return text
+  only.
 * **One error shape.** Every failure a tool reports, whether the whole call
   (`isError`, in `structuredContent` and as text) or one part of a successful
   call (`readinessFetch.error`, `readiness.error`, a health day's
