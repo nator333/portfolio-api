@@ -16,10 +16,10 @@ import {
   HEALTH_LOG_PK,
   measureDay,
   type FetchError,
-  type FetchErrorKind,
   type HealthLogItem,
   type MeasuredDay,
 } from './health-log-schema';
+import { toolError, type ToolError } from './tool-error';
 
 /**
  * Reading Google Health and writing a day's measured half: the pieces the
@@ -62,25 +62,40 @@ export class UnreadableHealthDataError extends Error {
   }
 }
 
-/** Which kind of failure `error` is, for `fetchError`. */
-export function classifyFetchError(error: unknown): { kind: FetchErrorKind; message: string } {
-  if (error instanceof GoogleHealthError) return { kind: error.kind, message: error.message };
-  if (error instanceof UnreadableHealthDataError) return { kind: 'parse', message: error.message };
+/** A failed Google read as the shared ToolError (tool-error.ts). */
+export function classifyFetchError(error: unknown): ToolError {
+  if (error instanceof GoogleHealthError) {
+    return error.kind === 'auth'
+      ? toolError('upstream_auth', error.message)
+      : toolError('upstream_unavailable', error.message, { details: { cause: 'api' } });
+  }
+  if (error instanceof UnreadableHealthDataError) {
+    return toolError('internal', error.message, {
+      fix: 'A parser in lambda/readiness.ts needs updating for the new response shape; retrying will not help.',
+      details: { cause: 'parse', signal: error.signal, points: error.points },
+    });
+  }
   const name = error instanceof Error ? error.name : '';
   const message = error instanceof Error ? error.message : String(error);
   // fetch() rejects with TypeError when the request never completes, and the
   // client's AbortSignal.timeout with TimeoutError / AbortError.
   if (name === 'TimeoutError' || name === 'AbortError' || name === 'TypeError') {
-    return { kind: 'network', message: `Google Health could not be reached: ${message}` };
+    return toolError('upstream_unavailable', `Google Health could not be reached: ${message}`, {
+      details: { cause: 'network' },
+    });
   }
-  if (error instanceof SyntaxError) return { kind: 'api', message: `Google Health sent an unreadable response: ${message}` };
-  return { kind: 'unknown', message };
+  if (error instanceof SyntaxError) {
+    return toolError('upstream_unavailable', `Google Health sent an unreadable response: ${message}`, {
+      details: { cause: 'api' },
+    });
+  }
+  return toolError('internal', message);
 }
 
 /** A read failed: carries what was recorded on the day(s) about it. */
 export class ReadinessFetchFailure extends Error {
   constructor(readonly fetchError: FetchError, readonly cause: unknown) {
-    super(fetchError.message);
+    super(fetchError.error.message);
     this.name = 'ReadinessFetchFailure';
   }
 }
@@ -225,7 +240,7 @@ export async function recordFetchError(tableName: string, dates: readonly string
 
 /** Build the FetchError for `error`, now. */
 export function toFetchError(error: unknown, by: FetchError['by']): FetchError {
-  return { at: new Date().toISOString(), by, ...classifyFetchError(error) };
+  return { at: new Date().toISOString(), by, error: classifyFetchError(error) };
 }
 
 /**
@@ -247,7 +262,7 @@ export async function recordReadiness(
     signals = await fetchSignals(secretName, timeZone, addDays(date, -LATEST_LOOKBACK_DAYS), date);
   } catch (error) {
     const fetchError = toFetchError(error, by);
-    console.error('Google Health read failed', date, fetchError.kind, error);
+    console.error('Google Health read failed', date, fetchError.error.code, error);
     await recordFetchError(tableName, [date], fetchError);
     throw new ReadinessFetchFailure(fetchError, error);
   }
@@ -263,14 +278,14 @@ export async function recordReadiness(
  *   recorded  Google answered. `status` is what it said: "ready" with values,
  *             or "not_synced" / "no_data" when the night is empty (watch off,
  *             flat, or not synced yet), or "pending" while it processes.
- *   failed    Google could not be read. `kind` says why; the day's measured
+ *   failed    Google could not be read. `error` says why (tool-error.ts); the day's measured
  *             values are unchanged and `fetchError` is set on it.
  */
 export type ReadinessFetch =
   | { attempted: false; reason: 'already_ready' }
   | { attempted: true; outcome: 'already_ready' }
   | { attempted: true; outcome: 'recorded'; status: string }
-  | { attempted: true; outcome: 'failed'; kind: FetchErrorKind; message: string };
+  | { attempted: true; outcome: 'failed'; error: ToolError };
 
 /**
  * After a note write: try to record the day's readiness if it has none, so
@@ -292,8 +307,7 @@ export async function fillReadiness(
       readinessFetch: {
         attempted: true,
         outcome: 'failed',
-        kind: 'unknown',
-        message: 'Google Health is not configured on this endpoint',
+        error: toolError('internal', 'Google Health is not configured on this endpoint'),
       },
     };
   }
@@ -309,7 +323,7 @@ export async function fillReadiness(
     return {
       // recordReadiness has stored the same fetchError on the day.
       item: { ...item, fetchError },
-      readinessFetch: { attempted: true, outcome: 'failed', kind: fetchError.kind, message: fetchError.message },
+      readinessFetch: { attempted: true, outcome: 'failed', error: fetchError.error },
     };
   }
 }

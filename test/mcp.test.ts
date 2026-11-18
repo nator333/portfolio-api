@@ -80,6 +80,9 @@ test('initialize returns the server info and echoes the requested protocol versi
   expect(json.result.serverInfo.name).toBe('portfolio-api');
   expect(json.result.protocolVersion).toBe('2024-11-05');
   expect(json.result.capabilities.tools).toBeDefined();
+  // The verb and error conventions are stated once, server-wide.
+  expect(json.result.instructions).toMatch(/merge patch/);
+  expect(json.result.instructions).toMatch(/retry/);
 });
 
 test('the initialized notification is acknowledged with 202 and no body', async () => {
@@ -351,7 +354,39 @@ test('a delegated handler error surfaces as an MCP tool error, not a crash', asy
   const { json } = await call({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'get_content', arguments: { doc: 'cv' } } });
 
   expect(json.result.isError).toBe(true);
-  expect(json.result.content[0].text).toMatch(/not found/);
+  const error = { code: 'not_found', message: 'CV data not found', retry: 'after_fix' };
+  // The same object for clients that read structured results and for those
+  // that read text: the HTTP status itself never reaches either.
+  expect(json.result.structuredContent).toEqual({ error });
+  expect(JSON.parse(json.result.content[0].text)).toEqual({ error });
+});
+
+test('a stale replace_content reads as stale_version: re-read, then retry', async () => {
+  mockVerify.mockResolvedValue(adminPayload());
+  mockUpdateCv.mockResolvedValue({ statusCode: 412, body: JSON.stringify({ message: 'The cv document changed since it was read.' }) } as APIGatewayProxyResult);
+
+  const { json } = await call(
+    { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'replace_content', arguments: { doc: 'cv', version: 'old', document: {} } } },
+    { Authorization: 'Bearer good' },
+  );
+
+  expect(json.result.structuredContent.error).toMatchObject({ code: 'stale_version', retry: 'after_reread' });
+});
+
+test('a handler that throws is an internal error with an incident id, not "try again"', async () => {
+  mockGetCv.mockRejectedValue(new Error('DynamoDB is down'));
+  const logged = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+  const { json } = await call({ jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'get_content', arguments: { doc: 'cv' } } });
+
+  const { error } = json.result.structuredContent;
+  expect(error).toMatchObject({ code: 'internal', retry: 'never' });
+  const incident = /incident ([0-9a-f-]{36})/.exec(error.message)?.[1];
+  expect(incident).toBeDefined();
+  // The same id is in the log line, and the cause is not leaked to the caller.
+  expect(JSON.stringify(logged.mock.calls)).toContain(incident);
+  expect(error.message).not.toContain('DynamoDB');
+  logged.mockRestore();
 });
 
 test('an unknown tool is an invalid-params JSON-RPC error', async () => {

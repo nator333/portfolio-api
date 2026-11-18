@@ -36,6 +36,21 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
   * `replace_*` swaps a whole document (annotated destructive), and only if it
     is unchanged since the `version` the caller read.
   * `revise_*` publishes a new version; stored versions are never modified.
+* **One error shape.** Every failure a tool reports, whether the whole call
+  (`isError`, in `structuredContent` and as text) or one part of a successful
+  call (`readinessFetch.error`, `readiness.error`, a health day's
+  `fetchError.error`), is `{code, message, retry, fix?, details?}`
+  (`lambda/tool-error.ts`). `retry` is `now`, `after_reread`, `after_fix`,
+  `owner_action` or `never`. The MCP layer builds it from the REST status
+  (400 `invalid_input`, 404 `not_found`, 409/412 `stale_version`, 502/503
+  `upstream_unavailable`/`upstream_auth`), and a handler names the code
+  where the status is ambiguous (`rule_violation`, `limit_reached`). zod
+  issues shrink to `details.issues: [{path, message}]`. A thrown exception is
+  `internal` with an incident id that matches the log line. Protocol errors
+  stay JSON-RPC errors and missing auth stays HTTP 401, as MCP and OAuth
+  require. The conventions are also sent once in `initialize`'s
+  `instructions`. REST responses keep their statuses; three 409 bodies gain a
+  `code` field.
 * **Site documents are versioned.** The four content getters return an `ETag`
   and the writers honour `If-Match`, refusing a stale write with `412`. The
   version is stored beside each document, never in it. The front-end's editors

@@ -28,6 +28,19 @@ export const MCP_SERVER_INFO = {
 } as const;
 
 /**
+ * Server-wide guidance, sent once in `initialize` rather than repeated in
+ * every tool description: what the write verbs mean, and how to read an error.
+ */
+export const MCP_INSTRUCTIONS =
+  'Write tools: add_* appends and never changes what exists; update_* is a merge patch (omitted ' +
+  'fields unchanged, null clears); replace_* swaps a whole document and needs the version you ' +
+  'read; revise_* publishes a new version. Every failure, whole (isError) or partial (an `error` ' +
+  'inside a successful result), is {code, message, retry, fix?, details?}. Act on `retry`: ' +
+  '"now" may retry once; "after_reread" read again, reapply, retry; "after_fix" change the call ' +
+  'first (details.issues names the fields); "owner_action" stop and tell the owner `fix`; ' +
+  '"never" do not retry, report it. Do not guess around an error or present it as data.';
+
+/**
  * JSON-RPC 2.0 request envelope. A request carries an `id`; a notification
  * (e.g. `notifications/initialized`) omits it, which is how the handler decides
  * whether a response body is owed. `params` is left loose here — each method
@@ -543,7 +556,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       '`measured.status`: "awaiting" = not asked yet; "not_synced" = Google has no night yet ' +
       'today; "no_data" = the day is over and Google has nothing (watch off or flat; ' +
       '`missing[].latestDate` shows since when); "pending"/"ready" as in get_readiness. A ' +
-      '`fetchError` means the last read FAILED (auth, api, network, parse) and `measured` is ' +
+      '`fetchError` ({at, by, error}) means the last read FAILED and `measured` is ' +
       'the last good answer, not evidence of an empty night. Never call a failed read "no data", ' +
       'or vice versa. Each day also has what the owner said: `notes` (entries keyed by id, oldest ' +
       'first, each {at, text}), `tags`, and 1-5 `energy`, `mood`, `stress`, `soreness`. ' +
@@ -573,7 +586,7 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'Only days the scheduler has created exist: today from 00:05 the owner\'s time; there is no ' +
       'way to add a day. If the day has no readiness yet, this also fetches it from Google Health: ' +
       '`readinessFetch` is "recorded" with the `status` Google\'s answer gave (an empty night is ' +
-      '"not_synced"/"no_data"), or "failed" with a `kind` when Google could not be read; the note ' +
+      '"not_synced"/"no_data"), or "failed" with an `error` when Google could not be read; the note ' +
       'is saved either way. Admin only.',
     requiresAuth: true,
     inputSchema: {
