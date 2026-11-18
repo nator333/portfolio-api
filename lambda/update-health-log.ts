@@ -79,8 +79,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (error instanceof ConditionalCheckFailedException) {
       return respond(404, {
         message:
-          `No health log entry for ${date}. Entries are created by the nightly job at 22:00 the owner's time, ` +
-          `covering the last 28 days; a day before that run, or older than that, cannot be annotated.`,
+          `No health log entry for ${date}. Entries are created only by the nightly job at 22:00 the owner's ` +
+          `time: today's appears after tonight's run, and days before the log's first 28-day backfill never exist.`,
       });
     }
     throw error;
