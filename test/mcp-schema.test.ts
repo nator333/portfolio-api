@@ -25,9 +25,11 @@ test('every read tool is public and every write tool requires auth', () => {
     'get_workout_plan',
     'get_workout_sets',
     'list_exercises',
+    'list_health_log',
     'list_reflections',
     'revise_workout_plan',
     'update_content',
+    'update_health_log',
     'update_reflection',
   ]);
 });

@@ -46,7 +46,7 @@ export const REFLECTION_LIST_MAX_LIMIT = 100;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** A real calendar date, not merely a date-shaped string (rejects 2026-02-30). */
-const isoDate = z
+export const isoDate = z
   .string()
   .regex(DATE_RE, 'must be YYYY-MM-DD')
   .refine((value) => {
@@ -82,6 +82,9 @@ const themes = z
   .array(theme)
   .max(REFLECTION_THEMES_MAX)
   .transform((list) => [...new Set(list)]);
+
+/** The same tag vocabulary, for other private logs that group by topic. */
+export const themeTags = themes;
 
 const body = z.string().trim().min(1).max(REFLECTION_BODY_MAX);
 

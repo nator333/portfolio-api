@@ -16,6 +16,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
+import * as scheduler from 'aws-cdk-lib/aws-scheduler';
+import * as schedulerTargets from 'aws-cdk-lib/aws-scheduler-targets';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
 import {
@@ -104,6 +106,8 @@ const GOOGLE_HEALTH_SECRET_NAME = 'google-health-oauth';
  * which in Eastern time is already tomorrow from 19:00 or 20:00 local.
  */
 const HEALTH_TIME_ZONE = 'America/Toronto';
+/** The same zone, for EventBridge Scheduler. Keep in step with HEALTH_TIME_ZONE. */
+const HEALTH_SCHEDULE_TIME_ZONE = cdk.TimeZone.AMERICA_TORONTO;
 
 /**
  * Pinned sharp version for the resize Lambda. sharp ships prebuilt native
@@ -912,6 +916,58 @@ export class PortfolioApiStack extends cdk.Stack {
         targets: [new eventsTargets.LambdaFunction(bodyweightIngestFn)],
         description: 'Refreshes the public monthly bodyweight averages from Google Health',
       });
+
+      // The private daily health log (see lambda/health-log-schema.ts). Two
+      // writers with disjoint halves of each day: the nightly job below owns
+      // `measured` and is the only thing that creates a day; the MCP server can
+      // only update the notes of a day that exists. Neither holds PutItem or
+      // DeleteItem, and nothing public reads the table.
+      const healthLogTable = new dynamodb.Table(this, 'HealthLogTable', {
+        partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+        sortKey: { name: 'date', type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+        // The notes exist nowhere else.
+        pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      });
+      const healthLogIngestFn = new lambdaNode.NodejsFunction(this, 'HealthLogIngestFunction', {
+        entry: path.join(__dirname, '..', 'lambda', 'health-log-ingest.ts'),
+        runtime: lambda.Runtime.NODEJS_20_X,
+        bundling: { externalModules: ['@aws-sdk/*'] },
+        timeout: cdk.Duration.seconds(60),
+        environment: {
+          HEALTH_LOG_TABLE_NAME: healthLogTable.tableName,
+          GOOGLE_HEALTH_SECRET_NAME,
+          HEALTH_TIME_ZONE,
+        },
+      });
+      googleHealthSecret.grantRead(healthLogIngestFn);
+      healthLogIngestFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:UpdateItem'],
+          resources: [healthLogTable.tableArn],
+        }),
+      );
+      new scheduler.Schedule(this, 'HealthLogIngestSchedule', {
+        // 22:00 the owner's time, when the morning's sync has long happened.
+        // EventBridge Scheduler rather than an Events rule because it takes a
+        // time zone, so the run stays at 22:00 across daylight-saving changes.
+        schedule: scheduler.ScheduleExpression.cron({
+          minute: '0',
+          hour: '22',
+          timeZone: HEALTH_SCHEDULE_TIME_ZONE,
+        }),
+        target: new schedulerTargets.LambdaInvoke(healthLogIngestFn, { retryAttempts: 2 }),
+        description: 'Seeds and refreshes the private health log from Google Health',
+      });
+
+      mcpFn.addEnvironment('HEALTH_LOG_TABLE_NAME', healthLogTable.tableName);
+      mcpFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['dynamodb:Query', 'dynamodb:UpdateItem'],
+          resources: [healthLogTable.tableArn],
+        }),
+      );
 
       // One public line per training day, distilled from that day's workout
       // notes whenever one is added or corrected. The only function besides the

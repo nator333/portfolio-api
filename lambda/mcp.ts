@@ -23,6 +23,8 @@ import { handler as reviseWorkoutPlan } from './revise-workout-plan';
 import { handler as listReflections } from './list-reflections';
 import { handler as addReflection } from './add-reflection';
 import { handler as updateReflection } from './update-reflection';
+import { handler as listHealthLog } from './list-health-log';
+import { handler as updateHealthLog } from './update-health-log';
 
 import {
   JSON_RPC,
@@ -118,6 +120,8 @@ const INVOKERS: Record<string, (args: Record<string, unknown>) => Promise<APIGat
   list_reflections: (args) => listReflections(proxyEvent({ query: reflectionQuery(args) })),
   add_reflection: (args) => addReflection(proxyEvent({ body: args })),
   update_reflection: (args) => updateReflection(proxyEvent({ body: args })),
+  list_health_log: (args) => listHealthLog(proxyEvent({ query: dateRange(args) })),
+  update_health_log: (args) => updateHealthLog(proxyEvent({ body: args })),
 };
 
 /**

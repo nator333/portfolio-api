@@ -822,18 +822,18 @@ test('the reflections table is written by the MCP Lambda alone, read by the gym 
   }
 });
 
-test('the Google Health grant is readable by the MCP Lambda and the bodyweight ingest alone', () => {
+test('the Google Health grant is readable by the MCP Lambda and the scheduled ingests alone', () => {
   // A health-data credential: like the reflections, no anonymous function —
   // least of all /chat, /agent, or the public /bodyweight it feeds — may be
-  // able to read it. The two holders are the admin-gated MCP server and the
-  // scheduled ingest, which has no API route at all.
+  // able to read it. The holders are the admin-gated MCP server and the two
+  // scheduled ingests, which have no API route at all.
   const template = synthStackWithMcp();
 
   const policies = Object.values(template.findResources('AWS::IAM::Policy'));
   const granting = policies.filter((p) =>
     JSON.stringify(p.Properties.PolicyDocument).includes('secret:google-health-oauth'),
   );
-  expect(granting).toHaveLength(2);
+  expect(granting).toHaveLength(3);
   for (const policy of granting) {
     const actions = (policy.Properties.PolicyDocument.Statement as Array<{ Action?: string | string[] }>)
       .flatMap((s) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
@@ -847,6 +847,7 @@ test('the Google Health grant is readable by the MCP Lambda and the bodyweight i
   );
   expect(withSecretEnv.map(([id]) => id.replace(/[A-F0-9]{8}$/, '')).sort()).toEqual([
     'BodyweightIngestFunction',
+    'HealthLogIngestFunction',
     'McpFunction',
   ]);
   for (const [, f] of withSecretEnv) {
@@ -883,6 +884,52 @@ test('the bodyweight ingest runs daily and only where the Google grant exists', 
   const devFunctions = Object.keys(dev.findResources('AWS::Lambda::Function'));
   expect(devFunctions.some((id) => id.startsWith('BodyweightIngestFunction'))).toBe(false);
   expect(devFunctions.some((id) => id.startsWith('GetBodyweightFunction'))).toBe(true);
+});
+
+test('the health log ingest runs at 22:00 Montreal time, and only where the Google grant exists', () => {
+  const template = synthStackWithMcp();
+  template.hasResourceProperties('AWS::Scheduler::Schedule', {
+    ScheduleExpression: 'cron(0 22 * * ? *)',
+    ScheduleExpressionTimezone: 'America/Toronto',
+    State: 'ENABLED',
+    Target: Match.objectLike({ RetryPolicy: Match.objectLike({ MaximumRetryAttempts: 2 }) }),
+  });
+
+  const dev = synthStack();
+  expect(Object.keys(dev.findResources('AWS::DynamoDB::Table')).some((id) => id.startsWith('HealthLogTable'))).toBe(false);
+  expect(Object.keys(dev.findResources('AWS::Scheduler::Schedule'))).toHaveLength(0);
+});
+
+test('only the nightly job can create a health log day, and nothing can delete one', () => {
+  const template = synthStackWithMcp();
+  const tables = template.findResources('AWS::DynamoDB::Table');
+  const [tableId] = Object.keys(tables).filter((id) => id.startsWith('HealthLogTable'));
+  expect(tableId).toBeDefined();
+  expect(tables[tableId].DeletionPolicy).toBe('Retain');
+  expect(tables[tableId].Properties.PointInTimeRecoverySpecification).toEqual({ PointInTimeRecoveryEnabled: true });
+
+  // Every statement naming the table, by the role it is attached to.
+  const actionsByRole: Record<string, string[]> = {};
+  for (const policy of Object.values(template.findResources('AWS::IAM::Policy'))) {
+    const statements = policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown }>;
+    const roles = (policy.Properties.Roles as Array<{ Ref: string }>).map((r) => r.Ref);
+    for (const statement of statements) {
+      if (!JSON.stringify(statement.Resource).includes(tableId)) continue;
+      for (const role of roles) {
+        actionsByRole[role] = [
+          ...(actionsByRole[role] ?? []),
+          ...(Array.isArray(statement.Action) ? statement.Action : [statement.Action]),
+        ];
+      }
+    }
+  }
+  const byPrefix = (prefix: string) =>
+    Object.entries(actionsByRole).find(([role]) => role.startsWith(prefix))?.[1].sort();
+  expect(Object.keys(actionsByRole)).toHaveLength(2);
+  // UpdateItem with no condition creates an item, so the job's UpdateItem is
+  // its create; the MCP server's handler always conditions on existence.
+  expect(byPrefix('HealthLogIngestFunction')).toEqual(['dynamodb:UpdateItem']);
+  expect(byPrefix('McpFunction')).toEqual(['dynamodb:Query', 'dynamodb:UpdateItem']);
 });
 
 test('without MCP options no function can read the Google Health grant', () => {

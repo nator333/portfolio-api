@@ -6,6 +6,7 @@ import {
   REFLECTION_THEMES_MAX,
   REFLECTION_TYPES,
 } from './reflection-schema';
+import { HEALTH_LIST_DEFAULT_DAYS, HEALTH_LIST_MAX_DAYS, HEALTH_NOTES_MAX, HEALTH_TAGS_MAX } from './health-log-schema';
 
 /**
  * Declarative side of the Model Context Protocol server that fronts this API.
@@ -506,6 +507,58 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
         },
       },
       required: ['type', 'id'],
+      additionalProperties: false,
+    },
+    annotations: writeAnnotations,
+  },
+  {
+    name: 'list_health_log',
+    title: 'List health log days',
+    description:
+      'The owner\'s private daily health log, newest first. Each day has `measured` (last night\'s ' +
+      'sleep, HRV, resting heart rate and readiness verdict, written by a nightly job from Google ' +
+      'Health; `settled` once final) and the notes Claude has added (`notes`, `tags`, 1-5 `energy`, ' +
+      '`mood`, `stress`, `soreness`). Read a day before update_health_log so existing notes are ' +
+      `kept. Defaults to the last ${HEALTH_LIST_DEFAULT_DAYS} days. Admin only.`,
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Inclusive start date, ISO YYYY-MM-DD. Optional.' },
+        to: {
+          type: 'string',
+          description: `Inclusive end date, ISO YYYY-MM-DD. Optional. At most ${HEALTH_LIST_MAX_DAYS} days per read.`,
+        },
+      },
+      additionalProperties: false,
+    },
+    annotations: readAnnotations,
+  },
+  {
+    name: 'update_health_log',
+    title: 'Annotate health log day',
+    description:
+      'Record what the owner said about a day\'s health on that day\'s existing log entry. Only ' +
+      'days the nightly job has created can be annotated (each night at 22:00 the owner\'s time, ' +
+      'covering the last 28 days); there is no way to add a day, and the measured values cannot ' +
+      'be changed. `notes` REPLACES the day\'s notes, so read the day first and send the full ' +
+      'revised text, in the conversation\'s language. `tags` are lowercase English, e.g. "cold", ' +
+      '"lower-back". Ratings are 1-5 in their plain sense (energy and mood: 5 is high; stress and ' +
+      'soreness: 5 is severe); set one only when the owner said something that clearly maps to it. ' +
+      'null clears a field. Admin only.',
+    requiresAuth: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'The owner\'s local day, ISO YYYY-MM-DD.' },
+        notes: { type: ['string', 'null'], maxLength: HEALTH_NOTES_MAX },
+        tags: { type: ['array', 'null'], items: { type: 'string' }, maxItems: HEALTH_TAGS_MAX },
+        energy: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+        mood: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+        stress: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+        soreness: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+      },
+      required: ['date'],
       additionalProperties: false,
     },
     annotations: writeAnnotations,

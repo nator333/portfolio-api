@@ -21,9 +21,9 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
 * **Admin tools** — `get_workout_sets` (the private per-set training log),
   `get_exercise_history`, `list_exercises`, `get_workout_plan`,
   `get_muscle_volume_status`, `get_readiness`, `get_training_recommendation`,
-  `get_weight_trend`, `list_reflections`, and every write: `update_content`,
-  `revise_workout_plan` (edits, or a whole new version via `plan`),
-  `add_reflection`, `update_reflection`. Each is refused with `401` and a
+  `get_weight_trend`, `list_reflections`, `list_health_log`, and every write:
+  `update_content`, `revise_workout_plan` (edits, or a whole new version via
+  `plan`), `add_reflection`, `update_reflection`, `update_health_log`. Each is refused with `401` and a
   `WWW-Authenticate` challenge unless the request carries an access token issued
   by this user pool, for this resource, bearing the `mcp/admin` scope.
 * **Not exposed** — the activity feed and the media catalogue. The site serves
@@ -86,11 +86,39 @@ Connecting it is a one-time step outside the deploy:
 
    This opens Google's consent flow on a loopback redirect and stores
    `{client_id, client_secret, refresh_token}` in the Secrets Manager secret
-   `google-health-oauth` (us-west-1). Only the MCP Lambda can read it.
+   `google-health-oauth` (us-west-1). Only the MCP Lambda and the scheduled
+   ingests (bodyweight, health log) can read it.
 
 While the consent screen stays in *Testing*, Google expires the refresh token
 after 7 days. The tool then reports that the grant was refused, and re-running
 step 2 fixes it.
+
+### Daily health log
+
+A private record per day (`lambda/health-log-schema.ts`), with two writers that
+cannot touch each other's half:
+
+* **`measured`** — written by `lambda/health-log-ingest.ts`, scheduled by
+  EventBridge Scheduler at **22:00 America/Toronto** (time-zone aware, so it
+  stays at 22:00 across DST). Each run reads Google Health once and judges every
+  day of the last 28 with the same arithmetic as `get_readiness`: sleep, HRV and
+  resting heart rate with their baselines, the verdict, and its reasons. Unlike
+  `get_readiness` this can be scheduled: it records a day after the fact, when
+  that morning's sync has long happened. Because every run covers the whole
+  window, the first run is the 28-day backfill and a late sync or failed run is
+  picked up the next night. A day is written even with no watch data
+  (`not_synced`), so it can still be annotated. Once all three signals are in
+  and judged it is `settled`, and never rewritten.
+* **Notes** — `notes`, `tags`, and 1–5 `energy` / `mood` / `stress` /
+  `soreness`, written by Claude via `update_health_log` from conversation. The
+  tool can only update a day the job has created (`attribute_exists`
+  condition) and only those fields; it cannot create a day or change a measured
+  value. `list_health_log` reads it back.
+
+The table (`HealthLogTable`) is retained, has point-in-time recovery, and is
+granted to nothing public: the job has `UpdateItem` only, the MCP server
+`Query` and `UpdateItem`. Neither can delete. To backfill without waiting for
+22:00, invoke `HealthLogIngestFunction` by hand after deploying.
 
 ### What to train today
 
