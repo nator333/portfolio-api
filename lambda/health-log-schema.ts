@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { REFLECTION_THEMES_MAX, isoDate, themeTags } from './reflection-schema';
+import type { ToolError } from './tool-error';
 import {
   addDays,
   judgeReadiness,
@@ -74,23 +75,21 @@ export const NO_DATA = 'no_data';
 export type MeasuredStatus = ReadinessStatus | typeof AWAITING | typeof NO_DATA;
 
 /**
- * Why the last attempt to read Google for a day failed.
+ * The last attempt to read Google for a day failed. `error` is the one error
+ * shape every tool reports (tool-error.ts):
  *
- *   auth     the stored grant was refused: re-run scripts/google-health-auth.ts
- *   api      Google Health returned an error status
- *   network  the request did not complete (timeout, connection)
- *   parse    Google returned data this code could not read: a bug here, not
- *            an empty day
- *   unknown  anything else
+ *   upstream_auth         the stored grant was refused; the owner must reconnect
+ *   upstream_unavailable  Google answered with an error, or did not answer
+ *                         (`details.cause` is "api" or "network")
+ *   internal              Google returned data this code could not read
+ *                         (`details.cause` "parse": a bug here, not an empty
+ *                         day), or anything unexpected
  */
-export type FetchErrorKind = 'auth' | 'api' | 'network' | 'parse' | 'unknown';
-
 export interface FetchError {
   at: string;
-  kind: FetchErrorKind;
-  message: string;
   /** Which writer hit it: a note written from chat, or the 10:00 / 22:00 run. */
   by: 'chat' | 'morning' | 'nightly';
+  error: ToolError;
 }
 
 /** One note entry's text. */

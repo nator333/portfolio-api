@@ -2,6 +2,7 @@ import { MUSCLE_GROUPS, type MuscleGroup } from './workout-muscles';
 import type { MuscleVolumeRow, VolumeStatus } from './muscle-volume-status';
 import type { PlanExercise, PlanSession, Range } from './workout-plan-schema';
 import type { ReadinessStatus, Verdict } from './readiness';
+import type { ToolError } from './tool-error';
 
 /**
  * "What should I train today, and how hard?" — the two halves the MCP server
@@ -146,6 +147,8 @@ export interface ReadinessSummary {
   readonly date: string | null;
   readonly verdict: Verdict | null;
   readonly reasons: readonly string[];
+  /** Why readiness is `unavailable`: the shared error shape (tool-error.ts). */
+  readonly error?: ToolError;
 }
 
 /** A session as the volume-only ranking scores it: no recovery. */

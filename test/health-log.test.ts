@@ -151,14 +151,17 @@ describe('measuring a day', () => {
 
 describe('telling a failed read from an empty one', () => {
   it.each([
-    ['a refused grant', new GoogleHealthError('refused', 'auth', 401), 'auth'],
-    ['a Google error status', new GoogleHealthError('boom', 'api', 503), 'api'],
-    ['a timeout', Object.assign(new Error('timed out'), { name: 'TimeoutError' }), 'network'],
-    ['a dropped connection', new TypeError('fetch failed'), 'network'],
-    ['data that could not be read', new UnreadableHealthDataError('sleep', 3), 'parse'],
-    ['anything else', new Error('???'), 'unknown'],
-  ])('should classify %s', (_label, error, kind) => {
-    expect(classifyFetchError(error).kind).toBe(kind);
+    ['a refused grant', new GoogleHealthError('refused', 'auth', 401), 'upstream_auth', 'owner_action', undefined],
+    ['a Google error status', new GoogleHealthError('boom', 'api', 503), 'upstream_unavailable', 'now', 'api'],
+    ['a timeout', Object.assign(new Error('timed out'), { name: 'TimeoutError' }), 'upstream_unavailable', 'now', 'network'],
+    ['a dropped connection', new TypeError('fetch failed'), 'upstream_unavailable', 'now', 'network'],
+    // Unreadable data is a bug here: never retried, never an empty night.
+    ['data that could not be read', new UnreadableHealthDataError('sleep', 3), 'internal', 'never', 'parse'],
+    ['anything else', new Error('???'), 'internal', 'never', undefined],
+  ])('should classify %s', (_label, error, code, retry, cause) => {
+    const classified = classifyFetchError(error);
+    expect(classified).toMatchObject({ code, retry });
+    expect(classified.details?.cause).toBe(cause);
   });
 });
 
@@ -283,7 +286,7 @@ describe('the nightly ingest', () => {
     for (const w of writes) {
       expect(w.UpdateExpression).toBe('SET #fetchError = :fetchError');
       expect(w.ConditionExpression).toBe('attribute_exists(#measured) AND #measured.#settled = :false');
-      expect(w.ExpressionAttributeValues[':fetchError']).toMatchObject({ kind: 'api', by: 'nightly' });
+      expect(w.ExpressionAttributeValues[':fetchError']).toMatchObject({ by: 'nightly', error: { code: 'upstream_unavailable', retry: 'now' } });
       expect(w.ExpressionAttributeValues).not.toHaveProperty(':measured');
     }
   });
@@ -303,7 +306,7 @@ describe('the nightly ingest', () => {
     await expect(ingest()).rejects.toThrow(UnreadableHealthDataError);
 
     const writes = mockDdbSend.mock.calls.map(([c]) => c.input);
-    expect(writes.every((w) => w.ExpressionAttributeValues[':fetchError']?.kind === 'parse')).toBe(true);
+    expect(writes.every((w) => w.ExpressionAttributeValues[':fetchError']?.error.details.cause === 'parse')).toBe(true);
     expect(writes.some((w) => ':measured' in w.ExpressionAttributeValues)).toBe(false);
   });
 });
@@ -470,8 +473,8 @@ describe('the first note of the day fetching readiness', () => {
     expect(Object.values(body.notes)).toEqual([NOTE]);
     // The measured half is untouched: a failed read is not an empty night.
     expect(body.measured.status).toBe('awaiting');
-    expect(body.readinessFetch).toMatchObject({ attempted: true, outcome: 'failed', kind: 'auth' });
-    expect(body.fetchError).toMatchObject({ kind: 'auth', by: 'chat' });
+    expect(body.readinessFetch).toMatchObject({ attempted: true, outcome: 'failed', error: { code: 'upstream_auth', retry: 'owner_action' } });
+    expect(body.fetchError).toMatchObject({ by: 'chat', error: { code: 'upstream_auth' } });
     // The note write, then the fetchError written on the day; no measured write.
     expect(mockDdbSend).toHaveBeenCalledTimes(2);
     expect(mockDdbSend.mock.calls[1][0].input.UpdateExpression).toBe('SET #fetchError = :fetchError');

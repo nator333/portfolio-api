@@ -242,6 +242,8 @@ export const handler = async (
         statusCode: 409,
         headers,
         body: JSON.stringify({
+          // A broken rule, not a stale version (see tool-error.ts).
+          code: 'rule_violation',
           message:
             'This revision would leave the menu prescribing more volume than the targets allow; ' +
             'nothing was written. Raise the target in the same revision if the extra volume is ' +

@@ -106,7 +106,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       });
     }
     if (existing.notes) {
-      return respond(409, { message: `${date} already has ${HEALTH_NOTES_PER_DAY_MAX} notes, the most a day can hold.` });
+      return respond(409, {
+        // A full day, not a stale version (see tool-error.ts).
+        code: 'limit_reached',
+        message: `${date} already has ${HEALTH_NOTES_PER_DAY_MAX} notes, the most a day can hold.`,
+        fix: 'Fold the new point into an existing entry with update_health_log instead.',
+      });
     }
     // The day's first note: create the map with it, unless another note
     // created it in the meantime, in which case the first form now applies.
