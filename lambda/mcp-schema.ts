@@ -269,8 +269,9 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     title: 'List reflection notes',
     description:
       'The owner\'s private reflection notes, newest first: "workout" (a session) or "life" (how ' +
-      'things are going). Read the last few of the same type before add_reflection so the new note ' +
-      'builds on them. A workout note\'s `date` is the session day. Admin only.',
+      'things are going over time). Read the last few of the same type before add_reflection so the ' +
+      'new note builds on them. A workout note\'s `date` is the session day. How the body felt on a ' +
+      'given day is in list_health_log, not here. Admin only.',
     requiresAuth: true,
     inputSchema: inputSchemaOf(TOOL_ARGS.list_reflections),
     annotations: readAnnotations,
@@ -284,8 +285,10 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
       'verbatim. `themes` are short lowercase ENGLISH tags whatever the language (e.g. "sleep", ' +
       '"work-stress"); reuse earlier tags where they fit. Non-English tags are refused. `date` is ' +
       'the day the note is about, in the owner\'s calendar. A "workout" note is summarised in one ' +
-      'line on the PUBLIC site, so keep it to the training itself; health, injuries, mood, work and ' +
-      'personal life go in a "life" note, which is never published. Admin only.',
+      'line on the PUBLIC site, so keep it to the training itself. A "life" note (never published) ' +
+      'looks back over time: work, relationships, plans, decisions, patterns across days. How the ' +
+      'body or mind is on a given day (sleep, energy, soreness, pain, illness, stress, mood) is not a ' +
+      'reflection: use add_health_note. When one message has both, write both. Admin only.',
     requiresAuth: true,
     inputSchema: inputSchemaOf(TOOL_ARGS.add_reflection),
     annotations: appendAnnotations,
@@ -319,8 +322,10 @@ export const TOOL_SPECS: readonly McpToolSpec[] = [
     name: 'add_health_note',
     title: 'Add health note',
     description:
-      'Save one thing the owner said about a day\'s health (how they slept or feel, soreness, ' +
-      'illness, stress) as a new timestamped entry on that day. It always appends: earlier notes ' +
+      'Save one thing the owner said about a day\'s health (how they slept or feel, energy, ' +
+      'soreness, pain, illness, stress, mood) as a new timestamped entry on that day: short and ' +
+      'factual. Looking back over time (work, plans, patterns across days) is a "life" note for ' +
+      'add_reflection instead; when one message has both, write both. It always appends: earlier notes ' +
       'are never touched, so there is no need to read first. Write `text` in the conversation\'s ' +
       'language. `tags` are added to the day\'s tags: lowercase English, e.g. "cold", "lower-back". ' +
       'Only days the scheduler has created exist: today from 00:05 the owner\'s time; there is no ' +

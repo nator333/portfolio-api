@@ -90,3 +90,15 @@ test('the JSON-RPC schema accepts requests and notifications but rejects junk', 
 test('protocol version is a dated revision string', () => {
   expect(MCP_PROTOCOL_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 });
+
+test('health notes and life reflections each say when to use the other', () => {
+  // "Slept badly, legs sore" belongs in the health log; "work has been grinding
+  // me down for weeks" is a life reflection. Each description names the other
+  // tool, so neither swallows the other's notes.
+  const describe = (name: string) => TOOL_SPECS_BY_NAME.get(name)!.description;
+  expect(describe('add_reflection')).toContain('use add_health_note');
+  expect(describe('add_health_note')).toContain('add_reflection');
+  expect(describe('list_reflections')).toContain('list_health_log');
+  // The old rule sent a day's health into life notes.
+  expect(describe('add_reflection')).not.toMatch(/health, injuries, mood[^.]*"life" note/);
+});
