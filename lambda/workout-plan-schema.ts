@@ -273,26 +273,32 @@ export const weeklySetTargetSchema = z.object({
   maintenanceSets: z.number().min(0).max(MAX_SETS * 10).nullable().default(null),
 });
 
-export const planVersionSchema = z
-  .object({
-    planId: z.string().regex(SLUG_RE, 'must be a lower-kebab slug'),
-    version: z.number().int().min(1),
-    name: z.string().trim().min(1),
-    sessionsPerWeek: z.number().int().min(1).max(7),
-    rotation: z.array(z.string()).min(1),
-    bonusSessions: z.array(z.string()),
-    sessions: z.array(planSessionSchema).min(1),
-    // Optional, and stripped by the publish path rather than stored: a menu
-    // document no longer states targets. See PLAN_TARGET_PREFIX.
-    weeklySetTargets: z.array(weeklySetTargetSchema).optional(),
-    effectiveFrom: isoDateSchema.nullable(),
-    effectiveTo: isoDateSchema.nullable(),
-    notes: z.string(),
-    changeNote: z.string(),
-    createdAt: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, 'must be a UTC ISO-8601 instant'),
-  })
+/**
+ * The plan document's fields, before the cross-field rules below. Exported for
+ * the MCP argument schema, which needs it without `createdAt` (stamped on
+ * publish), and zod cannot omit fields from a refined schema.
+ */
+export const planVersionObjectSchema = z.object({
+  planId: z.string().regex(SLUG_RE, 'must be a lower-kebab slug'),
+  version: z.number().int().min(1),
+  name: z.string().trim().min(1),
+  sessionsPerWeek: z.number().int().min(1).max(7),
+  rotation: z.array(z.string()).min(1),
+  bonusSessions: z.array(z.string()),
+  sessions: z.array(planSessionSchema).min(1),
+  // Optional, and stripped by the publish path rather than stored: a menu
+  // document no longer states targets. See PLAN_TARGET_PREFIX.
+  weeklySetTargets: z.array(weeklySetTargetSchema).optional(),
+  effectiveFrom: isoDateSchema.nullable(),
+  effectiveTo: isoDateSchema.nullable(),
+  notes: z.string(),
+  changeNote: z.string(),
+  createdAt: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, 'must be a UTC ISO-8601 instant'),
+});
+
+export const planVersionSchema = planVersionObjectSchema
   .refine((v) => new Set(v.sessions.map((s) => s.id)).size === v.sessions.length, {
     message: 'session ids must be unique',
   })

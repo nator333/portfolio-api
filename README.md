@@ -36,6 +36,15 @@ portfolio to MCP clients — including the Claude iOS app — over OAuth 2.1.
   * `replace_*` swaps a whole document (annotated destructive), and only if it
     is unchanged since the `version` the caller read.
   * `revise_*` publishes a new version; stored versions are never modified.
+* **One schema per tool.** Each tool's arguments are a single zod schema
+  (`TOOL_ARGS` in `lambda/mcp-args.ts`). `tools/list` advertises the JSON Schema
+  generated from it, and `tools/call` validates against it before any handler
+  runs, so a bad call is one `invalid_input` naming the fields. Domain schemas
+  are reused where they exist (reflections, health log, plan edits and
+  versions). Read tools get their own, and their parsed arguments are passed
+  to the handlers as query strings. A test checks that each read tool accepts
+  exactly the query parameters its handler reads. The REST handlers keep their
+  own checks.
 * **One error shape.** Every failure a tool reports, whether the whole call
   (`isError`, in `structuredContent` and as text) or one part of a successful
   call (`readinessFetch.error`, `readiness.error`, a health day's

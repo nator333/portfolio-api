@@ -39,7 +39,8 @@ import {
 } from './mcp-schema';
 import { corsHeaders } from './cors';
 import { etag, versionOf } from './content-version';
-import { toolError, toolErrorFromResponse, type ToolError } from './tool-error';
+import { compactIssues, toolError, toolErrorFromResponse, type ToolError } from './tool-error';
+import { TOOL_ARGS, type ToolArgs, type ToolName } from './mcp-args';
 import { randomUUID } from 'crypto';
 import { challengeHeader } from './mcp-oauth';
 
@@ -95,56 +96,53 @@ interface CallContext {
 
 /**
  * Maps each advertised tool to the underlying handler and the event shape it
- * expects. `args` is the client-supplied `arguments` object from `tools/call`.
+ * expects. `args` has already been validated against the tool's schema in
+ * TOOL_ARGS (mcp-args.ts) and arrives parsed and typed.
  */
-const INVOKERS: Record<
-  string,
-  (args: Record<string, unknown>, ctx: CallContext) => Promise<APIGatewayProxyResult>
-> = {
+const INVOKERS: { [N in ToolName]: (args: ToolArgs<N>, ctx: CallContext) => Promise<APIGatewayProxyResult> } = {
   get_content: async (args, ctx) => {
-    const read = contentReader(String(args.doc), ctx);
+    const read = contentReader(args.doc, ctx);
     if (!read) return unknownDoc(args.doc);
-    return withVersion(String(args.doc), await read(proxyEvent({})));
+    return withVersion(args.doc, await read(proxyEvent({})));
   },
-  get_workout: (args) => getWorkout(proxyEvent({ query: dateRange(args) })),
-  get_workout_sets: (args) => getWorkoutSets(proxyEvent({ query: setsRange(args) })),
-  list_exercises: (args) => listExercises(proxyEvent({ query: exerciseFilter(args) })),
-  get_exercise_history: (args) => getExerciseHistory(proxyEvent({ query: exerciseHistory(args) })),
-  get_workout_plan: (args) => getWorkoutPlan(proxyEvent({ query: planQuery(args) })),
-  get_muscle_volume_status: (args) =>
-    getMuscleVolumeStatus(proxyEvent({ query: muscleVolumeQuery(args) })),
-  get_readiness: (args) => getReadiness(proxyEvent({ query: readinessQuery(args) })),
-  get_training_recommendation: (args) =>
-    getTrainingRecommendation(
-      proxyEvent({ query: { planId: typeof args.planId === 'string' ? args.planId : undefined } }),
-    ),
-  get_weight_trend: (args) =>
-    getWeightTrend(
-      proxyEvent({
-        query: {
-          days: typeof args.days === 'number' ? String(args.days) : undefined,
-          exercise: typeof args.exercise === 'string' ? args.exercise : undefined,
-        },
-      }),
-    ),
+  get_workout: (args) => getWorkout(proxyEvent({ query: toQuery(args) })),
+  get_workout_sets: (args) => getWorkoutSets(proxyEvent({ query: toQuery(args) })),
+  list_exercises: (args) => listExercises(proxyEvent({ query: toQuery(args) })),
+  get_exercise_history: (args) => getExerciseHistory(proxyEvent({ query: toQuery(args) })),
+  get_workout_plan: (args) => getWorkoutPlan(proxyEvent({ query: toQuery(args) })),
+  get_muscle_volume_status: (args) => getMuscleVolumeStatus(proxyEvent({ query: toQuery(args) })),
+  get_readiness: (args) => getReadiness(proxyEvent({ query: toQuery(args) })),
+  get_training_recommendation: (args) => getTrainingRecommendation(proxyEvent({ query: toQuery(args) })),
+  get_weight_trend: (args) => getWeightTrend(proxyEvent({ query: toQuery(args) })),
   replace_content: async (args) => {
-    const write = CONTENT_WRITERS.get(String(args.doc));
+    const write = CONTENT_WRITERS.get(args.doc);
     if (!write) return unknownDoc(args.doc);
-    if (typeof args.version !== 'string' || args.version === '') {
-      return badRequest('`version` is required: pass the one get_content returned with the document');
-    }
     // If-Match makes the writer refuse (412) a document changed since then.
     const result = await write(proxyEvent({ body: args.document, headers: { 'If-Match': etag(args.version) } }));
-    return withVersion(String(args.doc), result);
+    return withVersion(args.doc, result);
   },
   revise_workout_plan: (args) => revisePlan(args),
-  list_reflections: (args) => listReflections(proxyEvent({ query: reflectionQuery(args) })),
+  list_reflections: (args) => listReflections(proxyEvent({ query: toQuery(args) })),
   add_reflection: (args) => addReflection(proxyEvent({ body: args })),
   update_reflection: (args) => updateReflection(proxyEvent({ body: args })),
-  list_health_log: (args) => listHealthLog(proxyEvent({ query: dateRange(args) })),
+  list_health_log: (args) => listHealthLog(proxyEvent({ query: toQuery(args) })),
   add_health_note: (args) => addHealthNote(proxyEvent({ body: args })),
   update_health_log: (args) => updateHealthLog(proxyEvent({ body: args })),
 };
+
+/**
+ * Parsed read arguments as the query string a REST request would carry: the
+ * delegated handlers only ever see strings. An omitted argument stays absent,
+ * so each default (today, a 7-day window, …) is the handler's alone, not a
+ * second opinion from this layer.
+ */
+function toQuery(args: Record<string, unknown>): Record<string, string> {
+  const query: Record<string, string> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') query[key] = String(value);
+  }
+  return query;
+}
 
 /**
  * get_content and replace_content route on `doc` to the handler each document
@@ -198,105 +196,16 @@ const badRequest = (message: string): APIGatewayProxyResult => ({
 const unknownDoc = (doc: unknown) =>
   badRequest(`Unknown doc ${JSON.stringify(doc)}; expected one of ${CONTENT_DOCS.join(', ')}`);
 
-/** Arguments that only mean something against the current version's edits. */
-const EDIT_ONLY_ARGS = ['edits', 'planId', 'baseVersion', 'baseTargetsVersion', 'name', 'effectiveFrom', 'effectiveTo'];
-
 /**
- * revise_workout_plan publishes either edits or a whole `plan`. The whole-plan
- * form goes to the handler that used to back update_workout_plan, with the
- * tool's `changeNote` carried into the document unless it already has one.
- * Sending both forms is refused rather than guessed at: dropping either half
- * silently would publish something the caller did not ask for.
+ * revise_workout_plan publishes either edits or a whole `plan` (its schema in
+ * mcp-args.ts refuses both, or neither). The whole-plan form goes to the
+ * handler that used to back update_workout_plan, with the tool's `changeNote`
+ * carried into the document unless it already has one.
  */
-function revisePlan(args: Record<string, unknown>): Promise<APIGatewayProxyResult> {
-  const { plan, changeNote, ...rest } = args;
+function revisePlan(args: ToolArgs<'revise_workout_plan'>): Promise<APIGatewayProxyResult> {
+  const { plan, changeNote } = args;
   if (plan === undefined) return reviseWorkoutPlan(proxyEvent({ body: args }));
-
-  const mixed = EDIT_ONLY_ARGS.filter((key) => rest[key] !== undefined);
-  if (mixed.length > 0) {
-    return Promise.resolve(badRequest(`Send either \`plan\` or \`edits\`, not both; drop ${mixed.join(', ')}`));
-  }
-  const body =
-    plan && typeof plan === 'object' && !Array.isArray(plan)
-      ? { changeNote, ...(plan as Record<string, unknown>) }
-      : plan;
-  return updateWorkoutPlan(proxyEvent({ body }));
-}
-
-/**
- * The plan read takes numbers and booleans, but a delegated handler only ever
- * sees query strings, so they are stringified here exactly as a URL would.
- */
-function planQuery(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.planId === 'string') query.planId = args.planId;
-  if (typeof args.version === 'number') query.version = String(args.version);
-  if (typeof args.date === 'string') query.date = args.date;
-  if (args.history === true) query.history = 'true';
-  return query;
-}
-
-/**
- * The status read is the one tool whose answer depends on *when* it is asked, so
- * nothing here is defaulted client-side: an omitted `window` is left absent and
- * the handler applies the documented default, rather than two layers each having
- * an opinion about what seven days means.
- */
-function muscleVolumeQuery(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.window === 'number') query.window = String(args.window);
-  if (typeof args.planId === 'string') query.planId = args.planId;
-  return query;
-}
-
-/**
- * Like the volume status, "today" is decided server-side (in the owner's time
- * zone), so an omitted `date` stays absent rather than being filled in here
- * from whatever clock the client happens to be on.
- */
-function readinessQuery(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.date === 'string') query.date = args.date;
-  return query;
-}
-
-function reflectionQuery(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.type === 'string') query.type = args.type;
-  if (typeof args.from === 'string') query.from = args.from;
-  if (typeof args.to === 'string') query.to = args.to;
-  if (typeof args.theme === 'string') query.theme = args.theme;
-  if (typeof args.limit === 'number') query.limit = String(args.limit);
-  return query;
-}
-
-function exerciseHistory(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.exercise === 'string') query.exercise = args.exercise;
-  if (typeof args.from === 'string') query.from = args.from;
-  if (typeof args.to === 'string') query.to = args.to;
-  return query;
-}
-
-function exerciseFilter(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.muscle === 'string') query.muscle = args.muscle;
-  return query;
-}
-
-function setsRange(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.date === 'string') query.date = args.date;
-  if (typeof args.from === 'string') query.from = args.from;
-  if (typeof args.to === 'string') query.to = args.to;
-  return query;
-}
-
-function dateRange(args: Record<string, unknown>): Record<string, string | undefined> {
-  const query: Record<string, string | undefined> = {};
-  if (typeof args.from === 'string') query.from = args.from;
-  if (typeof args.to === 'string') query.to = args.to;
-  return query;
+  return updateWorkoutPlan(proxyEvent({ body: { ...plan, changeNote: plan.changeNote ?? changeNote } }));
 }
 
 // --- Admin authorization (the write gate) -----------------------------------
@@ -492,7 +401,8 @@ async function handleRpc(
     case 'tools/call': {
       const name = typeof params.name === 'string' ? params.name : '';
       const spec = TOOL_SPECS_BY_NAME.get(name);
-      const invoke = INVOKERS[name];
+      // Own keys only: `'constructor' in INVOKERS` is true.
+      const invoke = Object.hasOwn(INVOKERS, name) ? INVOKERS[name as ToolName] : undefined;
       if (!spec || !invoke) {
         return { response: rpcError(id, JSON_RPC.INVALID_PARAMS, `Unknown tool: ${name || '(none)'}`) };
       }
@@ -513,13 +423,27 @@ async function handleRpc(
         admin = (await verifyAdmin(headers)).ok;
       }
 
-      const args =
-        params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
-          ? (params.arguments as Record<string, unknown>)
-          : {};
+      // One schema per tool (mcp-args.ts) is both what tools/list advertises
+      // and what is enforced here, before any handler runs.
+      const parsed = TOOL_ARGS[name as ToolName].safeParse(params.arguments ?? {});
+      if (!parsed.success) {
+        return {
+          response: rpcResult(
+            id,
+            errorToolResult(
+              toolError('invalid_input', `Invalid arguments for ${name}`, {
+                details: { issues: compactIssues(parsed.error.issues) },
+              }),
+            ),
+          ),
+        };
+      }
 
       try {
-        const result = await invoke(args, { admin });
+        const result = await (invoke as (args: unknown, ctx: CallContext) => Promise<APIGatewayProxyResult>)(
+          parsed.data,
+          { admin },
+        );
         return { response: rpcResult(id, toolResult(result)) };
       } catch (error) {
         // An exception is a bug or an outage, not something the caller can fix

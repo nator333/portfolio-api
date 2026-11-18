@@ -1,6 +1,11 @@
 import { addDays, civilDate, localDate } from './readiness';
 import { LB_PER_KG } from './workout-schema';
 
+/** The bodyweight window, in days ending today: default, and the bounds a caller may ask for. */
+export const DEFAULT_DAYS = 90;
+export const MIN_DAYS = 14;
+export const MAX_DAYS = 365;
+
 /**
  * Bodyweight over time, from the owner's smart-scale weigh-ins in Google
  * Health, and how it relates to what the training log says about strength.
