@@ -19,15 +19,16 @@ import {
  *   measured   last night's sleep, HRV and resting heart rate from Google
  *              Health, judged by the same arithmetic as get_readiness. Always
  *              read from Google by the server, never supplied by Claude: a
- *              placeholder at 00:05, a reading on the day's first
- *              update_health_log or at 10:00, whichever comes first, and a
+ *              placeholder at 00:05, a reading on the day's first note
+ *              (either tool) or at 10:00, whichever comes first, and a
  *              refresh at 22:00 (see health-log-ingest.ts and
  *              health-log-measure.ts).
- *   notes      written by Claude through update_health_log, from what the
- *              owner says in conversation: how the day felt, soreness,
- *              illness, stress, and so on.
+ *   notes      written by Claude from what the owner says in conversation:
+ *              timestamped note entries (add_health_note appends one;
+ *              update_health_log corrects or removes one), tags, and 1-5
+ *              ratings (update_health_log).
  *
- * Only the job creates records. update_health_log can change the notes of a
+ * Only the job creates records. The note tools can change the notes of a
  * record that already exists and nothing else, so Claude can neither invent a
  * day nor alter a number that came from the watch. The job writes a record for
  * every day in its window, including days with no watch data (status
@@ -88,11 +89,14 @@ export interface FetchError {
   at: string;
   kind: FetchErrorKind;
   message: string;
-  /** Which writer hit it. */
-  by: 'update' | 'morning' | 'nightly';
+  /** Which writer hit it: a note written from chat, or the 10:00 / 22:00 run. */
+  by: 'chat' | 'morning' | 'nightly';
 }
 
-export const HEALTH_NOTES_MAX = 4000;
+/** One note entry's text. */
+export const HEALTH_NOTE_TEXT_MAX = 2000;
+/** Entries per day, well inside DynamoDB's 400 KB item limit. */
+export const HEALTH_NOTES_PER_DAY_MAX = 50;
 /** Tags share the reflections' vocabulary and limit. */
 export const HEALTH_TAGS_MAX = REFLECTION_THEMES_MAX;
 export const HEALTH_LIST_DEFAULT_DAYS = 14;
@@ -105,8 +109,25 @@ export const HEALTH_LIST_MAX_DAYS = 92;
 export const HEALTH_RATINGS = ['energy', 'mood', 'stress', 'soreness'] as const;
 export type HealthRating = (typeof HEALTH_RATINGS)[number];
 
-/** The attributes update_health_log may write. Everything else is the job's. */
+/** The attributes the note tools may write. Everything else is the job's. */
 export const HEALTH_NOTE_FIELDS = ['notes', 'tags', ...HEALTH_RATINGS] as const;
+
+/**
+ * A note entry's id: the UTC moment it was added, then 4 random hex digits,
+ * e.g. "20261118T133012Z-a1b2". Sorting ids sorts entries by time.
+ */
+export const NOTE_ID_RE = /^\d{8}T\d{6}Z-[0-9a-f]{4}$/;
+
+export function newNoteId(now: Date, random: string): string {
+  return `${now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')}-${random}`;
+}
+
+/** One thing the owner said about the day. */
+export interface HealthNote {
+  at: string;
+  text: string;
+  editedAt?: string;
+}
 export type HealthNoteField = (typeof HEALTH_NOTE_FIELDS)[number];
 
 /** The measured half of a day, as the job stores it. */
@@ -152,8 +173,10 @@ export interface HealthLogItem {
    * `measuredAt`, the newest attempt is the one that failed.
    */
   fetchError?: FetchError;
-  notes?: string;
-  tags?: string[];
+  /** Entries by id. */
+  notes?: Record<string, HealthNote>;
+  /** Stored as a DynamoDB string set (read back as a Set), so adding is atomic. */
+  tags?: string[] | Set<string>;
   energy?: number;
   mood?: number;
   stress?: number;
@@ -235,12 +258,34 @@ export function measureDays(
 // --- What Claude may send ------------------------------------------------------
 
 const rating = z.number().int().min(1).max(5).nullable();
+const noteText = z.string().trim().min(1).max(HEALTH_NOTE_TEXT_MAX);
 
+/** add_health_note: append one entry, and optionally add tags to the day. */
+export const addHealthNoteSchema = z
+  .object({
+    date: isoDate,
+    text: noteText,
+    tags: themeTags.optional(),
+  })
+  .strict();
+
+export type AddHealthNote = z.infer<typeof addHealthNoteSchema>;
+
+/**
+ * update_health_log: JSON Merge Patch over the note fields. `notes` is the
+ * same object list_health_log returns, keyed by entry id: `{id: {text}}`
+ * corrects an entry, `{id: null}` removes it. New entries go through
+ * add_health_note, never here.
+ */
 export const updateHealthLogSchema = z
   .object({
     date: isoDate,
-    /** Replaces the day's notes; null clears them. */
-    notes: z.string().trim().min(1).max(HEALTH_NOTES_MAX).nullable().optional(),
+    notes: z
+      .record(z.string().regex(NOTE_ID_RE, 'not a note id from list_health_log'), z.object({ text: noteText }).strict().nullable())
+      .refine((v) => Object.keys(v).length > 0, 'name at least one entry')
+      .refine((v) => Object.keys(v).length <= HEALTH_NOTES_PER_DAY_MAX, 'too many entries')
+      .optional(),
+    /** Replaces the day's tags; null or [] clears them. */
     tags: themeTags.nullable().optional(),
     energy: rating.optional(),
     mood: rating.optional(),
@@ -267,8 +312,15 @@ export const listHealthLogSchema = z
     message: `At most ${HEALTH_LIST_MAX_DAYS} days per read`,
   });
 
-/** A record as a client sees it: the storage key dropped. */
+/**
+ * A record as a client sees it: the storage key dropped, entries ordered by
+ * id (which is by time), and the tag set as a sorted list.
+ */
 export function toHealthLogEntry(item: HealthLogItem) {
-  const { pk: _pk, ...rest } = item;
-  return rest;
+  const { pk: _pk, notes, tags, ...rest } = item;
+  return {
+    ...rest,
+    notes: Object.fromEntries(Object.entries(notes ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+    tags: [...(tags ?? [])].sort(),
+  };
 }

@@ -20,7 +20,7 @@ import {
  *          so Claude can annotate it during the day. No Google read; a day
  *          that already exists is left exactly as it is.
  *   10:00  `{ "mode": "morning" }`: records today's readiness if nothing has
- *          yet. update_health_log tries the same on the first note of the day,
+ *          yet. The note tools try the same on the first note of the day,
  *          so this is the fallback for a day with no morning chat. Idempotent:
  *          if today already has a "ready" reading it returns without calling
  *          Google, and its write is conditioned on the same, so a note landing

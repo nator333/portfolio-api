@@ -14,6 +14,7 @@ jest.mock('@aws-sdk/client-secrets-manager', () => {
 
 import { handler as ingest } from '../lambda/health-log-ingest';
 import { handler as updateHealthLog } from '../lambda/update-health-log';
+import { handler as addHealthNote } from '../lambda/add-health-note';
 import { handler as listHealthLog } from '../lambda/list-health-log';
 import { LOG_DAYS, awaitingDay, logDates, measureDay, updateHealthLogSchema } from '../lambda/health-log-schema';
 import { GoogleHealthError, resetGoogleHealthCache } from '../lambda/google-health';
@@ -400,8 +401,9 @@ describe('the 10:00 morning run', () => {
   });
 });
 
-describe('the first update of the day fetching readiness', () => {
+describe('the first note of the day fetching readiness', () => {
   const today = '2026-11-18';
+  const NOTE = { at: '2026-11-18T13:00:00.000Z', text: 'Slept badly' };
   let fetchMock: jest.Mock;
 
   beforeEach(() => {
@@ -410,65 +412,76 @@ describe('the first update of the day fetching readiness', () => {
     jest.useFakeTimers({ now: new Date('2026-11-18T13:00:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
   });
 
-  const awaitingWithNotes = { pk: 'DAY', date: today, measured: { status: 'awaiting', settled: false }, notes: 'Slept badly' };
-
-  it('should save the notes, then record readiness from Google under the until-ready rule', async () => {
+  const awaitingWithNote = {
+    pk: 'DAY',
+    date: today,
+    measured: { status: 'awaiting', settled: false },
+    notes: { '20261118T130000Z-0000': NOTE },
+  };
+  /** The note write answers with the day; the measure write echoes what it was sent. */
+  const noteThenMeasure = (day: Record<string, unknown> = awaitingWithNote) =>
     mockDdbSend
-      .mockResolvedValueOnce({ Attributes: awaitingWithNotes })
+      .mockResolvedValueOnce({ Attributes: day })
       .mockImplementationOnce(async (cmd) => ({
-        Attributes: { ...awaitingWithNotes, measured: cmd.input.ExpressionAttributeValues[':measured'] },
+        Attributes: { ...day, measured: cmd.input.ExpressionAttributeValues[':measured'] },
       }));
 
-    const { statusCode, body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Slept badly' })));
+  it('should save the note, then record readiness from Google under the until-ready rule', async () => {
+    noteThenMeasure();
+
+    const { statusCode, body } = parse(await addHealthNote(bodyEvent({ date: today, text: 'Slept badly' })));
 
     expect(statusCode).toBe(200);
-    expect(body.notes).toBe('Slept badly');
+    expect(Object.values(body.notes)).toEqual([NOTE]);
     expect(body.measured).toMatchObject({ status: 'ready', sleep: { minutesAsleep: 450 } });
     expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded', status: 'ready' });
-    const [notesWrite, measureWrite] = mockDdbSend.mock.calls.map(([c]) => c.input);
-    expect(notesWrite.UpdateExpression).not.toContain('#measured =');
+    const [noteWrite, measureWrite] = mockDdbSend.mock.calls.map(([c]) => c.input);
+    expect(noteWrite.UpdateExpression).not.toContain('#measured =');
     expect(measureWrite.ConditionExpression).toBe(
       'attribute_not_exists(#measured) OR (#measured.#settled = :false AND #measured.#status <> :ready)',
     );
   });
 
-  it('should not call Google when the day already has readiness', async () => {
-    mockDdbSend.mockResolvedValueOnce({ Attributes: { ...awaitingWithNotes, measured: { status: 'ready' } } });
+  it('should fetch on update_health_log too, when that is the first write of the day', async () => {
+    noteThenMeasure();
 
-    const { body } = parse(await updateHealthLog(bodyEvent({ date: today, mood: 3 })));
+    const { body } = parse(await updateHealthLog(bodyEvent({ date: today, mood: 2 })));
+
+    expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded', status: 'ready' });
+  });
+
+  it('should not call Google when the day already has readiness', async () => {
+    mockDdbSend.mockResolvedValueOnce({ Attributes: { ...awaitingWithNote, measured: { status: 'ready' } } });
+
+    const { body } = parse(await addHealthNote(bodyEvent({ date: today, text: 'Afternoon slump' })));
 
     expect(body.readinessFetch).toEqual({ attempted: false, reason: 'already_ready' });
     expect(mockDdbSend).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('should keep the notes and report the failure when Google cannot be read', async () => {
+  it('should keep the note and report the failure when Google cannot be read', async () => {
     fetchMock.mockImplementation(async () => new Response('{"error":"invalid_grant"}', { status: 400 }));
-    mockDdbSend.mockResolvedValueOnce({ Attributes: awaitingWithNotes });
+    mockDdbSend.mockResolvedValueOnce({ Attributes: awaitingWithNote });
 
-    const { statusCode, body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Slept badly' })));
+    const { statusCode, body } = parse(await addHealthNote(bodyEvent({ date: today, text: 'Slept badly' })));
 
     expect(statusCode).toBe(200);
-    expect(body.notes).toBe('Slept badly');
+    expect(Object.values(body.notes)).toEqual([NOTE]);
     // The measured half is untouched: a failed read is not an empty night.
     expect(body.measured.status).toBe('awaiting');
     expect(body.readinessFetch).toMatchObject({ attempted: true, outcome: 'failed', kind: 'auth' });
-    expect(body.fetchError).toMatchObject({ kind: 'auth', by: 'update' });
-    // The notes write, then the fetchError written on the day; no measured write.
+    expect(body.fetchError).toMatchObject({ kind: 'auth', by: 'chat' });
+    // The note write, then the fetchError written on the day; no measured write.
     expect(mockDdbSend).toHaveBeenCalledTimes(2);
-    const errorWrite = mockDdbSend.mock.calls[1][0].input;
-    expect(errorWrite.UpdateExpression).toBe('SET #fetchError = :fetchError');
+    expect(mockDdbSend.mock.calls[1][0].input.UpdateExpression).toBe('SET #fetchError = :fetchError');
   });
 
   it('should record an empty night as an answer, not a failure', async () => {
     fetchMock = stubGoogle(today, { sleep: false });
-    mockDdbSend
-      .mockResolvedValueOnce({ Attributes: awaitingWithNotes })
-      .mockImplementationOnce(async (cmd) => ({
-        Attributes: { ...awaitingWithNotes, measured: cmd.input.ExpressionAttributeValues[':measured'] },
-      }));
+    noteThenMeasure();
 
-    const { body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Forgot the watch' })));
+    const { body } = parse(await addHealthNote(bodyEvent({ date: today, text: 'Forgot the watch' })));
 
     // Today is not over: an empty night may still sync.
     expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded', status: 'not_synced' });
@@ -478,69 +491,171 @@ describe('the first update of the day fetching readiness', () => {
 
   it('should call an empty night on a past day no_data', async () => {
     fetchMock = stubGoogle('2026-11-10', { sleep: false });
-    const pastDay = { ...awaitingWithNotes, date: '2026-11-15' };
-    mockDdbSend
-      .mockResolvedValueOnce({ Attributes: pastDay })
-      .mockImplementationOnce(async (cmd) => ({
-        Attributes: { ...pastDay, measured: cmd.input.ExpressionAttributeValues[':measured'] },
-      }));
+    noteThenMeasure({ ...awaitingWithNote, date: '2026-11-15' });
 
-    const { body } = parse(await updateHealthLog(bodyEvent({ date: '2026-11-15', notes: 'Battery died' })));
+    const { body } = parse(await addHealthNote(bodyEvent({ date: '2026-11-15', text: 'Battery died' })));
 
     expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'recorded', status: 'no_data' });
   });
 
   it('should leave a reading another writer made first, and say so', async () => {
-    mockDdbSend.mockResolvedValueOnce({ Attributes: awaitingWithNotes }).mockRejectedValueOnce(conditionFailed());
+    mockDdbSend.mockResolvedValueOnce({ Attributes: awaitingWithNote }).mockRejectedValueOnce(conditionFailed());
 
-    const { body } = parse(await updateHealthLog(bodyEvent({ date: today, notes: 'Slept badly' })));
+    const { body } = parse(await addHealthNote(bodyEvent({ date: today, text: 'Slept badly' })));
 
     expect(body.readinessFetch).toEqual({ attempted: true, outcome: 'already_ready' });
   });
 });
 
-describe('annotating a day', () => {
-  it('should set only the note fields, remove the nulled ones, and require the day to exist', async () => {
-    mockDdbSend.mockResolvedValueOnce({
-      Attributes: { pk: 'DAY', date: '2026-11-17', measured: { status: 'ready' }, notes: 'Sore legs' },
-    });
+describe('adding a note', () => {
+  const day = '2026-11-17';
+  const readyDay = { pk: 'DAY', date: day, measured: { status: 'ready' } };
+  const refusedWith = (item?: Record<string, unknown>) =>
+    new ConditionalCheckFailedException({ message: 'The conditional request failed', $metadata: {}, Item: item as never });
 
-    const { statusCode, body } = parse(
-      await updateHealthLog(bodyEvent({ date: '2026-11-17', notes: 'Sore legs', tags: ['Legs'], energy: 2, mood: null })),
-    );
-
-    expect(statusCode).toBe(200);
-    expect(body).toEqual({
-      date: '2026-11-17',
-      measured: { status: 'ready' },
-      notes: 'Sore legs',
-      readinessFetch: { attempted: false, reason: 'already_ready' },
-    });
-    const { input } = mockDdbSend.mock.calls[0][0];
-    expect(input.Key).toEqual({ pk: 'DAY', date: '2026-11-17' });
-    expect(input.ConditionExpression).toBe('attribute_exists(#measured)');
-    expect(input.UpdateExpression).toBe(
-      'SET #notesUpdatedAt = :notesUpdatedAt, #notes = :notes, #tags = :tags, #energy = :energy REMOVE #mood',
-    );
-    expect(input.ExpressionAttributeValues[':tags']).toEqual(['legs']);
+  beforeEach(() => {
+    // 18:30 in Montreal.
+    jest.useFakeTimers({ now: new Date('2026-11-17T23:30:00Z'), doNotFake: ['setTimeout', 'setImmediate', 'nextTick'] });
   });
 
-  it('should refuse a day the nightly job has not created', async () => {
-    mockDdbSend.mockRejectedValueOnce(conditionFailed());
+  it('should append one timestamped entry in a single write, and add its tags to the day\'s set', async () => {
+    mockDdbSend.mockImplementationOnce(async (cmd) => ({
+      Attributes: { ...readyDay, notes: { [cmd.input.ExpressionAttributeNames['#id']]: cmd.input.ExpressionAttributeValues[':note'] }, tags: new Set(['legs']) },
+    }));
 
-    const { statusCode, body } = parse(await updateHealthLog(bodyEvent({ date: '2026-11-18', notes: 'Tired' })));
+    const { statusCode, body } = parse(await addHealthNote(bodyEvent({ date: day, text: 'Legs wrecked', tags: ['Legs'] })));
+
+    expect(statusCode).toBe(200);
+    expect(body.id).toMatch(/^20261117T233000Z-[0-9a-f]{4}$/);
+    expect(body.notes).toEqual({ [body.id]: { at: '2026-11-17T23:30:00.000Z', text: 'Legs wrecked' } });
+    expect(body.tags).toEqual(['legs']);
+    const { input } = mockDdbSend.mock.calls[0][0];
+    expect(input.UpdateExpression).toBe('SET #notes.#id = :note, #notesUpdatedAt = :now ADD #tags :tags');
+    expect(input.ConditionExpression).toBe('attribute_exists(#measured) AND attribute_exists(#notes) AND size(#notes) < :max');
+    expect(input.ExpressionAttributeValues[':tags']).toEqual(new Set(['legs']));
+    // Nothing measured is named in the write.
+    expect(JSON.stringify(input.ExpressionAttributeNames)).not.toMatch(/sleep|hrv|verdict|status/);
+  });
+
+  it('should create the notes map with the day\'s first entry', async () => {
+    mockDdbSend
+      .mockRejectedValueOnce(refusedWith({ pk: { S: 'DAY' }, measured: { M: {} } }))
+      .mockImplementationOnce(async (cmd) => ({ Attributes: { ...readyDay, notes: cmd.input.ExpressionAttributeValues[':first'] } }));
+
+    const { statusCode, body } = parse(await addHealthNote(bodyEvent({ date: day, text: 'First' })));
+
+    expect(statusCode).toBe(200);
+    expect(Object.values(body.notes)).toEqual([{ at: '2026-11-17T23:30:00.000Z', text: 'First' }]);
+    const retry = mockDdbSend.mock.calls[1][0].input;
+    expect(retry.UpdateExpression).toBe('SET #notes = :first, #notesUpdatedAt = :now');
+    expect(retry.ConditionExpression).toBe('attribute_exists(#measured) AND attribute_not_exists(#notes)');
+  });
+
+  it('should refuse a day the scheduler has not created', async () => {
+    mockDdbSend.mockRejectedValueOnce(refusedWith(undefined));
+
+    const { statusCode, body } = parse(await addHealthNote(bodyEvent({ date: '2026-11-19', text: 'Tomorrow' })));
 
     expect(statusCode).toBe(404);
-    expect(body.message).toContain('No health log entry for 2026-11-18');
+    expect(body.message).toContain('No health log entry for 2026-11-19');
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('should refuse a day that is full', async () => {
+    mockDdbSend.mockRejectedValueOnce(refusedWith({ measured: { M: {} }, notes: { M: {} } }));
+
+    expect((await addHealthNote(bodyEvent({ date: day, text: 'One more' }))).statusCode).toBe(409);
   });
 
   it.each([
-    ['a measured value', { date: '2026-11-17', measured: { verdict: 'push' } }],
-    ['the creation stamp', { date: '2026-11-17', createdAt: '2020-01-01' }],
-    ['no change at all', { date: '2026-11-17' }],
-    ['a rating out of range', { date: '2026-11-17', energy: 6 }],
-    ['a non-English tag', { date: '2026-11-17', tags: ['睡眠'] }],
-    ['no date', { notes: 'Tired' }],
+    ['no text', { date: day }],
+    ['empty text', { date: day, text: '   ' }],
+    ['a measured value', { date: day, text: 'x', measured: { verdict: 'push' } }],
+    ['a non-English tag', { date: day, text: 'x', tags: ['睡眠'] }],
+  ])('should reject %s without writing', async (_label, payload) => {
+    expect((await addHealthNote(bodyEvent(payload))).statusCode).toBe(400);
+    expect(mockDdbSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('correcting a day (merge patch)', () => {
+  const day = '2026-11-17';
+  const A = '20261117T130000Z-aaaa';
+  const B = '20261117T180000Z-bbbb';
+
+  it('should rewrite one entry, remove another, and patch only the fields sent', async () => {
+    mockDdbSend.mockResolvedValueOnce({
+      Attributes: {
+        pk: 'DAY',
+        date: day,
+        measured: { status: 'ready' },
+        notes: { [A]: { at: 'x', text: 'Sore legs, not knees', editedAt: 'y' } },
+        tags: new Set(['legs', 'cold']),
+      },
+    });
+
+    const { statusCode, body } = parse(
+      await updateHealthLog(
+        bodyEvent({ date: day, notes: { [A]: { text: 'Sore legs, not knees' }, [B]: null }, tags: ['Legs', 'cold'], energy: 2, mood: null }),
+      ),
+    );
+
+    expect(statusCode).toBe(200);
+    expect(body.notes).toEqual({ [A]: { at: 'x', text: 'Sore legs, not knees', editedAt: 'y' } });
+    expect(body.tags).toEqual(['cold', 'legs']);
+    const { input } = mockDdbSend.mock.calls[0][0];
+    expect(input.ExpressionAttributeNames).toMatchObject({ '#n0': A, '#n1': B });
+    expect(input.UpdateExpression).toBe(
+      'SET #notesUpdatedAt = :now, #energy = :energy, #tags = :tags, #notes.#n0.#text = :t0, #notes.#n0.#editedAt = :now ' +
+        'REMOVE #mood, #notes.#n1',
+    );
+    // Every entry named must already exist: a typo cannot create one.
+    expect(input.ConditionExpression).toBe(
+      'attribute_exists(#measured) AND attribute_exists(#notes.#n0) AND attribute_exists(#notes.#n1)',
+    );
+    expect(input.ExpressionAttributeValues[':tags']).toEqual(new Set(['legs', 'cold']));
+  });
+
+  it('should clear the tags with null or an empty list', async () => {
+    for (const tags of [null, []]) {
+      mockDdbSend.mockReset();
+      mockDdbSend.mockResolvedValueOnce({ Attributes: { pk: 'DAY', date: day, measured: { status: 'ready' } } });
+      const { body } = parse(await updateHealthLog(bodyEvent({ date: day, tags })));
+      expect(mockDdbSend.mock.calls[0][0].input.UpdateExpression).toBe('SET #notesUpdatedAt = :now REMOVE #tags');
+      expect(body.tags).toEqual([]);
+    }
+  });
+
+  it('should say which ids it could not find, and point to add_health_note', async () => {
+    mockDdbSend.mockRejectedValueOnce(conditionFailed());
+
+    const { statusCode, body } = parse(await updateHealthLog(bodyEvent({ date: day, notes: { [A]: { text: 'x' } } })));
+
+    expect(statusCode).toBe(404);
+    expect(body.message).toContain(A);
+    expect(body.message).toContain('add_health_note');
+  });
+
+  it('should refuse a day the scheduler has not created', async () => {
+    mockDdbSend.mockRejectedValueOnce(conditionFailed());
+
+    const { statusCode, body } = parse(await updateHealthLog(bodyEvent({ date: '2026-11-19', mood: 3 })));
+
+    expect(statusCode).toBe(404);
+    expect(body.message).toContain('No health log entry for 2026-11-19');
+  });
+
+  it.each([
+    ['a measured value', { date: day, measured: { verdict: 'push' } }],
+    ['the creation stamp', { date: day, createdAt: '2020-01-01' }],
+    ['no change at all', { date: day }],
+    ['a rating out of range', { date: day, energy: 6 }],
+    ['a non-English tag', { date: day, tags: ['睡眠'] }],
+    ['notes as plain text (the old shape)', { date: day, notes: 'Tired' }],
+    ['a new note smuggled in under a made-up id', { date: day, notes: { 'my-note': { text: 'x' } } }],
+    ['an entry with fields other than text', { date: day, notes: { [A]: { text: 'x', at: '2020-01-01' } } }],
+    ['an empty notes patch', { date: day, notes: {} }],
+    ['no date', { mood: 3 }],
   ])('should reject %s without writing', async (_label, payload) => {
     const { statusCode } = parse(await updateHealthLog(bodyEvent(payload)));
 
@@ -548,11 +663,11 @@ describe('annotating a day', () => {
     expect(mockDdbSend).not.toHaveBeenCalled();
   });
 
-  it('should accept every note field the schema advertises', () => {
+  it('should accept every field the schema advertises', () => {
     expect(
       updateHealthLogSchema.safeParse({
-        date: '2026-11-17',
-        notes: 'x',
+        date: day,
+        notes: { [A]: { text: 'x' }, [B]: null },
         tags: ['cold'],
         energy: 1,
         mood: 5,

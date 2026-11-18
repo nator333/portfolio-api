@@ -18,7 +18,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
  *
  * With no window, the last HEALTH_LIST_DEFAULT_DAYS days ending today in the
  * owner's time zone; with only one bound, that many days from or to it. Reads
- * only what the nightly job and update_health_log stored; never Google.
+ * only what the scheduled job and the note tools stored; never Google.
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const headers = { 'Content-Type': 'application/json', ...corsHeaders(event) };

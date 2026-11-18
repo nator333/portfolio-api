@@ -1,36 +1,28 @@
 import { ConditionalCheckFailedException, DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import {
-  HEALTH_LOG_PK,
-  HEALTH_NOTE_FIELDS,
-  toHealthLogEntry,
-  updateHealthLogSchema,
-  type FetchErrorKind,
-  type HealthLogItem,
-} from './health-log-schema';
-import { ReadinessFetchFailure, hasReadiness, recordReadiness, toFetchError } from './health-log-measure';
-import { isValidTimeZone } from './readiness';
+import { HEALTH_LOG_PK, HEALTH_RATINGS, toHealthLogEntry, updateHealthLogSchema, type HealthLogItem } from './health-log-schema';
+import { fillReadiness } from './health-log-measure';
 import { corsHeaders } from './cors';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 /**
- * Add to or correct the notes half of an existing health-log day. Admin only.
+ * Correct the notes half of an existing health-log day. Admin only.
  *
- * The one write Claude has on the log, and it is narrow by construction: the
- * schema admits only the note fields, the update expression names only those,
- * and the condition refuses a day the scheduled job has not created (today is
- * opened at 00:05). So Claude can neither create a day nor supply a measured
- * value. A field sent as null is removed; a field left out is left as it was.
+ * JSON Merge Patch over what list_health_log returns, like every update_ tool:
+ * an omitted field is unchanged, null clears it, and `notes` (an object keyed
+ * by entry id) merges, so `{id: {text}}` rewrites one entry and `{id: null}`
+ * removes it while the others stay as they are. Adding an entry is
+ * add_health_note's job, not this one's: every id named here must already
+ * exist, so a typo cannot quietly create a note.
  *
- * After the notes are saved, if the day has no readiness reading yet, the
- * handler itself tries to record one from Google Health, so the first note of
- * the morning also captures the night's sleep, HRV and resting heart rate.
- * The values come from Google, never from Claude's arguments, and are written
- * under the 'until-ready' rule (health-log-measure.ts), which never replaces
- * a "ready" reading. A Google failure is reported in `readinessFetch` and
- * does not undo the notes; the 10:00 and 22:00 runs try again.
+ * Narrow by construction: the schema admits only the note fields, the update
+ * names only those, and the condition refuses a day the scheduled job has not
+ * created. So Claude can neither create a day nor supply a measured value.
+ *
+ * Afterwards, like add_health_note, it tries to record the day's readiness
+ * if it has none (see fillReadiness in health-log-measure.ts).
  */
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const headers = { 'Content-Type': 'application/json', ...corsHeaders(event) };
@@ -54,14 +46,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   if (!validation.success) {
     return respond(400, { message: 'Invalid health log update', errors: validation.error.issues });
   }
-  const { date, ...changes } = validation.data;
+  const { date, notes, tags, ...ratings } = validation.data;
 
-  const names: Record<string, string> = { '#notesUpdatedAt': 'notesUpdatedAt' };
-  const values: Record<string, unknown> = { ':notesUpdatedAt': new Date().toISOString() };
-  const sets = ['#notesUpdatedAt = :notesUpdatedAt'];
+  const names: Record<string, string> = { '#measured': 'measured', '#notesUpdatedAt': 'notesUpdatedAt' };
+  const values: Record<string, unknown> = { ':now': new Date().toISOString() };
+  const sets = ['#notesUpdatedAt = :now'];
   const removes: string[] = [];
-  for (const field of HEALTH_NOTE_FIELDS) {
-    const value = changes[field];
+  const conditions = ['attribute_exists(#measured)'];
+
+  for (const field of HEALTH_RATINGS) {
+    const value = ratings[field];
     if (value === undefined) continue;
     names[`#${field}`] = field;
     if (value === null) {
@@ -71,84 +65,66 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       sets.push(`#${field} = :${field}`);
     }
   }
+
+  if (tags !== undefined) {
+    names['#tags'] = 'tags';
+    // A string set cannot be empty, so [] clears like null does.
+    if (tags === null || tags.length === 0) {
+      removes.push('#tags');
+    } else {
+      values[':tags'] = new Set(tags);
+      sets.push('#tags = :tags');
+    }
+  }
+
+  const ids = Object.keys(notes ?? {});
+  if (ids.length > 0) {
+    names['#notes'] = 'notes';
+    ids.forEach((id, i) => {
+      names[`#n${i}`] = id;
+      conditions.push(`attribute_exists(#notes.#n${i})`);
+      const change = notes![id];
+      if (change === null) {
+        removes.push(`#notes.#n${i}`);
+      } else {
+        names['#text'] = 'text';
+        names['#editedAt'] = 'editedAt';
+        values[`:t${i}`] = change.text;
+        sets.push(`#notes.#n${i}.#text = :t${i}`, `#notes.#n${i}.#editedAt = :now`);
+      }
+    });
+  }
+
   const expression = `SET ${sets.join(', ')}${removes.length ? ` REMOVE ${removes.join(', ')}` : ''}`;
 
+  let saved: HealthLogItem;
   try {
     const result = await ddb.send(
       new UpdateCommand({
         TableName: tableName,
         Key: { pk: HEALTH_LOG_PK, date },
         UpdateExpression: expression,
-        ConditionExpression: 'attribute_exists(#measured)',
-        ExpressionAttributeNames: { ...names, '#measured': 'measured' },
+        ConditionExpression: conditions.join(' AND '),
+        ExpressionAttributeNames: names,
         ExpressionAttributeValues: values,
         ReturnValues: 'ALL_NEW',
       }),
     );
-    const saved = result.Attributes as HealthLogItem;
-    const { item, readinessFetch } = await fillReadiness(tableName, saved);
-    return respond(200, { ...toHealthLogEntry(item), readinessFetch });
+    saved = result.Attributes as HealthLogItem;
   } catch (error) {
     if (error instanceof ConditionalCheckFailedException) {
       return respond(404, {
         message:
-          `No health log entry for ${date}. Days are created only by the scheduled job: today's at 00:05 the ` +
-          `owner's time, so a future day does not exist yet, and days before the log's first 28-day backfill never will.`,
+          ids.length > 0
+            ? `No health log entry for ${date}, or no note with id ${ids.join(', ')} on it. ` +
+              'Use the ids list_health_log returns; to add a note, use add_health_note.'
+            : `No health log entry for ${date}. Days are created only by the scheduled job: today's at 00:05 the ` +
+              `owner's time, so a future day does not exist yet, and days before the log's first 28-day backfill never will.`,
       });
     }
     throw error;
   }
+
+  const { item, readinessFetch } = await fillReadiness(tableName, saved);
+  return respond(200, { ...toHealthLogEntry(item), readinessFetch });
 };
-
-/**
- * What happened when this update tried to record readiness. The point is to
- * keep "Google had nothing" and "Google could not be asked" apart:
- *
- *   recorded  Google answered. `status` is what it said: "ready" with values,
- *             or "not_synced" / "no_data" when the night is empty (watch off,
- *             flat, or not synced yet), or "pending" while it processes.
- *   failed    Google could not be read. `kind` says why; the day's measured
- *             values are unchanged and `fetchError` is set on it.
- */
-type ReadinessFetch =
-  | { attempted: false; reason: 'already_ready' }
-  | { attempted: true; outcome: 'already_ready' }
-  | { attempted: true; outcome: 'recorded'; status: string }
-  | { attempted: true; outcome: 'failed'; kind: FetchErrorKind; message: string };
-
-/** Try to record the day's readiness if it has none. Never throws. */
-async function fillReadiness(
-  tableName: string,
-  item: HealthLogItem,
-): Promise<{ item: HealthLogItem; readinessFetch: ReadinessFetch }> {
-  if (hasReadiness(item)) return { item, readinessFetch: { attempted: false, reason: 'already_ready' } };
-
-  const secretName = process.env.GOOGLE_HEALTH_SECRET_NAME;
-  const timeZone = process.env.HEALTH_TIME_ZONE;
-  if (!secretName || !timeZone || !isValidTimeZone(timeZone)) {
-    return {
-      item,
-      readinessFetch: {
-        attempted: true,
-        outcome: 'failed',
-        kind: 'unknown',
-        message: 'Google Health is not configured on this endpoint',
-      },
-    };
-  }
-  try {
-    const stored = await recordReadiness(tableName, secretName, timeZone, item.date, 'update');
-    // null: something else recorded a ready reading first; the notes still stand.
-    return stored
-      ? { item: stored, readinessFetch: { attempted: true, outcome: 'recorded', status: stored.measured.status } }
-      : { item, readinessFetch: { attempted: true, outcome: 'already_ready' } };
-  } catch (error) {
-    const fetchError = error instanceof ReadinessFetchFailure ? error.fetchError : toFetchError(error, 'update');
-    if (!(error instanceof ReadinessFetchFailure)) console.error('Readiness fetch on health log update failed', error);
-    return {
-      // recordReadiness has stored the same fetchError on the day.
-      item: { ...item, fetchError },
-      readinessFetch: { attempted: true, outcome: 'failed', kind: fetchError.kind, message: fetchError.message },
-    };
-  }
-}

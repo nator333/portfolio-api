@@ -4,6 +4,7 @@ import { GoogleHealthError, listDataPoints } from './google-health';
 import {
   BASELINE_DAYS,
   addDays,
+  isValidTimeZone,
   localDate,
   parseDailyHrv,
   parseDailyRestingHeartRate,
@@ -22,12 +23,12 @@ import {
 
 /**
  * Reading Google Health and writing a day's measured half: the pieces the
- * scheduled runs and update_health_log share.
+ * scheduled runs and the note tools (add_health_note, update_health_log) share.
  *
  * Two write rules, by who is writing:
  *
  *   'unsettled'   the 22:00 run: rewrite until the day is settled.
- *   'until-ready' the 10:00 run and update_health_log: fill in a day that has
+ *   'until-ready' the 10:00 run and the note tools: fill in a day that has
  *                 no readiness yet (awaiting, not_synced, pending), but never
  *                 touch one that is already "ready". That is what makes the
  *                 10:00 run a no-op after an earlier update recorded the day,
@@ -253,4 +254,62 @@ export async function recordReadiness(
   const dayIsOver = date < localDate(new Date(), timeZone);
   const measured = measureDay({ date, ...signals }, { dayIsOver });
   return writeMeasured(tableName, date, measured, new Date().toISOString(), 'until-ready');
+}
+
+/**
+ * What happened when a note write tried to record readiness. The point is to
+ * keep "Google had nothing" and "Google could not be asked" apart:
+ *
+ *   recorded  Google answered. `status` is what it said: "ready" with values,
+ *             or "not_synced" / "no_data" when the night is empty (watch off,
+ *             flat, or not synced yet), or "pending" while it processes.
+ *   failed    Google could not be read. `kind` says why; the day's measured
+ *             values are unchanged and `fetchError` is set on it.
+ */
+export type ReadinessFetch =
+  | { attempted: false; reason: 'already_ready' }
+  | { attempted: true; outcome: 'already_ready' }
+  | { attempted: true; outcome: 'recorded'; status: string }
+  | { attempted: true; outcome: 'failed'; kind: FetchErrorKind; message: string };
+
+/**
+ * After a note write: try to record the day's readiness if it has none, so
+ * the first thing said about a day also captures its night. The values come
+ * from Google, never from the caller. Never throws: a failure is reported
+ * (and stored as `fetchError`) without undoing the note.
+ */
+export async function fillReadiness(
+  tableName: string,
+  item: HealthLogItem,
+): Promise<{ item: HealthLogItem; readinessFetch: ReadinessFetch }> {
+  if (hasReadiness(item)) return { item, readinessFetch: { attempted: false, reason: 'already_ready' } };
+
+  const secretName = process.env.GOOGLE_HEALTH_SECRET_NAME;
+  const timeZone = process.env.HEALTH_TIME_ZONE;
+  if (!secretName || !timeZone || !isValidTimeZone(timeZone)) {
+    return {
+      item,
+      readinessFetch: {
+        attempted: true,
+        outcome: 'failed',
+        kind: 'unknown',
+        message: 'Google Health is not configured on this endpoint',
+      },
+    };
+  }
+  try {
+    const stored = await recordReadiness(tableName, secretName, timeZone, item.date, 'chat');
+    // null: something else recorded a ready reading first; the notes still stand.
+    return stored
+      ? { item: stored, readinessFetch: { attempted: true, outcome: 'recorded', status: stored.measured.status } }
+      : { item, readinessFetch: { attempted: true, outcome: 'already_ready' } };
+  } catch (error) {
+    const fetchError = error instanceof ReadinessFetchFailure ? error.fetchError : toFetchError(error, 'chat');
+    if (!(error instanceof ReadinessFetchFailure)) console.error('Readiness fetch on health log update failed', error);
+    return {
+      // recordReadiness has stored the same fetchError on the day.
+      item: { ...item, fetchError },
+      readinessFetch: { attempted: true, outcome: 'failed', kind: fetchError.kind, message: fetchError.message },
+    };
+  }
 }
