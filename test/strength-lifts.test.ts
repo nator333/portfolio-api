@@ -21,6 +21,7 @@ import type { PlanExercise, PlanSession, PlanVersion } from '../lambda/workout-p
 import { planVersionItem } from '../lambda/workout-plan-schema';
 import { SUMMARY_PK } from '../lambda/workout-schema';
 import { UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const TODAY = '2026-10-03';
 
@@ -274,3 +275,7 @@ describe('GET /workout strength lifts', () => {
     error.mockRestore();
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));

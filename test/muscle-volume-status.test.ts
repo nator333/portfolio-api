@@ -25,6 +25,7 @@ import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-u
 import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
 import { SUMMARY_PK } from '../lambda/workout-schema';
 import { PLAN_TARGET_PREFIX, PLAN_VERSION_PREFIX } from '../lambda/workout-plan-schema';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const SUMMARY_TABLE = 'portfolio-workout-summary-test';
 const PLAN_TABLE = 'portfolio-workout-plan-test';
@@ -558,3 +559,7 @@ describe('reading targets across the storage split', () => {
     expect(body.message).toMatch(/no weekly set targets/);
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));

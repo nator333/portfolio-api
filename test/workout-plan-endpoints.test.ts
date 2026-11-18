@@ -35,6 +35,7 @@ import { handler as getPublicPlan, VERSIONS_BACK } from '../lambda/get-public-wo
 import { handler as updatePlan } from '../lambda/update-workout-plan';
 import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
 import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const TABLE = 'portfolio-workout-plan-test';
 
@@ -401,3 +402,7 @@ describe('publishing a menu beside separate targets', () => {
     expect(mockSend.mock.calls.some((c) => c[0].input.Item !== undefined)).toBe(false);
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));

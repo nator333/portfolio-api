@@ -23,6 +23,7 @@ import { handler as ingest } from '../lambda/bodyweight-ingest';
 import { handler as getBodyweight } from '../lambda/get-bodyweight';
 import { resetGoogleHealthCache } from '../lambda/google-health';
 import type { Reading } from '../lambda/weight-trend';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const reading = (date: string, kg: number, hourUtc = 11): Reading => ({
   date,
@@ -167,3 +168,7 @@ describe('GET /bodyweight', () => {
     expect(JSON.parse((await getBodyweight(event)).body)).toEqual({ months: [], updatedAt: null });
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockDdbSend));

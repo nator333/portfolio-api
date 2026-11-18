@@ -14,6 +14,7 @@ import { handler as addReflection } from '../lambda/add-reflection';
 import { handler as listReflections } from '../lambda/list-reflections';
 import { handler as updateReflection } from '../lambda/update-reflection';
 import { addReflectionSchema, isReflectionId } from '../lambda/reflection-schema';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const TABLE = 'reflections-test';
 
@@ -208,3 +209,7 @@ describe('correcting a reflection', () => {
     expect(isReflectionId('2026-09-01#abc#def')).toBe(false);
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));

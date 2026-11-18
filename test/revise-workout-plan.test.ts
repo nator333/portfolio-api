@@ -34,6 +34,7 @@ import { handler } from '../lambda/revise-workout-plan';
 import { planVersionItem, targetSetItem } from '../lambda/workout-plan-schema';
 import { UPPER_LOWER_TARGETS_V1, UPPER_LOWER_V1 } from '../lambda/workout-plan-upper-lower';
 import { checkMenuAgainstTargets } from '../lambda/workout-plan-compliance';
+import { expectNoUnusedExpressionAttributes } from './dynamo-expressions';
 
 const TABLE = 'portfolio-workout-plan-test';
 
@@ -373,3 +374,7 @@ describe('keeping the menu inside its targets', () => {
     expect(bonusWarnings).toEqual([]);
   });
 });
+
+// Every request these tests made must be one DynamoDB would accept: unused
+// expression names or values are a ValidationException the mock would hide.
+afterEach(() => expectNoUnusedExpressionAttributes(mockSend));
