@@ -129,14 +129,16 @@ export const handler = async (
   // (all lifts' months would be ~1,900 points); the front charts the honest
   // month-by-month best, so declines show rather than being smoothed away.
   const liftNames = new Set(lifts.map((l) => l.name));
-  const seriesByLift = new Map<string, { month: string; e1rmKg: number }[]>();
+  // Both units are sent: pounds is the logged source unit, so a chart in lb
+  // reads the stored figure rather than a kg round-trip.
+  const seriesByLift = new Map<string, { month: string; e1rmLb: number; e1rmKg: number }[]>();
   for (const item of e1rmItems) {
     const name = item.exercise as string;
     if (!liftNames.has(name)) continue;
     const e1rmKg = item.bestE1rmKg as number;
     if (!(e1rmKg > 0)) continue;
     const points = seriesByLift.get(name) ?? [];
-    points.push({ month: item.month as string, e1rmKg });
+    points.push({ month: item.month as string, e1rmLb: Number(item.bestE1rm ?? 0), e1rmKg });
     seriesByLift.set(name, points);
   }
   const strengthSeries = lifts.map((l) => ({
